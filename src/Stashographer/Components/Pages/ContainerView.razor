@@ -1,0 +1,66 @@
+@page "/c/{Slug}"
+@inject ContainerService Containers
+@inject NavigationManager Nav
+
+<PageTitle>@(_container?.Name ?? "Container") · Stashographer</PageTitle>
+
+@if (_loading)
+{
+    <MudProgressCircular Indeterminate="true" />
+}
+else if (_container is null)
+{
+    <MudAlert Severity="Severity.Error">No container matches this QR code.</MudAlert>
+}
+else
+{
+    <div class="d-flex justify-space-between align-center mb-2">
+        <div>
+            <MudText Typo="Typo.h4">@_container.Name</MudText>
+            <MudText Typo="Typo.body2" Class="mud-text-secondary">
+                @_container.ContainerType in @_container.Location?.Name
+            </MudText>
+        </div>
+        <img src="@_qr" width="96" height="96" alt="QR" />
+    </div>
+
+    <MudText Typo="Typo.subtitle1" Class="mb-2">Contents (@_container.Items.Count)</MudText>
+
+    @if (_container.Items.Count == 0)
+    {
+        <MudAlert Severity="Severity.Info">This container is empty.</MudAlert>
+    }
+    else
+    {
+        <MudList T="Item">
+            @foreach (var item in _container.Items.OrderBy(i => i.Name))
+            {
+                <MudListItem T="Item" Icon="@Icons.Material.Filled.Label" OnClick="@(() => Nav.NavigateTo($"items/{item.Id}"))">
+                    @item.Name
+                    <MudChip T="string" Size="Size.Small" Class="ml-2">@item.Quantity.ToString("0.##") @item.Unit</MudChip>
+                    @if (item.IsCheckedOut)
+                    {
+                        <MudChip T="string" Size="Size.Small" Color="Color.Secondary">Out</MudChip>
+                    }
+                </MudListItem>
+            }
+        </MudList>
+    }
+}
+
+@code {
+    [Parameter] public string Slug { get; set; } = string.Empty;
+
+    private Container? _container;
+    private string _qr = string.Empty;
+    private bool _loading = true;
+
+    protected override async Task OnParametersSetAsync()
+    {
+        _loading = true;
+        _container = await Containers.GetContainerBySlugAsync(Slug);
+        if (_container is not null)
+            _qr = ContainerService.GenerateQrDataUri(Nav.ToAbsoluteUri($"c/{Slug}").ToString(), 5);
+        _loading = false;
+    }
+}

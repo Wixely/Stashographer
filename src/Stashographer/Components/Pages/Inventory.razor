@@ -1,0 +1,117 @@
+@page "/inventory"
+@inject InventoryService InventorySvc
+@inject NavigationManager Nav
+
+<PageTitle>Inventory · Stashographer</PageTitle>
+
+<div class="d-flex justify-space-between align-center mb-4">
+    <MudText Typo="Typo.h4">Inventory</MudText>
+    <MudButton Color="Color.Primary" Variant="Variant.Filled" StartIcon="@Icons.Material.Filled.Add"
+               Href="scan">Add item</MudButton>
+</div>
+
+<MudPaper Class="pa-3 mb-3" Outlined="true">
+    <MudGrid>
+        <MudItem xs="12" md="6">
+            <MudTextField @bind-Value="_search" Placeholder="Search name, code, description" Immediate="true"
+                          Adornment="Adornment.Start" AdornmentIcon="@Icons.Material.Filled.Search"
+                          Variant="Variant.Outlined" Margin="Margin.Dense" DebounceInterval="300"
+                          OnDebounceIntervalElapsed="ReloadAsync" />
+        </MudItem>
+        <MudItem xs="12" md="6">
+            <MudSelect T="int?" Value="_kindId" Label="Kind" Variant="Variant.Outlined" Margin="Margin.Dense"
+                       Clearable="true" ValueChanged="OnKindChanged">
+                @foreach (var k in _kinds)
+                {
+                    <MudSelectItem T="int?" Value="@k.Id">@k.Name</MudSelectItem>
+                }
+            </MudSelect>
+        </MudItem>
+    </MudGrid>
+</MudPaper>
+
+@if (_items is null)
+{
+    <MudProgressCircular Indeterminate="true" />
+}
+else if (_items.Count == 0)
+{
+    <MudAlert Severity="Severity.Info">No items match. Try scanning something in.</MudAlert>
+}
+else
+{
+    <MudTable Items="_items" Hover="true" Breakpoint="Breakpoint.Sm" Dense="true" OnRowClick="OnRowClick" T="Item">
+        <HeaderContent>
+            <MudTh>Name</MudTh>
+            <MudTh>Kind</MudTh>
+            <MudTh>Location</MudTh>
+            <MudTh Style="text-align:right">Qty</MudTh>
+            <MudTh Style="text-align:center">Status</MudTh>
+        </HeaderContent>
+        <RowTemplate>
+            <MudTd DataLabel="Name">
+                <div class="d-flex align-center gap-2">
+                    @if (!string.IsNullOrEmpty(context.ThumbnailUrl))
+                    {
+                        <MudAvatar Size="Size.Small"><MudImage Src="@context.ThumbnailUrl" /></MudAvatar>
+                    }
+                    <span>@context.Name</span>
+                </div>
+            </MudTd>
+            <MudTd DataLabel="Kind">@context.Kind?.Name</MudTd>
+            <MudTd DataLabel="Location">@LocationLabel(context)</MudTd>
+            <MudTd DataLabel="Qty" Style="text-align:right">
+                <div class="d-flex align-center justify-end gap-1" @onclick:stopPropagation="true">
+                    <MudIconButton Icon="@Icons.Material.Filled.Remove" Size="Size.Small"
+                                   OnClick="@(() => Adjust(context, -1))" />
+                    <span style="min-width:2.5rem;text-align:center">@context.Quantity.ToString("0.##") @context.Unit</span>
+                    <MudIconButton Icon="@Icons.Material.Filled.Add" Size="Size.Small"
+                                   OnClick="@(() => Adjust(context, +1))" />
+                </div>
+            </MudTd>
+            <MudTd DataLabel="Status" Style="text-align:center">
+                @if (context.IsCheckedOut)
+                {
+                    <MudChip T="string" Size="Size.Small" Color="Color.Secondary">Out</MudChip>
+                }
+            </MudTd>
+        </RowTemplate>
+    </MudTable>
+}
+
+@code {
+    private List<Item>? _items;
+    private List<ItemKind> _kinds = new();
+    private string? _search;
+    private int? _kindId;
+
+    protected override async Task OnInitializedAsync()
+    {
+        _kinds = await InventorySvc.GetKindsAsync();
+        await ReloadAsync();
+    }
+
+    private async Task ReloadAsync()
+    {
+        _items = await InventorySvc.QueryAsync(new ItemQuery(_search, _kindId));
+        StateHasChanged();
+    }
+
+    private async Task OnKindChanged(int? value)
+    {
+        _kindId = value;
+        await ReloadAsync();
+    }
+
+    private async Task Adjust(Item item, decimal delta)
+    {
+        await InventorySvc.AdjustQuantityAsync(item.Id, delta);
+        item.Quantity = Math.Max(0, item.Quantity + delta);
+    }
+
+    private void OnRowClick(TableRowClickEventArgs<Item> args) => Nav.NavigateTo($"items/{args.Item!.Id}");
+
+    private static string LocationLabel(Item i) =>
+        i.Container is not null ? $"{i.Container.Location?.Name} › {i.Container.Name}"
+        : i.Location?.Name ?? "—";
+}

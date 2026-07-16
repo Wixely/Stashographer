@@ -1,0 +1,8 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/Stashographer/Stashographer.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Stashographer.Tests/Stashographer.Tests.csproj" />
+  </Folder>
+</Solution>

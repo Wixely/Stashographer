@@ -1,0 +1,99 @@
+@* Camera barcode scanner + manual entry. Raises OnCode with whatever code is captured. *@
+@implements IAsyncDisposable
+@inject IJSRuntime JS
+
+<MudPaper Class="pa-4" Elevation="0" Outlined="true">
+    @if (_scanning)
+    {
+        <video @ref="_video" playsinline muted style="width:100%;max-height:320px;border-radius:8px;background:#000"></video>
+        <div class="d-flex justify-center mt-2">
+            <MudButton Color="Color.Error" Variant="Variant.Filled" StartIcon="@Icons.Material.Filled.Stop"
+                       OnClick="StopAsync">Stop camera</MudButton>
+        </div>
+    }
+    else
+    {
+        <div class="d-flex flex-column align-center gap-2 py-4">
+            <MudIcon Icon="@Icons.Material.Filled.QrCodeScanner" Size="Size.Large" Color="Color.Primary" />
+            <MudButton Color="Color.Primary" Variant="Variant.Filled" StartIcon="@Icons.Material.Filled.CameraAlt"
+                       OnClick="StartAsync">Scan with camera</MudButton>
+            @if (_unsupported)
+            {
+                <MudAlert Severity="Severity.Info" Dense="true" Class="mt-2">
+                    This browser has no built-in barcode scanner (e.g. iOS Safari). Use manual entry below.
+                </MudAlert>
+            }
+        </div>
+    }
+
+    <MudDivider Class="my-3" />
+
+    <MudText Typo="Typo.subtitle2" Class="mb-1">Enter a barcode / ISBN manually</MudText>
+    <div class="d-flex gap-2 align-center">
+        <MudTextField @bind-Value="_manual" Placeholder="e.g. 9780262033848" Variant="Variant.Outlined"
+                      Margin="Margin.Dense" Immediate="true" OnKeyDown="OnManualKey" />
+        <MudButton Color="Color.Primary" Variant="Variant.Filled" OnClick="SubmitManual"
+                   Disabled="@string.IsNullOrWhiteSpace(_manual)">Look up</MudButton>
+    </div>
+</MudPaper>
+
+@code {
+    [Parameter] public EventCallback<string> OnCode { get; set; }
+
+    private ElementReference _video;
+    private bool _scanning;
+    private bool _unsupported;
+    private string _manual = string.Empty;
+    private DotNetObjectReference<ScanControl>? _selfRef;
+
+    private async Task StartAsync()
+    {
+        _selfRef ??= DotNetObjectReference.Create(this);
+        _scanning = true;
+        StateHasChanged();
+        // Allow the <video> element to render before starting the camera.
+        await Task.Yield();
+        var result = await JS.InvokeAsync<ScanStartResult>("stashScanner.start", _video, _selfRef);
+        if (!result.Ok)
+        {
+            _scanning = false;
+            _unsupported = result.Reason == "unsupported";
+            StateHasChanged();
+        }
+    }
+
+    private async Task StopAsync()
+    {
+        await JS.InvokeVoidAsync("stashScanner.stop");
+        _scanning = false;
+        StateHasChanged();
+    }
+
+    [JSInvokable]
+    public async Task OnCodeScanned(string code)
+    {
+        await StopAsync();
+        await OnCode.InvokeAsync(code);
+    }
+
+    private async Task SubmitManual()
+    {
+        if (string.IsNullOrWhiteSpace(_manual)) return;
+        var code = _manual.Trim();
+        _manual = string.Empty;
+        await OnCode.InvokeAsync(code);
+    }
+
+    private async Task OnManualKey(KeyboardEventArgs e)
+    {
+        if (e.Key is "Enter") await SubmitManual();
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        try { await JS.InvokeVoidAsync("stashScanner.stop"); } catch { /* circuit gone */ }
+        _selfRef?.Dispose();
+    }
+
+    private record ScanStartResult(bool Ok, string? Reason);
+}

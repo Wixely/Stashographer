@@ -1,0 +1,35 @@
+@* Dialog to check an item out to a person with a whereabouts note. *@
+
+<MudDialog>
+    <DialogContent>
+        <MudText Typo="Typo.body2" Class="mb-3">Check out <b>@ItemName</b></MudText>
+        <MudTextField @bind-Value="_by" Label="Checked out by" Variant="Variant.Outlined"
+                      Margin="Margin.Dense" Required="true" Class="mb-2" />
+        <MudTextField @bind-Value="_where" Label="Whereabouts note" Variant="Variant.Outlined"
+                      Margin="Margin.Dense" Placeholder="e.g. lent to Sam, taken to the caravan" Class="mb-2" />
+        <MudDatePicker @bind-Date="_due" Label="Due back (optional)" Variant="Variant.Outlined" Margin="Margin.Dense" />
+    </DialogContent>
+    <DialogActions>
+        <MudButton OnClick="Cancel">Cancel</MudButton>
+        <MudButton Color="Color.Primary" Variant="Variant.Filled" OnClick="Submit"
+                   Disabled="@string.IsNullOrWhiteSpace(_by)">Check out</MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private IMudDialogInstance Dialog { get; set; } = default!;
+    [Parameter] public string ItemName { get; set; } = string.Empty;
+
+    private string _by = string.Empty;
+    private string _where = string.Empty;
+    private DateTime? _due;
+
+    public record CheckoutData(string By, string? Where, DateOnly? Due);
+
+    private void Submit() => Dialog.Close(DialogResult.Ok(
+        new CheckoutData(_by.Trim(),
+            string.IsNullOrWhiteSpace(_where) ? null : _where.Trim(),
+            _due is { } d ? DateOnly.FromDateTime(d) : null)));
+
+    private void Cancel() => Dialog.Cancel();
+}

@@ -1,0 +1,30 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <BlazorDisableThrowNavigationException>true</BlazorDisableThrowNavigationException>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Include="Data\Migrations\Scripts\*.sql" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Dapper" Version="2.1.79" />
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.10" />
+    <!-- Override only the native SQLite binary pulled transitively by Microsoft.Data.Sqlite.
+         lib.e_sqlite3 2.1.11 and earlier bundle a vulnerable SQLite engine (GHSA-2m69-gcr7-jv3q,
+         affects <= 2.1.11). This package is versioned to track the SQLite engine (3.53.3 = SQLite
+         3.53.3) and carries no managed API, so pinning it to newest keeps us on the latest,
+         longest-supported engine while the managed core/provider stay at the 2.1.x versions
+         Microsoft.Data.Sqlite 10 targets. Runtime-verified below. -->
+    <PackageReference Include="SQLitePCLRaw.lib.e_sqlite3" Version="3.53.3" />
+    <PackageReference Include="Microsoft.Extensions.AI" Version="10.8.0" />
+    <PackageReference Include="Microsoft.Extensions.AI.OpenAI" Version="10.8.0" />
+    <PackageReference Include="MudBlazor" Version="9.7.0" />
+    <PackageReference Include="QRCoder" Version="1.8.0" />
+  </ItemGroup>
+
+</Project>

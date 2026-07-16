@@ -1,0 +1,123 @@
+@page "/locations"
+@inject ContainerService Containers
+@inject NavigationManager Nav
+@inject ISnackbar Snackbar
+
+<PageTitle>Locations · Stashographer</PageTitle>
+
+<MudText Typo="Typo.h4" Class="mb-4">Locations &amp; containers</MudText>
+
+<MudPaper Class="pa-3 mb-4" Outlined="true">
+    <div class="d-flex gap-2 align-center">
+        <MudTextField @bind-Value="_newLocation" Placeholder="New location (e.g. Attic)" Variant="Variant.Outlined"
+                      Margin="Margin.Dense" Immediate="true" />
+        <MudButton Color="Color.Primary" Variant="Variant.Filled" StartIcon="@Icons.Material.Filled.Add"
+                   OnClick="AddLocation" Disabled="@string.IsNullOrWhiteSpace(_newLocation)">Add location</MudButton>
+    </div>
+</MudPaper>
+
+@if (_locations is null)
+{
+    <MudProgressCircular Indeterminate="true" />
+}
+else
+{
+    foreach (var location in _locations)
+    {
+        <MudCard Class="mb-3" Outlined="true">
+            <MudCardHeader>
+                <CardHeaderContent>
+                    <MudText Typo="Typo.h6">@location.Name</MudText>
+                    @if (!string.IsNullOrWhiteSpace(location.Description))
+                    {
+                        <MudText Typo="Typo.body2" Class="mud-text-secondary">@location.Description</MudText>
+                    }
+                </CardHeaderContent>
+            </MudCardHeader>
+            <MudCardContent>
+                @if (location.Containers.Count == 0)
+                {
+                    <MudText Typo="Typo.body2" Class="mud-text-secondary mb-2">No containers yet.</MudText>
+                }
+                else
+                {
+                    <MudGrid>
+                        @foreach (var c in location.Containers)
+                        {
+                            <MudItem xs="6" sm="4" md="3">
+                                <MudPaper Class="pa-2 d-flex flex-column align-center" Outlined="true">
+                                    <img src="@Containers_QrDataUri(c.QrSlug)" width="120" height="120" alt="QR" />
+                                    <MudText Typo="Typo.subtitle2" Class="mt-1">@c.Name</MudText>
+                                    <MudText Typo="Typo.caption" Class="mud-text-secondary">@c.ContainerType</MudText>
+                                    <MudButton Size="Size.Small" Variant="Variant.Text"
+                                               Href="@($"c/{c.QrSlug}")">Open</MudButton>
+                                </MudPaper>
+                            </MudItem>
+                        }
+                    </MudGrid>
+                }
+
+                <div class="d-flex gap-2 align-center mt-3">
+                    <MudTextField @bind-Value="_newContainerName[location.Id]" Placeholder="New container name"
+                                  Variant="Variant.Outlined" Margin="Margin.Dense" Immediate="true" Style="max-width:220px" />
+                    <MudSelect T="ContainerType" @bind-Value="_newContainerType[location.Id]"
+                               Variant="Variant.Outlined" Margin="Margin.Dense" Style="max-width:150px">
+                        @foreach (var t in Enum.GetValues<ContainerType>())
+                        {
+                            <MudSelectItem Value="@t">@t</MudSelectItem>
+                        }
+                    </MudSelect>
+                    <MudButton Color="Color.Primary" Variant="Variant.Outlined" StartIcon="@Icons.Material.Filled.Add"
+                               OnClick="@(() => AddContainer(location))">Add container</MudButton>
+                </div>
+            </MudCardContent>
+        </MudCard>
+    }
+}
+
+@code {
+    private List<Location>? _locations;
+    private string _newLocation = string.Empty;
+    private readonly Dictionary<int, string> _newContainerName = new();
+    private readonly Dictionary<int, ContainerType> _newContainerType = new();
+
+    protected override async Task OnInitializedAsync() => await Reload();
+
+    private async Task Reload()
+    {
+        _locations = await Containers.GetLocationsAsync();
+        foreach (var l in _locations)
+        {
+            _newContainerName.TryAdd(l.Id, string.Empty);
+            _newContainerType.TryAdd(l.Id, ContainerType.Box);
+        }
+    }
+
+    private async Task AddLocation()
+    {
+        await Containers.SaveLocationAsync(new Location { Name = _newLocation.Trim() });
+        _newLocation = string.Empty;
+        await Reload();
+    }
+
+    private async Task AddContainer(Location location)
+    {
+        var name = _newContainerName.GetValueOrDefault(location.Id);
+        if (string.IsNullOrWhiteSpace(name)) return;
+        await Containers.SaveContainerAsync(new Container
+        {
+            Name = name.Trim(),
+            ContainerType = _newContainerType.GetValueOrDefault(location.Id),
+            LocationId = location.Id,
+            QrSlug = ContainerService.GenerateSlug()
+        });
+        _newContainerName[location.Id] = string.Empty;
+        Snackbar.Add("Container added with a fresh QR code.", Severity.Success);
+        await Reload();
+    }
+
+    private string Containers_QrDataUri(string slug) =>
+        ContainerService.GenerateQrDataUri(AbsoluteContainerUrl(slug), 6);
+
+    private string AbsoluteContainerUrl(string slug) => Nav.ToAbsoluteUri($"c/{slug}").ToString();
+}

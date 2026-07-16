@@ -1,0 +1,152 @@
+@page "/scan"
+@inject ILookupRouter Lookup
+@inject IAiEnrichmentService Ai
+@inject InventoryService Inventory
+@inject ItemDraftState Draft
+@inject NavigationManager Nav
+@inject ISnackbar Snackbar
+
+<PageTitle>Scan &amp; add · Stashographer</PageTitle>
+
+<MudText Typo="Typo.h4" Class="mb-4">Scan &amp; add</MudText>
+
+<MudGrid>
+    <MudItem xs="12" md="6">
+        <ScanControl OnCode="OnCode" />
+
+        @if (Ai.IsEnabled)
+        {
+            <MudPaper Class="pa-4 mt-3" Outlined="true">
+                <MudText Typo="Typo.subtitle2" Class="mb-2">No barcode? Identify from a photo</MudText>
+                <MudFileUpload T="IBrowserFile" Accept="image/*" FilesChanged="OnPhoto">
+                    <ActivatorContent>
+                        <MudButton Variant="Variant.Outlined" StartIcon="@Icons.Material.Filled.PhotoCamera"
+                                   Disabled="_busy">Choose / take a photo</MudButton>
+                    </ActivatorContent>
+                </MudFileUpload>
+            </MudPaper>
+        }
+    </MudItem>
+
+    <MudItem xs="12" md="6">
+        @if (_busy)
+        {
+            <div class="d-flex align-center gap-2"><MudProgressCircular Indeterminate="true" Size="Size.Small" /> Looking up…</div>
+        }
+        else if (_result is not null)
+        {
+            <MudPaper Class="pa-4" Outlined="true">
+                @if (_result.Found)
+                {
+                    <div class="d-flex gap-3">
+                        @if (!string.IsNullOrEmpty(_result.ThumbnailUrl))
+                        {
+                            <MudImage Src="@_result.ThumbnailUrl" Width="72" Height="72" ObjectFit="ObjectFit.Contain" />
+                        }
+                        <div>
+                            <MudText Typo="Typo.h6">@_result.Name</MudText>
+                            <MudChip T="string" Size="Size.Small" Color="Color.Primary">@_result.SuggestedKind</MudChip>
+                            <MudText Typo="Typo.caption" Class="d-block mt-1">via @_result.Source</MudText>
+                        </div>
+                    </div>
+                    @foreach (var kv in _result.Attributes)
+                    {
+                        <MudText Typo="Typo.body2"><b>@kv.Key:</b> @kv.Value</MudText>
+                    }
+                    <MudButton Class="mt-3" Color="Color.Primary" Variant="Variant.Filled"
+                               StartIcon="@Icons.Material.Filled.Edit" OnClick="EditDraft">Review &amp; save</MudButton>
+                }
+                else
+                {
+                    <MudAlert Severity="Severity.Warning" Class="mb-3">
+                        No match for <b>@_result.Code</b>. You can still add it manually.
+                    </MudAlert>
+                    <MudButton Color="Color.Primary" Variant="Variant.Filled" StartIcon="@Icons.Material.Filled.Add"
+                               OnClick="@(() => AddBlank(_result.Code))">Add manually</MudButton>
+                }
+            </MudPaper>
+        }
+        else
+        {
+            <MudAlert Severity="Severity.Info">Scan a barcode or ISBN, or enter one manually, to look up its details.</MudAlert>
+        }
+    </MudItem>
+</MudGrid>
+
+@code {
+    private LookupResult? _result;
+    private bool _busy;
+
+    private async Task OnCode(string code)
+    {
+        _busy = true;
+        _result = null;
+        StateHasChanged();
+        _result = await Lookup.LookupAsync(code);
+        _busy = false;
+    }
+
+    private async Task OnPhoto(IBrowserFile? file)
+    {
+        if (file is null) return;
+        _busy = true;
+        StateHasChanged();
+        try
+        {
+            using var ms = new MemoryStream();
+            await file.OpenReadStream(8 * 1024 * 1024).CopyToAsync(ms);
+            var suggestion = await Ai.IdentifyFromPhotoAsync(ms.ToArray(), file.ContentType);
+            if (suggestion is null)
+            {
+                Snackbar.Add("Couldn't identify the photo.", Severity.Warning);
+            }
+            else
+            {
+                Draft.Set(FromSuggestion(suggestion));
+                Nav.NavigateTo("items/new");
+            }
+        }
+        finally { _busy = false; }
+    }
+
+    private void EditDraft()
+    {
+        Draft.Set(FromResult(_result!));
+        Nav.NavigateTo("items/new");
+    }
+
+    private void AddBlank(string? code)
+    {
+        Draft.Set(new Item { Name = string.Empty, Code = code, ItemKindId = 7 });
+        Nav.NavigateTo("items/new");
+    }
+
+    private static Item FromResult(LookupResult r) => new()
+    {
+        Name = r.Name ?? string.Empty,
+        Code = r.Code,
+        ThumbnailUrl = r.ThumbnailUrl,
+        Attributes = new(r.Attributes),
+        ItemKindId = KindId(r.SuggestedKind)
+    };
+
+    private static Item FromSuggestion(AiSuggestion s) => new()
+    {
+        Name = s.Name ?? string.Empty,
+        Description = s.Description,
+        Attributes = new(s.Attributes),
+        ItemKindId = KindId(s.SuggestedKind)
+    };
+
+    // Maps a suggested kind name to the seeded ItemKind ids.
+    private static int KindId(string? kind) => kind switch
+    {
+        "Grocery" => 1,
+        "Book" => 2,
+        "Tool" => 3,
+        "Electronics" => 4,
+        "Media" => 5,
+        "Clothing" => 6,
+        _ => 7
+    };
+}

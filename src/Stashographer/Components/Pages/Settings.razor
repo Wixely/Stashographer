@@ -1,0 +1,41 @@
+@page "/settings"
+@inject AiOptions Ai
+
+<PageTitle>Settings · Stashographer</PageTitle>
+
+<MudText Typo="Typo.h4" Class="mb-4">Settings</MudText>
+
+<MudPaper Class="pa-4 mb-3" Outlined="true">
+    <MudText Typo="Typo.h6" Class="mb-2">AI enrichment</MudText>
+    @if (Ai.IsConfigured)
+    {
+        <MudAlert Severity="Severity.Success" Class="mb-2">
+            AI is enabled using model <b>@Ai.Model</b>@(string.IsNullOrWhiteSpace(Ai.Endpoint) ? "" : $" at {Ai.Endpoint}").
+        </MudAlert>
+        <MudText Typo="Typo.body2">
+            Photo identification and item enrichment are available on the Scan and item pages.
+        </MudText>
+    }
+    else
+    {
+        <MudAlert Severity="Severity.Info" Class="mb-2">AI features are disabled.</MudAlert>
+        <MudText Typo="Typo.body2" Class="mb-1">
+            Enable them by configuring the <code>Ai</code> section (any OpenAI-compatible endpoint):
+        </MudText>
+        <pre class="mud-elevation-1 pa-3" style="border-radius:8px;overflow:auto">Ai__Enabled=true
+Ai__ApiKey=sk-...
+Ai__Model=gpt-4o-mini
+# optional, for Azure OpenAI / Ollama / LM Studio:
+Ai__Endpoint=https://your-endpoint/v1</pre>
+        <MudText Typo="Typo.caption" Class="mud-text-secondary">
+            Set via environment variables (shown) or the <code>Ai</code> section of appsettings.json, then restart.
+        </MudText>
+    }
+</MudPaper>
+
+<MudPaper Class="pa-4" Outlined="true">
+    <MudText Typo="Typo.h6" Class="mb-2">Theme</MudText>
+    <MudText Typo="Typo.body2">
+        Toggle light / dark with the icon in the top bar. Your choice is remembered on this device.
+    </MudText>
+</MudPaper>

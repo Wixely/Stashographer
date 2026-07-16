@@ -1,0 +1,71 @@
+@* Edits an item's flexible key/value attribute bag. *@
+
+<MudText Typo="Typo.subtitle2" Class="mb-1">Attributes</MudText>
+
+@if (Attributes.Count == 0)
+{
+    <MudText Typo="Typo.body2" Class="mud-text-secondary mb-2">No attributes yet.</MudText>
+}
+
+@foreach (var key in Attributes.Keys.ToList())
+{
+    <div class="d-flex gap-2 align-center mb-2">
+        <MudTextField T="string" Value="@key" Label="Field" Variant="Variant.Outlined" Margin="Margin.Dense"
+                      ValueChanged="@(v => RenameKey(key, v))" Style="max-width:220px" />
+        <MudTextField T="string" Value="@Attributes[key]" Label="Value" Variant="Variant.Outlined" Margin="Margin.Dense"
+                      ValueChanged="@(v => SetValue(key, v))" />
+        <MudIconButton Icon="@Icons.Material.Filled.Delete" Color="Color.Error" Size="Size.Small"
+                       OnClick="@(() => Remove(key))" />
+    </div>
+}
+
+<div class="d-flex gap-2 align-center mt-2">
+    @if (Suggestions is { Count: > 0 })
+    {
+        <MudMenu Label="Add suggested" Variant="Variant.Outlined" Size="Size.Small" EndIcon="@Icons.Material.Filled.ArrowDropDown">
+            @foreach (var s in Suggestions.Where(s => !Attributes.ContainsKey(s)))
+            {
+                <MudMenuItem OnClick="@(() => AddKey(s))">@s</MudMenuItem>
+            }
+        </MudMenu>
+    }
+    <MudButton StartIcon="@Icons.Material.Filled.Add" Variant="Variant.Text" Size="Size.Small"
+               OnClick="@(() => AddKey(null))">Add field</MudButton>
+</div>
+
+@code {
+    [Parameter] public Dictionary<string, string> Attributes { get; set; } = new();
+    [Parameter] public EventCallback<Dictionary<string, string>> AttributesChanged { get; set; }
+    [Parameter] public List<string>? Suggestions { get; set; }
+
+    private async Task Notify() => await AttributesChanged.InvokeAsync(Attributes);
+
+    private async Task SetValue(string key, string value)
+    {
+        Attributes[key] = value;
+        await Notify();
+    }
+
+    private async Task RenameKey(string oldKey, string newKey)
+    {
+        if (string.IsNullOrWhiteSpace(newKey) || newKey == oldKey || Attributes.ContainsKey(newKey)) return;
+        var value = Attributes[oldKey];
+        Attributes.Remove(oldKey);
+        Attributes[newKey] = value;
+        await Notify();
+    }
+
+    private async Task AddKey(string? key)
+    {
+        var name = key ?? $"Field {Attributes.Count + 1}";
+        if (Attributes.ContainsKey(name)) return;
+        Attributes[name] = string.Empty;
+        await Notify();
+    }
+
+    private async Task Remove(string key)
+    {
+        Attributes.Remove(key);
+        await Notify();
+    }
+}

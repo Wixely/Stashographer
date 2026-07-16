@@ -1,0 +1,237 @@
+@page "/items/new"
+@page "/items/{Id:int}"
+@inject InventoryService Inventory
+@inject ContainerService Containers
+@inject CheckoutService Checkouts
+@inject IAiEnrichmentService Ai
+@inject ItemDraftState Draft
+@inject NavigationManager Nav
+@inject ISnackbar Snackbar
+@inject IDialogService Dialogs
+
+<PageTitle>@(_item.Id == 0 ? "New item" : _item.Name) · Stashographer</PageTitle>
+
+@if (_loading)
+{
+    <MudProgressCircular Indeterminate="true" />
+}
+else
+{
+    <div class="d-flex justify-space-between align-center mb-4">
+        <MudText Typo="Typo.h4">@(_item.Id == 0 ? "New item" : "Edit item")</MudText>
+        @if (_item.Id != 0)
+        {
+            <div class="d-flex gap-2">
+                @if (_item.IsCheckedOut)
+                {
+                    <MudButton Color="Color.Secondary" Variant="Variant.Outlined"
+                               StartIcon="@Icons.Material.Filled.AssignmentReturned" OnClick="CheckIn">Check in</MudButton>
+                }
+                else
+                {
+                    <MudButton Color="Color.Secondary" Variant="Variant.Outlined"
+                               StartIcon="@Icons.Material.Filled.AssignmentReturn" OnClick="CheckOut">Check out</MudButton>
+                }
+                <MudIconButton Icon="@Icons.Material.Filled.Delete" Color="Color.Error" OnClick="Delete" />
+            </div>
+        }
+    </div>
+
+    @if (_item.IsCheckedOut && _openCheckout is not null)
+    {
+        <MudAlert Severity="Severity.Info" Class="mb-3">
+            Checked out by <b>@_openCheckout.CheckedOutBy</b>
+            @if (!string.IsNullOrWhiteSpace(_openCheckout.WhereaboutsNote)) { <text> — @_openCheckout.WhereaboutsNote</text> }
+            @if (_openCheckout.DueDate is { } due) { <text> (due @due.ToString("d MMM"))</text> }
+        </MudAlert>
+    }
+
+    <MudGrid>
+        <MudItem xs="12" md="7">
+            <MudPaper Class="pa-4" Outlined="true">
+                <MudTextField @bind-Value="_item.Name" Label="Name" Variant="Variant.Outlined" Required="true" Class="mb-3" />
+                <MudGrid>
+                    <MudItem xs="6">
+                        <MudSelect @bind-Value="_item.ItemKindId" Label="Kind" Variant="Variant.Outlined">
+                            @foreach (var k in _kinds)
+                            {
+                                <MudSelectItem Value="@k.Id">@k.Name</MudSelectItem>
+                            }
+                        </MudSelect>
+                    </MudItem>
+                    <MudItem xs="3">
+                        <MudNumericField @bind-Value="_item.Quantity" Label="Qty" Variant="Variant.Outlined" Min="0" />
+                    </MudItem>
+                    <MudItem xs="3">
+                        <MudTextField @bind-Value="_item.Unit" Label="Unit" Variant="Variant.Outlined" />
+                    </MudItem>
+                    <MudItem xs="6">
+                        <MudNumericField @bind-Value="_item.LowStockThreshold" Label="Low-stock at" Variant="Variant.Outlined" Min="0" />
+                    </MudItem>
+                    <MudItem xs="6">
+                        <MudDatePicker @bind-Date="_expiry" Label="Expiry (optional)" Variant="Variant.Outlined" />
+                    </MudItem>
+                </MudGrid>
+
+                <MudTextField @bind-Value="_item.Code" Label="Barcode / ISBN" Variant="Variant.Outlined" Class="mt-3" />
+                <MudTextField @bind-Value="_item.Description" Label="Description" Variant="Variant.Outlined"
+                              Lines="2" Class="mt-3" />
+                <MudTextField @bind-Value="_item.Notes" Label="Notes" Variant="Variant.Outlined" Lines="2" Class="mt-3" />
+            </MudPaper>
+        </MudItem>
+
+        <MudItem xs="12" md="5">
+            <MudPaper Class="pa-4 mb-3" Outlined="true">
+                <MudText Typo="Typo.subtitle2" Class="mb-2">Where is it?</MudText>
+                <MudSelect Value="_locationId" Label="Location" Variant="Variant.Outlined" Clearable="true"
+                           Margin="Margin.Dense" ValueChanged="OnLocationChanged" T="int?">
+                    @foreach (var l in _locations)
+                    {
+                        <MudSelectItem T="int?" Value="@l.Id">@l.Name</MudSelectItem>
+                    }
+                </MudSelect>
+                <MudSelect @bind-Value="_containerId" Label="Container (optional)" Variant="Variant.Outlined"
+                           Clearable="true" Margin="Margin.Dense" T="int?" Class="mt-2" Disabled="_locationId is null">
+                    @foreach (var c in ContainersForLocation())
+                    {
+                        <MudSelectItem T="int?" Value="@c.Id">@c.Name</MudSelectItem>
+                    }
+                </MudSelect>
+            </MudPaper>
+
+            <MudPaper Class="pa-4" Outlined="true">
+                <AttributeEditor Attributes="_item.Attributes" Suggestions="SuggestionsForKind()" />
+                @if (Ai.IsEnabled)
+                {
+                    <MudButton Class="mt-3" Variant="Variant.Outlined" StartIcon="@Icons.Material.Filled.AutoAwesome"
+                               OnClick="Enrich" Disabled="_enriching || string.IsNullOrWhiteSpace(_item.Name)">
+                        @(_enriching ? "Enriching…" : "Enrich with AI")
+                    </MudButton>
+                }
+            </MudPaper>
+        </MudItem>
+    </MudGrid>
+
+    <div class="d-flex gap-2 mt-4">
+        <MudButton Color="Color.Primary" Variant="Variant.Filled" StartIcon="@Icons.Material.Filled.Save"
+                   OnClick="Save" Disabled="string.IsNullOrWhiteSpace(_item.Name)">Save</MudButton>
+        <MudButton Variant="Variant.Text" OnClick="@(() => Nav.NavigateTo("inventory"))">Cancel</MudButton>
+    </div>
+}
+
+@code {
+    [Parameter] public int? Id { get; set; }
+
+    private Item _item = new() { Name = string.Empty, ItemKindId = 7 };
+    private List<ItemKind> _kinds = new();
+    private List<Location> _locations = new();
+    private CheckoutRecord? _openCheckout;
+    private DateTime? _expiry;
+    private int? _locationId;
+    private int? _containerId;
+    private bool _loading = true;
+    private bool _enriching;
+
+    protected override async Task OnParametersSetAsync()
+    {
+        _loading = true;
+        _kinds = await Inventory.GetKindsAsync();
+        _locations = await Containers.GetLocationsAsync();
+
+        if (Id is { } id)
+        {
+            _item = await Inventory.GetAsync(id) ?? new Item { Name = string.Empty, ItemKindId = 7 };
+            _openCheckout = _item.IsCheckedOut ? await Checkouts.GetOpenForItemAsync(id) : null;
+        }
+        else
+        {
+            _item = Draft.Take() ?? new Item { Name = string.Empty, ItemKindId = 7 };
+        }
+
+        _expiry = _item.ExpiryDate?.ToDateTime(TimeOnly.MinValue);
+        _locationId = _item.LocationId ?? _item.Container?.LocationId;
+        _containerId = _item.ContainerId;
+        _loading = false;
+    }
+
+    private IEnumerable<Container> ContainersForLocation() =>
+        _locationId is { } loc
+            ? (_locations.FirstOrDefault(l => l.Id == loc)?.Containers as IEnumerable<Container> ?? Enumerable.Empty<Container>())
+            : Enumerable.Empty<Container>();
+
+    private void OnLocationChanged(int? value)
+    {
+        _locationId = value;
+        _containerId = null;
+    }
+
+    private List<string>? SuggestionsForKind() =>
+        _kinds.FirstOrDefault(k => k.Id == _item.ItemKindId)?.SuggestedAttributes;
+
+    private async Task Save()
+    {
+        _item.ExpiryDate = _expiry is { } d ? DateOnly.FromDateTime(d) : null;
+        // A container implies its location; otherwise use the chosen location directly.
+        _item.ContainerId = _containerId;
+        _item.LocationId = _containerId is null ? _locationId : null;
+        await Inventory.SaveAsync(_item);
+        Snackbar.Add("Saved.", Severity.Success);
+        Nav.NavigateTo("inventory");
+    }
+
+    private async Task Delete()
+    {
+        var ok = await Dialogs.ShowMessageBoxAsync("Delete item", $"Delete \"{_item.Name}\"?", yesText: "Delete", cancelText: "Cancel");
+        if (ok == true)
+        {
+            await Inventory.DeleteAsync(_item.Id);
+            Snackbar.Add("Deleted.", Severity.Info);
+            Nav.NavigateTo("inventory");
+        }
+    }
+
+    private async Task CheckOut()
+    {
+        var dialog = await Dialogs.ShowAsync<CheckoutDialog>("Check out",
+            new DialogParameters { ["ItemName"] = _item.Name });
+        var result = await dialog.Result;
+        if (result is { Canceled: false, Data: CheckoutDialog.CheckoutData data })
+        {
+            await Checkouts.CheckOutAsync(_item.Id, data.By, data.Where, data.Due, null);
+            await Reload();
+        }
+    }
+
+    private async Task CheckIn()
+    {
+        await Checkouts.CheckInAsync(_item.Id);
+        await Reload();
+    }
+
+    private async Task Reload()
+    {
+        _item = await Inventory.GetAsync(_item.Id) ?? _item;
+        _openCheckout = _item.IsCheckedOut ? await Checkouts.GetOpenForItemAsync(_item.Id) : null;
+        StateHasChanged();
+    }
+
+    private async Task Enrich()
+    {
+        _enriching = true;
+        try
+        {
+            var kindName = _kinds.FirstOrDefault(k => k.Id == _item.ItemKindId)?.Name;
+            var suggestion = await Ai.EnrichAsync(_item.Name, kindName, _item.Attributes);
+            if (suggestion is null)
+            {
+                Snackbar.Add("No suggestions returned.", Severity.Warning);
+                return;
+            }
+            if (string.IsNullOrWhiteSpace(_item.Description)) _item.Description = suggestion.Description;
+            foreach (var kv in suggestion.Attributes)
+                _item.Attributes.TryAdd(kv.Key, kv.Value);
+            Snackbar.Add("Enriched.", Severity.Success);
+        }
+        finally { _enriching = false; }
+    }
+}

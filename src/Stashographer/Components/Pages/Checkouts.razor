@@ -1,0 +1,64 @@
+@page "/checkouts"
+@inject CheckoutService CheckoutSvc
+@inject NavigationManager Nav
+
+<PageTitle>Checkouts · Stashographer</PageTitle>
+
+<MudText Typo="Typo.h4" Class="mb-4">Checked out</MudText>
+
+@if (_open is null)
+{
+    <MudProgressCircular Indeterminate="true" />
+}
+else if (_open.Count == 0)
+{
+    <MudAlert Severity="Severity.Success">Nothing is currently checked out.</MudAlert>
+}
+else
+{
+    <MudTable Items="_open" Hover="true" Breakpoint="Breakpoint.Sm" T="CheckoutRecord"
+              OnRowClick="@(args => Nav.NavigateTo($"items/{args.Item!.ItemId}"))">
+        <HeaderContent>
+            <MudTh>Item</MudTh>
+            <MudTh>By</MudTh>
+            <MudTh>Whereabouts</MudTh>
+            <MudTh>Since</MudTh>
+            <MudTh>Due</MudTh>
+            <MudTh></MudTh>
+        </HeaderContent>
+        <RowTemplate>
+            <MudTd DataLabel="Item">@context.ItemName</MudTd>
+            <MudTd DataLabel="By">@context.CheckedOutBy</MudTd>
+            <MudTd DataLabel="Whereabouts">@context.WhereaboutsNote</MudTd>
+            <MudTd DataLabel="Since">@context.CheckedOutAt.LocalDateTime.ToString("d MMM")</MudTd>
+            <MudTd DataLabel="Due">
+                @if (context.DueDate is { } due)
+                {
+                    <MudChip T="string" Size="Size.Small" Color="@(due < DateOnly.FromDateTime(DateTime.Today) ? Color.Error : Color.Default)">
+                        @due.ToString("d MMM")
+                    </MudChip>
+                }
+            </MudTd>
+            <MudTd>
+                <span @onclick:stopPropagation="true">
+                    <MudButton Size="Size.Small" Variant="Variant.Outlined" Color="Color.Primary"
+                               OnClick="@(() => CheckIn(context.ItemId))">Check in</MudButton>
+                </span>
+            </MudTd>
+        </RowTemplate>
+    </MudTable>
+}
+
+@code {
+    private List<CheckoutRecord>? _open;
+
+    protected override async Task OnInitializedAsync() => await Reload();
+
+    private async Task Reload() => _open = await CheckoutSvc.GetOpenAsync();
+
+    private async Task CheckIn(int itemId)
+    {
+        await CheckoutSvc.CheckInAsync(itemId);
+        await Reload();
+    }
+}
