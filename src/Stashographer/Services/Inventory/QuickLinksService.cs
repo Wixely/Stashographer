@@ -7,7 +7,7 @@ namespace Stashographer.Services.Inventory;
 /// <summary>CRUD and ordering for the home-screen quick links.</summary>
 public class QuickLinksService(IDbConnectionFactory db)
 {
-    private const string Columns = "Id, Label, Icon, Target, IncludeKindIds, ExcludeKindIds, SortOrder";
+    private const string Columns = "Id, Label, Icon, Target, IncludeKindIds, ExcludeKindIds, ViewMode, SortOrder";
 
     public async Task<List<QuickLink>> GetAllAsync(CancellationToken ct = default)
     {
@@ -32,8 +32,8 @@ public class QuickLinksService(IDbConnectionFactory db)
             if (link.SortOrder == 0)
                 link.SortOrder = (await conn.ExecuteScalarAsync<int?>("SELECT MAX(SortOrder) FROM QuickLinks") ?? 0) + 1;
             link.Id = await conn.ExecuteScalarAsync<int>("""
-                INSERT INTO QuickLinks (Label, Icon, Target, IncludeKindIds, ExcludeKindIds, SortOrder)
-                VALUES (@Label, @Icon, @Target, @IncludeKindIds, @ExcludeKindIds, @SortOrder);
+                INSERT INTO QuickLinks (Label, Icon, Target, IncludeKindIds, ExcludeKindIds, ViewMode, SortOrder)
+                VALUES (@Label, @Icon, @Target, @IncludeKindIds, @ExcludeKindIds, @ViewMode, @SortOrder);
                 SELECT last_insert_rowid();
                 """, link);
         }
@@ -41,7 +41,8 @@ public class QuickLinksService(IDbConnectionFactory db)
         {
             await conn.ExecuteAsync("""
                 UPDATE QuickLinks SET Label=@Label, Icon=@Icon, Target=@Target,
-                    IncludeKindIds=@IncludeKindIds, ExcludeKindIds=@ExcludeKindIds, SortOrder=@SortOrder
+                    IncludeKindIds=@IncludeKindIds, ExcludeKindIds=@ExcludeKindIds,
+                    ViewMode=@ViewMode, SortOrder=@SortOrder
                 WHERE Id=@Id
                 """, link);
         }

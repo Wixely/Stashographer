@@ -11,10 +11,21 @@
 </div>
 
 <MudPaper Class="pa-3 mb-3" Outlined="true">
-    <MudTextField @bind-Value="_search" Placeholder="Search name, code, description" Immediate="true"
-                  Adornment="Adornment.Start" AdornmentIcon="@Icons.Material.Filled.Search"
-                  Variant="Variant.Outlined" Margin="Margin.Dense" DebounceInterval="300"
-                  OnDebounceIntervalElapsed="ReloadAsync" Class="mb-2" />
+    <div class="d-flex gap-2 align-center mb-2">
+        <MudTextField @bind-Value="_search" Placeholder="Search name, code, description" Immediate="true"
+                      Adornment="Adornment.Start" AdornmentIcon="@Icons.Material.Filled.Search"
+                      Variant="Variant.Outlined" Margin="Margin.Dense" DebounceInterval="300"
+                      OnDebounceIntervalElapsed="ReloadAsync" Class="flex-grow-1" />
+        <MudToggleGroup T="InventoryView" Value="CurrentView" ValueChanged="SetView"
+                        Outlined="true" Size="Size.Small" Color="Color.Primary">
+            <MudToggleItem T="InventoryView" Value="InventoryView.List">
+                <MudTooltip Text="List — dense table"><MudIcon Icon="@Icons.Material.Filled.ViewList" Size="Size.Small" /></MudTooltip>
+            </MudToggleItem>
+            <MudToggleItem T="InventoryView" Value="InventoryView.Gallery">
+                <MudTooltip Text="Gallery — cover grid"><MudIcon Icon="@Icons.Material.Filled.GridView" Size="Size.Small" /></MudTooltip>
+            </MudToggleItem>
+        </MudToggleGroup>
+    </div>
 
     <div class="d-flex align-center flex-wrap gap-2">
         <MudText Typo="Typo.body2" Class="mr-1">Kinds:</MudText>
@@ -46,6 +57,39 @@
 else if (_items.Count == 0)
 {
     <MudAlert Severity="Severity.Info">No items match. Try scanning something in.</MudAlert>
+}
+else if (CurrentView == InventoryView.Gallery)
+{
+    <MudGrid Spacing="2">
+        @foreach (var item in _items)
+        {
+            <MudItem xs="6" sm="4" md="3" lg="2">
+                <div class="cover-card" @onclick="@(() => Nav.NavigateTo($"items/{item.Id}"))">
+                    <div class="cover-media">
+                        @{ var cover = ImageUrls.For(item.ImageId, item.ThumbnailUrl, 480); }
+                        @if (cover is not null)
+                        {
+                            <img src="@cover" alt="@item.Name" loading="lazy" />
+                        }
+                        else
+                        {
+                            <span class="cover-initial">@Initial(item.Name)</span>
+                        }
+                    </div>
+                    <div class="cover-body">
+                        <MudText Typo="Typo.subtitle2" Class="cover-title" title="@item.Name">@item.Name</MudText>
+                        <div class="d-flex align-center gap-1 flex-wrap">
+                            <MudChip T="string" Size="Size.Small">@($"{item.Quantity:0.##} {item.Unit}".Trim())</MudChip>
+                            @if (item.IsCheckedOut)
+                            {
+                                <MudChip T="string" Size="Size.Small" Color="Color.Secondary">Out</MudChip>
+                            }
+                        </div>
+                    </div>
+                </div>
+            </MudItem>
+        }
+    </MudGrid>
 }
 else
 {
@@ -94,6 +138,22 @@ else
 
     [SupplyParameterFromQuery(Name = "include")] public string? IncludeParam { get; set; }
     [SupplyParameterFromQuery(Name = "exclude")] public string? ExcludeParam { get; set; }
+    [SupplyParameterFromQuery(Name = "view")] public string? ViewParam { get; set; }
+
+    // The URL is the single source of truth for the view, so quick links can deep-link it
+    // and back/refresh/share all behave.
+    private InventoryView CurrentView =>
+        string.Equals(ViewParam, "gallery", StringComparison.OrdinalIgnoreCase)
+            ? InventoryView.Gallery
+            : InventoryView.List;
+
+    private void SetView(InventoryView view) =>
+        Nav.NavigateTo(
+            Nav.GetUriWithQueryParameter("view", view == InventoryView.Gallery ? "gallery" : null),
+            replace: true);
+
+    private static string Initial(string name) =>
+        string.IsNullOrWhiteSpace(name) ? "?" : char.ToUpperInvariant(name.Trim()[0]).ToString();
 
     private List<Item>? _items;
     private List<ItemKind> _kinds = new();

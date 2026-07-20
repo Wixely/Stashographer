@@ -24,6 +24,13 @@
 
         @if (_link.Target == QuickLinkTarget.Inventory)
         {
+            <MudText Typo="Typo.body2" Class="mb-1">Opens as</MudText>
+            <MudToggleGroup T="InventoryView" @bind-Value="_link.ViewMode" Outlined="true"
+                            Size="Size.Small" Color="Color.Primary" Class="mb-3">
+                <MudToggleItem T="InventoryView" Value="InventoryView.List" Text="List" />
+                <MudToggleItem T="InventoryView" Value="InventoryView.Gallery" Text="Gallery" />
+            </MudToggleGroup>
+
             <MudText Typo="Typo.body2" Class="mb-1">Filters (optional)</MudText>
             <MudSelect T="int" MultiSelection="true" SelectedValues="_include" SelectedValuesChanged="v => _include = v"
                        Label="Include kinds" Variant="Variant.Outlined" Class="mb-2"
@@ -70,6 +77,7 @@
             Target = Link.Target,
             IncludeKindIds = new List<int>(Link.IncludeKindIds),
             ExcludeKindIds = new List<int>(Link.ExcludeKindIds),
+            ViewMode = Link.ViewMode,
             SortOrder = Link.SortOrder
         };
         _include = new HashSet<int>(_link.IncludeKindIds);

@@ -201,7 +201,8 @@
             parts.Add(KindNames(link.IncludeKindIds));
         if (link.ExcludeKindIds.Count > 0)
             parts.Add("NOT " + KindNames(link.ExcludeKindIds));
-        return parts.Count > 0 ? $"Inventory · {string.Join(", ", parts)}" : "Inventory (all)";
+        var summary = parts.Count > 0 ? $"Inventory · {string.Join(", ", parts)}" : "Inventory (all)";
+        return link.ViewMode == InventoryView.Gallery ? $"{summary} · Gallery" : summary;
     }
 
     private string KindNames(List<int> ids) =>

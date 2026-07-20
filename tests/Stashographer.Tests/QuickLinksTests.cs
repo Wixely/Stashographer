@@ -24,6 +24,17 @@ public class QuickLinksTests
                 IncludeKindIds = new() { 3 },
                 ExcludeKindIds = new() { 1, 2 }
             }.ToUrl());
+
+        // Gallery view rides along as a query param.
+        Assert.Equal("inventory?include=2&view=gallery",
+            new QuickLink
+            {
+                Target = QuickLinkTarget.Inventory,
+                IncludeKindIds = new() { 2 },
+                ViewMode = InventoryView.Gallery
+            }.ToUrl());
+        Assert.Equal("inventory?view=gallery",
+            new QuickLink { Target = QuickLinkTarget.Inventory, ViewMode = InventoryView.Gallery }.ToUrl());
     }
 
     [Fact]
@@ -41,6 +52,26 @@ public class QuickLinksTests
         Assert.Equal(new[] { 1, 2 }, items.ExcludeKindIds);
         // "Groceries" includes groceries (1).
         Assert.Equal(new[] { 1 }, links.Single(l => l.Label == "Groceries").IncludeKindIds);
+        // "Books" opens in Gallery (migration 0005); others default to List.
+        Assert.Equal(InventoryView.Gallery, links.Single(l => l.Label == "Books").ViewMode);
+        Assert.Equal(InventoryView.List, items.ViewMode);
+    }
+
+    [Fact]
+    public async Task ViewMode_roundtrips_through_save()
+    {
+        await using var db = await TestDb.CreateAsync();
+        var svc = new QuickLinksService(db.Factory);
+
+        var created = await svc.SaveAsync(new QuickLink
+        {
+            Label = "Vinyl", Target = QuickLinkTarget.Inventory,
+            IncludeKindIds = new() { 5 }, ViewMode = InventoryView.Gallery
+        });
+
+        var loaded = (await svc.GetAllAsync()).Single(l => l.Id == created.Id);
+        Assert.Equal(InventoryView.Gallery, loaded.ViewMode);
+        Assert.Equal("inventory?include=5&view=gallery", loaded.ToUrl());
     }
 
     [Fact]
