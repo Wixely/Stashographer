@@ -13,6 +13,9 @@ public class Location
 
     public string? Description { get; set; }
 
+    /// <summary>Primary stored image, served at <c>/img/{id}</c>.</summary>
+    public int? ImageId { get; set; }
+
     /// <summary>Populated by the data layer when locations are loaded with their containers.</summary>
     public List<Container> Containers { get; set; } = new();
 }

@@ -74,10 +74,10 @@ public class SampleDataSeeder(
         // Books (kind 2).
         await inventory.SaveAsync(new Item
         {
-            Name = "Structure and Interpretation of Computer Programs", Code = "9780262033848", ItemKindId = 2,
+            Name = "Introduction to Algorithms", Code = "9780262033848", ItemKindId = 2,
             Quantity = 1, LocationId = 5,
             ThumbnailUrl = "https://covers.openlibrary.org/b/isbn/9780262033848-M.jpg",
-            Attributes = new() { ["Author"] = "Abelson, Sussman", ["Publisher"] = "The MIT Press", ["Pages"] = "657" }
+            Attributes = new() { ["Author"] = "Cormen, Leiserson, Rivest, Stein", ["Publisher"] = "The MIT Press", ["Pages"] = "1292" }
         }, ct);
         await inventory.SaveAsync(new Item
         {

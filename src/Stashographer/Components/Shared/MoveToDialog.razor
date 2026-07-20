@@ -1,0 +1,74 @@
+@* Two-step destination picker: room → (loose in room | a container in it). The touch and
+   keyboard path for moving things; drag & drop covers pointer users. *@
+
+<MudDialog>
+    <DialogContent>
+        @if (_room is null)
+        {
+            <MudText Typo="Typo.subtitle2" Class="mb-1">Move @ThingLabel to which room?</MudText>
+            <MudList T="Location" Dense="true">
+                @foreach (var room in Locations)
+                {
+                    <MudListItem T="Location" Icon="@Icons.Material.Filled.Room" OnClick="@(() => PickRoom(room))">
+                        @room.Name
+                        <MudChip T="string" Size="Size.Small" Class="ml-1">@room.Containers.Count containers</MudChip>
+                    </MudListItem>
+                }
+            </MudList>
+        }
+        else
+        {
+            <div class="d-flex align-center gap-1 mb-2">
+                <MudIconButton Icon="@Icons.Material.Filled.ArrowBack" Size="Size.Small" OnClick="@(() => _room = null)" />
+                <MudText Typo="Typo.subtitle2">Where in @_room.Name?</MudText>
+            </div>
+            <MudList T="string" Dense="true">
+                <MudListItem T="string" Icon="@Icons.Material.Filled.Room"
+                             OnClick="@(() => Choose(null))">
+                    Loose in @_room.Name
+                </MudListItem>
+                @foreach (var c in _room.Containers)
+                {
+                    <MudListItem T="string" Icon="@Icons.Material.Filled.Inbox"
+                                 Disabled="@(DisabledContainerIds.Contains(c.Id))"
+                                 OnClick="@(() => Choose(c.Id))">
+                        @c.Name <MudText Typo="Typo.caption" Class="mud-text-secondary d-inline ml-1">@c.ContainerType</MudText>
+                    </MudListItem>
+                }
+            </MudList>
+        }
+    </DialogContent>
+    <DialogActions>
+        <MudButton OnClick="@(() => Dialog.Cancel())">Cancel</MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    /// <summary>The chosen destination: a room (ContainerId null = loose) or a container in it.</summary>
+    public record Destination(int LocationId, int? ContainerId);
+
+    [CascadingParameter] private IMudDialogInstance Dialog { get; set; } = default!;
+    [Parameter] public List<Location> Locations { get; set; } = new();
+    [Parameter] public string ThingLabel { get; set; } = "items";
+
+    /// <summary>Containers that are not valid targets (e.g. the container being moved itself).</summary>
+    [Parameter] public HashSet<int> DisabledContainerIds { get; set; } = new();
+
+    /// <summary>When true, only rooms can be picked (moving containers, not items).</summary>
+    [Parameter] public bool RoomsOnly { get; set; }
+
+    private Location? _room;
+
+    private void PickRoom(Location room)
+    {
+        if (RoomsOnly)
+        {
+            Dialog.Close(DialogResult.Ok(new Destination(room.Id, null)));
+            return;
+        }
+        _room = room;
+    }
+
+    private void Choose(int? containerId) =>
+        Dialog.Close(DialogResult.Ok(new Destination(_room!.Id, containerId)));
+}

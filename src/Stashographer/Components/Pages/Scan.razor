@@ -1,6 +1,7 @@
 @page "/scan"
 @inject ILookupRouter Lookup
 @inject IAiEnrichmentService Ai
+@inject PhotoIntakeService Intake
 @inject InventoryService Inventory
 @inject ItemDraftState Draft
 @inject NavigationManager Nav
@@ -17,11 +18,21 @@
         @if (Ai.IsEnabled)
         {
             <MudPaper Class="pa-4 mt-3" Outlined="true">
-                <MudText Typo="Typo.subtitle2" Class="mb-2">No barcode? Identify from a photo</MudText>
-                <MudFileUpload T="IBrowserFile" Accept="image/*" FilesChanged="OnPhoto">
+                <div class="d-flex justify-space-between align-center mb-2">
+                    <MudText Typo="Typo.subtitle2">Add from a photo</MudText>
+                    <MudSwitch T="bool" @bind-Value="_multiMode" Label="Multiple items" Color="Color.Primary" Size="Size.Small" />
+                </div>
+                <MudText Typo="Typo.caption" Class="mud-text-secondary d-block mb-2">
+                    @(_multiMode
+                        ? "One photo of several things — each is detected, cropped and added."
+                        : "Snap one item — it's matched against your inventory and counted up, or created.")
+                </MudText>
+                <MudFileUpload T="IBrowserFile" Accept="image/*" FilesChanged="OnIntakePhoto">
                     <ActivatorContent>
-                        <MudButton Variant="Variant.Outlined" StartIcon="@Icons.Material.Filled.PhotoCamera"
-                                   Disabled="_busy">Choose / take a photo</MudButton>
+                        <MudButton Variant="Variant.Filled" Color="Color.Primary"
+                                   StartIcon="@Icons.Material.Filled.PhotoCamera" Disabled="_busy">
+                            Take / choose photo
+                        </MudButton>
                     </ActivatorContent>
                 </MudFileUpload>
             </MudPaper>
@@ -31,7 +42,81 @@
     <MudItem xs="12" md="6">
         @if (_busy)
         {
-            <div class="d-flex align-center gap-2"><MudProgressCircular Indeterminate="true" Size="Size.Small" /> Looking up…</div>
+            <div class="d-flex align-center gap-2">
+                <MudProgressCircular Indeterminate="true" Size="Size.Small" /> @_busyText
+            </div>
+        }
+        else if (_multiResults is not null)
+        {
+            <IntakeReviewBoard Results="_multiResults" OnDone="ClearIntake" />
+        }
+        else if (_pendingIntake is not null)
+        {
+            @* Ambiguous match → candidate picker · no match → pre-filled create card *@
+            <MudPaper Class="pa-4" Outlined="true">
+                <div class="d-flex gap-3 mb-2">
+                    <MudImage Src="@ImageUrls.For(_pendingIntake.ImageId, null, 240)" Width="84" Height="84"
+                              ObjectFit="ObjectFit.Cover" Class="rounded" />
+                    <div>
+                        <MudText Typo="Typo.h6">@(_pendingIntake.Identification?.Name ?? "Unidentified")</MudText>
+                        @if (!string.IsNullOrWhiteSpace(_pendingIntake.Identification?.Description))
+                        {
+                            <MudText Typo="Typo.body2" Class="mud-text-secondary">@_pendingIntake.Identification!.Description</MudText>
+                        }
+                    </div>
+                </div>
+
+                @if (_pendingIntake.Proposal.Action == IntakeAction.ChooseCandidate)
+                {
+                    <MudText Typo="Typo.subtitle2" Class="mb-1">Is it one of these?</MudText>
+                    <MudList T="Item" Dense="true">
+                        @foreach (var cand in _pendingIntake.Candidates)
+                        {
+                            <MudListItem T="Item" OnClick="@(() => ApplyIncrementAsync(cand))">
+                                <div class="d-flex align-center gap-2">
+                                    @{ var candImg = ImageUrls.For(cand.ImageId, cand.ThumbnailUrl, 80); }
+                                    @if (candImg is not null)
+                                    {
+                                        <MudAvatar Size="Size.Small"><MudImage Src="@candImg" /></MudAvatar>
+                                    }
+                                    <span>@cand.Name</span>
+                                    <MudChip T="string" Size="Size.Small">@cand.Quantity.ToString("0.##") @cand.Unit</MudChip>
+                                    @if (cand.Id == _pendingIntake.Proposal.MatchedItemId)
+                                    {
+                                        <MudChip T="string" Size="Size.Small" Color="Color.Info">likely</MudChip>
+                                    }
+                                </div>
+                            </MudListItem>
+                        }
+                    </MudList>
+                    <div class="d-flex gap-2 mt-2">
+                        <MudButton Variant="Variant.Outlined" StartIcon="@Icons.Material.Filled.Add"
+                                   OnClick="ApplyCreateAsync">None of these — create new</MudButton>
+                    </div>
+                }
+                else
+                {
+                    @foreach (var kv in _pendingIntake.Proposal.Draft.Attributes)
+                    {
+                        <MudText Typo="Typo.body2"><b>@kv.Key:</b> @kv.Value</MudText>
+                    }
+                    <div class="d-flex gap-2 mt-3">
+                        <MudButton Color="Color.Primary" Variant="Variant.Filled" StartIcon="@Icons.Material.Filled.Add"
+                                   OnClick="ApplyCreateAsync">Add to inventory</MudButton>
+                        <MudButton Variant="Variant.Outlined" StartIcon="@Icons.Material.Filled.Edit"
+                                   OnClick="EditIntakeDraft">Edit first</MudButton>
+                    </div>
+                }
+            </MudPaper>
+        }
+        else if (_lastApplied is not null)
+        {
+            <MudAlert Severity="Severity.Success" Class="mb-2">
+                @(_lastApplied.Action == IntakeAction.IncrementExisting
+                    ? $"+{_lastApplied.By:0.##} {_lastApplied.ItemName}"
+                    : $"Added \"{_lastApplied.ItemName}\"")
+                — <MudLink Href="@($"items/{_lastApplied.ItemId}")">view</MudLink>
+            </MudAlert>
         }
         else if (_result is not null)
         {
@@ -68,7 +153,9 @@
         }
         else
         {
-            <MudAlert Severity="Severity.Info">Scan a barcode or ISBN, or enter one manually, to look up its details.</MudAlert>
+            <MudAlert Severity="Severity.Info">
+                Scan a barcode, enter one manually@(Ai.IsEnabled ? ", or snap a photo" : "") to add items.
+            </MudAlert>
         }
     </MudItem>
 </MudGrid>
@@ -76,37 +163,23 @@
 @code {
     private LookupResult? _result;
     private bool _busy;
+    private string _busyText = "Working…";
+    private bool _multiMode;
+    private IntakeResult? _pendingIntake;
+    private List<IntakeResult>? _multiResults;
+    private IntakeApplied? _lastApplied;
+
+    // --- Barcode / ISBN lookup path ------------------------------------------------
 
     private async Task OnCode(string code)
     {
+        ClearIntake();
         _busy = true;
+        _busyText = "Looking up…";
         _result = null;
         StateHasChanged();
         _result = await Lookup.LookupAsync(code);
         _busy = false;
-    }
-
-    private async Task OnPhoto(IBrowserFile? file)
-    {
-        if (file is null) return;
-        _busy = true;
-        StateHasChanged();
-        try
-        {
-            using var ms = new MemoryStream();
-            await file.OpenReadStream(8 * 1024 * 1024).CopyToAsync(ms);
-            var suggestion = await Ai.IdentifyFromPhotoAsync(ms.ToArray(), file.ContentType);
-            if (suggestion is null)
-            {
-                Snackbar.Add("Couldn't identify the photo.", Severity.Warning);
-            }
-            else
-            {
-                Draft.Set(FromSuggestion(suggestion));
-                Nav.NavigateTo("items/new");
-            }
-        }
-        finally { _busy = false; }
     }
 
     private void EditDraft()
@@ -130,15 +203,6 @@
         ItemKindId = KindId(r.SuggestedKind)
     };
 
-    private static Item FromSuggestion(AiSuggestion s) => new()
-    {
-        Name = s.Name ?? string.Empty,
-        Description = s.Description,
-        Attributes = new(s.Attributes),
-        ItemKindId = KindId(s.SuggestedKind)
-    };
-
-    // Maps a suggested kind name to the seeded ItemKind ids.
     private static int KindId(string? kind) => kind switch
     {
         "Grocery" => 1,
@@ -149,4 +213,92 @@
         "Clothing" => 6,
         _ => 7
     };
+
+    // --- Photo intake path -----------------------------------------------------------
+
+    private async Task OnIntakePhoto(IBrowserFile? file)
+    {
+        if (file is null) return;
+        ClearIntake();
+        _result = null;
+        _busy = true;
+        _busyText = _multiMode ? "Detecting items…" : "Identifying…";
+        StateHasChanged();
+        try
+        {
+            await using var stream = file.OpenReadStream(20 * 1024 * 1024);
+            if (_multiMode)
+            {
+                _multiResults = await Intake.ProcessMultiAsync(stream, file.ContentType);
+                if (_multiResults.Count == 0)
+                    Snackbar.Add("No items detected in the photo.", Severity.Warning);
+            }
+            else
+            {
+                var intake = await Intake.ProcessSingleAsync(stream, file.ContentType);
+                if (intake.Proposal.Action == IntakeAction.IncrementExisting)
+                {
+                    // Fully automatic: apply immediately, offer Undo.
+                    var applied = await Intake.ApplyAsync(intake);
+                    _lastApplied = applied;
+                    Snackbar.Add($"+{applied.By:0.##} {applied.ItemName}", Severity.Success, config =>
+                    {
+                        config.Action = "Undo";
+                        config.ActionColor = Color.Inherit;
+                        config.VisibleStateDuration = 8000;
+                        config.OnClick = async _ =>
+                        {
+                            await Intake.UndoAsync(applied);
+                            _lastApplied = null;
+                            await InvokeAsync(StateHasChanged);
+                        };
+                    });
+                }
+                else
+                {
+                    _pendingIntake = intake; // picker or create card
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Photo intake failed: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private async Task ApplyIncrementAsync(Item candidate)
+    {
+        if (_pendingIntake is null) return;
+        var applied = await Intake.ApplyAsync(_pendingIntake, IntakeAction.IncrementExisting, candidate.Id);
+        _lastApplied = applied;
+        _pendingIntake = null;
+        Snackbar.Add($"+{applied.By:0.##} {applied.ItemName}", Severity.Success);
+    }
+
+    private async Task ApplyCreateAsync()
+    {
+        if (_pendingIntake is null) return;
+        var applied = await Intake.ApplyAsync(_pendingIntake, IntakeAction.CreateNew);
+        _lastApplied = applied;
+        _pendingIntake = null;
+        Snackbar.Add($"Added \"{applied.ItemName}\".", Severity.Success);
+    }
+
+    private void EditIntakeDraft()
+    {
+        if (_pendingIntake is null) return;
+        Draft.Set(_pendingIntake.Proposal.Draft);
+        Nav.NavigateTo("items/new");
+    }
+
+    private void ClearIntake()
+    {
+        _pendingIntake = null;
+        _multiResults = null;
+        _lastApplied = null;
+    }
 }

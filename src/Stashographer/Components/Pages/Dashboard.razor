@@ -1,0 +1,116 @@
+@page "/dashboard"
+@inject InventoryService Inventory
+@inject NavigationManager Nav
+
+<PageTitle>Dashboard · Stashographer</PageTitle>
+
+<div class="d-flex justify-space-between align-center mb-4">
+    <MudText Typo="Typo.h4">Dashboard</MudText>
+    <MudButton Color="Color.Primary" Variant="Variant.Filled" StartIcon="@Icons.Material.Filled.Add"
+               Href="scan">Scan &amp; add</MudButton>
+</div>
+
+@if (_summary is null)
+{
+    <MudProgressCircular Indeterminate="true" />
+}
+else
+{
+    <MudGrid>
+        <MudItem xs="6" md="3">
+            <MudPaper Class="pa-4" Outlined="true">
+                <MudText Typo="Typo.overline">Items</MudText>
+                <MudText Typo="Typo.h4">@_summary.TotalItems</MudText>
+            </MudPaper>
+        </MudItem>
+        <MudItem xs="6" md="3">
+            <MudPaper Class="pa-4" Outlined="true">
+                <MudText Typo="Typo.overline">Total quantity</MudText>
+                <MudText Typo="Typo.h4">@_summary.TotalQuantity.ToString("0.##")</MudText>
+            </MudPaper>
+        </MudItem>
+        <MudItem xs="6" md="3">
+            <MudPaper Class="pa-4" Outlined="true">
+                <MudText Typo="Typo.overline">Low stock</MudText>
+                <MudText Typo="Typo.h4" Color="@(_summary.LowStock.Count > 0 ? Color.Warning : Color.Default)">@_summary.LowStock.Count</MudText>
+            </MudPaper>
+        </MudItem>
+        <MudItem xs="6" md="3">
+            <MudPaper Class="pa-4" Outlined="true">
+                <MudText Typo="Typo.overline">Checked out</MudText>
+                <MudText Typo="Typo.h4">@_summary.CheckedOut.Count</MudText>
+            </MudPaper>
+        </MudItem>
+
+        <MudItem xs="12" md="4">
+            <MudPaper Class="pa-4" Outlined="true">
+                <MudText Typo="Typo.h6" Class="mb-2">Expiring soon</MudText>
+                @if (_summary.ExpiringSoon.Count == 0)
+                {
+                    <MudText Typo="Typo.body2" Class="mud-text-secondary">Nothing expiring in the next 7 days.</MudText>
+                }
+                else
+                {
+                    <MudList T="Item" Dense="true">
+                        @foreach (var i in _summary.ExpiringSoon)
+                        {
+                            <MudListItem T="Item" Icon="@Icons.Material.Filled.Schedule" OnClick="@(() => Open(i.Id))">
+                                @i.Name <MudChip T="string" Size="Size.Small" Color="Color.Warning">@i.ExpiryDate?.ToString("d MMM")</MudChip>
+                            </MudListItem>
+                        }
+                    </MudList>
+                }
+            </MudPaper>
+        </MudItem>
+
+        <MudItem xs="12" md="4">
+            <MudPaper Class="pa-4" Outlined="true">
+                <MudText Typo="Typo.h6" Class="mb-2">Low stock</MudText>
+                @if (_summary.LowStock.Count == 0)
+                {
+                    <MudText Typo="Typo.body2" Class="mud-text-secondary">Everything is well stocked.</MudText>
+                }
+                else
+                {
+                    <MudList T="Item" Dense="true">
+                        @foreach (var i in _summary.LowStock)
+                        {
+                            <MudListItem T="Item" Icon="@Icons.Material.Filled.Warning" OnClick="@(() => Open(i.Id))">
+                                @i.Name <MudChip T="string" Size="Size.Small">@i.Quantity.ToString("0.##") @i.Unit</MudChip>
+                            </MudListItem>
+                        }
+                    </MudList>
+                }
+            </MudPaper>
+        </MudItem>
+
+        <MudItem xs="12" md="4">
+            <MudPaper Class="pa-4" Outlined="true">
+                <MudText Typo="Typo.h6" Class="mb-2">Currently out</MudText>
+                @if (_summary.CheckedOut.Count == 0)
+                {
+                    <MudText Typo="Typo.body2" Class="mud-text-secondary">Nothing is checked out.</MudText>
+                }
+                else
+                {
+                    <MudList T="Item" Dense="true">
+                        @foreach (var i in _summary.CheckedOut)
+                        {
+                            <MudListItem T="Item" Icon="@Icons.Material.Filled.AssignmentReturn" OnClick="@(() => Open(i.Id))">
+                                @i.Name
+                            </MudListItem>
+                        }
+                    </MudList>
+                }
+            </MudPaper>
+        </MudItem>
+    </MudGrid>
+}
+
+@code {
+    private DashboardSummary? _summary;
+
+    protected override async Task OnInitializedAsync() => _summary = await Inventory.GetDashboardAsync();
+
+    private void Open(int id) => Nav.NavigateTo($"items/{id}");
+}

@@ -1,0 +1,43 @@
+@* Edit a container's name, type and photo. *@
+
+<MudDialog>
+    <DialogContent>
+        <div class="d-flex justify-center mb-3">
+            <ImagePicker @bind-ImageId="_container.ImageId" Label="Add container photo" Width="200px" Height="180px" />
+        </div>
+        <MudTextField @bind-Value="_container.Name" Label="Name" Variant="Variant.Outlined"
+                      Required="true" Class="mb-3" />
+        <MudSelect @bind-Value="_container.ContainerType" Label="Type" Variant="Variant.Outlined">
+            @foreach (var t in Enum.GetValues<ContainerType>())
+            {
+                <MudSelectItem Value="@t">@t</MudSelectItem>
+            }
+        </MudSelect>
+    </DialogContent>
+    <DialogActions>
+        <MudButton OnClick="Cancel">Cancel</MudButton>
+        <MudButton Color="Color.Primary" Variant="Variant.Filled" OnClick="Save"
+                   Disabled="@string.IsNullOrWhiteSpace(_container.Name)">Save</MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private IMudDialogInstance Dialog { get; set; } = default!;
+    [Parameter] public Container Container { get; set; } = new();
+
+    private Container _container = new();
+
+    protected override void OnInitialized() => _container = new Container
+    {
+        Id = Container.Id,
+        Name = Container.Name,
+        ContainerType = Container.ContainerType,
+        QrSlug = Container.QrSlug,
+        Description = Container.Description,
+        LocationId = Container.LocationId,
+        ImageId = Container.ImageId
+    };
+
+    private void Save() => Dialog.Close(DialogResult.Ok(_container));
+    private void Cancel() => Dialog.Cancel();
+}

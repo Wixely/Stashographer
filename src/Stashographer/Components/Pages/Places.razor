@@ -1,0 +1,487 @@
+@page "/places"
+@page "/places/{LocationId:int}"
+@page "/places/{LocationId:int}/c/{ContainerId:int}"
+@inject ContainerService Containers
+@inject InventoryService Inventory
+@inject NavigationManager Nav
+@inject IDialogService Dialogs
+@inject ISnackbar Snackbar
+
+<PageTitle>@(_container?.Name ?? _room?.Name ?? "Places") · Stashographer</PageTitle>
+
+@* places-dragging: while a drag is live, row/card children ignore pointer events so
+   dragenter/leave fire only on the drop targets themselves — kills highlight flicker. *@
+<div class="d-flex gap-4 @(_drag is not null ? "places-dragging" : "")">
+
+    @* ─── Sidebar tree (desktop): every room/container is an always-visible drop target ─── *@
+    <MudHidden Breakpoint="Breakpoint.SmAndDown">
+        <div class="places-sidebar">
+            <MudText Typo="Typo.overline" Class="px-2">Rooms</MudText>
+            @foreach (var room in _locations)
+            {
+                <div class="places-tree-row @(room.Id == _room?.Id && _container is null ? "places-tree-current" : "") @(SidebarHover(room.Id, null) ? "drop-target-active" : "")"
+                     @ondragenter="@(() => SidebarEnter(room.Id, null))"
+                     @ondragleave="@(() => SidebarLeave(room.Id, null))"
+                     @ondragover:preventDefault="true"
+                     @ondrop="@(() => DropOnRoom(room))"
+                     @ondrop:preventDefault="true"
+                     @onclick="@(() => Nav.NavigateTo($"places/{room.Id}"))">
+                    <span @onclick:stopPropagation="true">
+                        <MudIconButton Icon="@(_expanded.Contains(room.Id) ? Icons.Material.Filled.ExpandMore : Icons.Material.Filled.ChevronRight)"
+                                       Size="Size.Small" OnClick="@(() => ToggleExpand(room.Id))" />
+                    </span>
+                    <MudIcon Icon="@Icons.Material.Filled.Room" Size="Size.Small" Class="mr-1" />
+                    <span class="places-tree-label">@room.Name</span>
+                    <span class="places-tree-badge">@RoomBadge(room)</span>
+                </div>
+                @if (_expanded.Contains(room.Id))
+                {
+                    @foreach (var c in room.Containers)
+                    {
+                        <div class="places-tree-row places-tree-child @(c.Id == _container?.Id ? "places-tree-current" : "") @(SidebarHover(room.Id, c.Id) ? "drop-target-active" : "")"
+                             draggable="true"
+                             @ondragstart="@(() => StartContainerDrag(c))"
+                             @ondragend="EndDrag"
+                             @ondragenter="@(() => SidebarEnter(room.Id, c.Id))"
+                             @ondragleave="@(() => SidebarLeave(room.Id, c.Id))"
+                             @ondragover:preventDefault="true"
+                             @ondrop="@(() => DropOnContainer(c))"
+                             @ondrop:preventDefault="true"
+                             @onclick="@(() => Nav.NavigateTo($"places/{room.Id}/c/{c.Id}"))">
+                            <MudIcon Icon="@Icons.Material.Filled.Inbox" Size="Size.Small" Class="mr-1" />
+                            <span class="places-tree-label">@c.Name</span>
+                            <span class="places-tree-badge">@_counts.ItemsByContainer.GetValueOrDefault(c.Id)</span>
+                        </div>
+                    }
+                }
+            }
+        </div>
+    </MudHidden>
+
+    @* ─── Main pane ─────────────────────────────────────────────────────────────── *@
+    <div class="flex-grow-1" style="min-width:0">
+
+        <div class="d-flex justify-space-between align-center mb-3 flex-wrap gap-2">
+            <div class="d-flex align-center gap-1 places-breadcrumb">
+                <span class="places-crumb" @onclick="@(() => Nav.NavigateTo("places"))">
+                    <MudIcon Icon="@Icons.Material.Filled.Home" Size="Size.Small" /> Places
+                </span>
+                @if (_room is not null)
+                {
+                    <MudIcon Icon="@Icons.Material.Filled.ChevronRight" Size="Size.Small" />
+                    <span class="places-crumb @(CrumbHover ? "drop-target-active" : "")"
+                          @ondragenter="@(() => _crumbHover++)"
+                          @ondragleave="@(() => { if (_crumbHover > 0) _crumbHover--; })"
+                          @ondragover:preventDefault="true"
+                          @ondrop="@(() => DropOnRoom(_room))"
+                          @ondrop:preventDefault="true"
+                          @onclick="@(() => Nav.NavigateTo($"places/{_room.Id}"))">@_room.Name</span>
+                }
+                @if (_container is not null)
+                {
+                    <MudIcon Icon="@Icons.Material.Filled.ChevronRight" Size="Size.Small" />
+                    <span class="places-crumb places-crumb-current">@_container.Name</span>
+                }
+            </div>
+
+            <div class="d-flex align-center gap-2">
+                @if (_container is not null)
+                {
+                    <img src="@ContainerService.GenerateQrDataUri(Nav.ToAbsoluteUri($"c/{_container.QrSlug}").ToString(), 4)"
+                         width="64" height="64" alt="QR" title="Printed label opens this container" />
+                    <MudIconButton Icon="@Icons.Material.Filled.Edit" Size="Size.Small"
+                                   OnClick="@(() => EditContainer(_container))" />
+                }
+                else if (_room is not null)
+                {
+                    <MudButton Variant="Variant.Outlined" Size="Size.Small" StartIcon="@Icons.Material.Filled.Add"
+                               OnClick="@(() => EditContainer(null))">Container</MudButton>
+                    <MudIconButton Icon="@Icons.Material.Filled.Edit" Size="Size.Small"
+                                   OnClick="@(() => EditRoom(_room))" />
+                }
+                else
+                {
+                    <MudButton Variant="Variant.Outlined" Size="Size.Small" StartIcon="@Icons.Material.Filled.Add"
+                               OnClick="@(() => EditRoom(null))">Room</MudButton>
+                }
+            </div>
+        </div>
+
+        @if (_loading)
+        {
+            <MudProgressCircular Indeterminate="true" />
+        }
+        else if (_room is null)
+        {
+            @* Root: room cards *@
+            <MudGrid Spacing="2">
+                @foreach (var room in _locations)
+                {
+                    <MudItem xs="6" sm="4" md="3">
+                        <PlaceCard Title="@room.Name"
+                                   Subtitle="@room.Description"
+                                   Chip="@RoomChip(room)"
+                                   ImageUrl="@ImageUrls.For(room.ImageId, null, 360)"
+                                   Icon="@Icons.Material.Filled.Room"
+                                   IsDropTarget="true"
+                                   DropAllowed="@CanDropOnRoom(room.Id)"
+                                   OnDrop="@(() => DropOnRoom(room))"
+                                   OnOpen="@(() => Nav.NavigateTo($"places/{room.Id}"))">
+                            <MenuContent>
+                                <MudMenuItem OnClick="@(() => EditRoom(room))">Edit</MudMenuItem>
+                            </MenuContent>
+                        </PlaceCard>
+                    </MudItem>
+                }
+            </MudGrid>
+        }
+        else if (_container is null)
+        {
+            @* Room view: containers + loose items *@
+            @if (_room.Containers.Count > 0)
+            {
+                <MudText Typo="Typo.overline">Containers</MudText>
+                <MudGrid Spacing="2" Class="mb-3">
+                    @foreach (var c in _room.Containers)
+                    {
+                        <MudItem xs="6" sm="4" md="3">
+                            <PlaceCard Title="@c.Name"
+                                       Subtitle="@c.ContainerType.ToString()"
+                                       Chip="@($"{_counts.ItemsByContainer.GetValueOrDefault(c.Id)} items")"
+                                       ImageUrl="@(ImageUrls.For(c.ImageId, null, 360) ?? ContainerService.GenerateQrDataUri(Nav.ToAbsoluteUri($"c/{c.QrSlug}").ToString(), 4))"
+                                       Selectable="true"
+                                       Selected="@_selectedContainers.Contains(c.Id)"
+                                       SelectedChanged="@(v => ToggleContainerSelection(c.Id, v))"
+                                       Draggable="true"
+                                       OnDragStart="@(() => StartContainerDrag(c))"
+                                       OnDragEnd="EndDrag"
+                                       IsDropTarget="true"
+                                       DropAllowed="@CanDropOnContainer(c.Id)"
+                                       OnDrop="@(() => DropOnContainer(c))"
+                                       OnOpen="@(() => Nav.NavigateTo($"places/{_room.Id}/c/{c.Id}"))">
+                                <MenuContent>
+                                    <MudMenuItem OnClick="@(() => EditContainer(c))">Edit</MudMenuItem>
+                                </MenuContent>
+                            </PlaceCard>
+                        </MudItem>
+                    }
+                </MudGrid>
+            }
+
+            <MudText Typo="Typo.overline">Loose items</MudText>
+            @if (_items.Count == 0)
+            {
+                <MudAlert Severity="Severity.Info" Class="mt-1">
+                    Nothing loose in @_room.Name — drag items here or add a container.
+                </MudAlert>
+            }
+            else
+            {
+                <MudGrid Spacing="2">
+                    @foreach (var item in _items)
+                    {
+                        <MudItem xs="6" sm="4" md="3">
+                            <PlaceCard Title="@item.Name"
+                                       Subtitle="@item.Kind?.Name"
+                                       Chip="@($"{item.Quantity:0.##} {item.Unit}".Trim())"
+                                       ImageUrl="@ImageUrls.For(item.ImageId, item.ThumbnailUrl, 360)"
+                                       Icon="@Icons.Material.Filled.Label"
+                                       Selectable="true"
+                                       Selected="@_selectedItems.Contains(item.Id)"
+                                       SelectedChanged="@(v => ToggleItemSelection(item.Id, v))"
+                                       Draggable="true"
+                                       OnDragStart="@(() => StartItemDrag(item))"
+                                       OnDragEnd="EndDrag"
+                                       OnOpen="@(() => Nav.NavigateTo($"items/{item.Id}"))" />
+                        </MudItem>
+                    }
+                </MudGrid>
+            }
+        }
+        else
+        {
+            @* Container view: its items *@
+            @if (_items.Count == 0)
+            {
+                <MudAlert Severity="Severity.Info">This container is empty.</MudAlert>
+            }
+            else
+            {
+                <MudGrid Spacing="2">
+                    @foreach (var item in _items)
+                    {
+                        <MudItem xs="6" sm="4" md="3">
+                            <PlaceCard Title="@item.Name"
+                                       Subtitle="@item.Kind?.Name"
+                                       Chip="@($"{item.Quantity:0.##} {item.Unit}".Trim())"
+                                       ImageUrl="@ImageUrls.For(item.ImageId, item.ThumbnailUrl, 360)"
+                                       Icon="@Icons.Material.Filled.Label"
+                                       Selectable="true"
+                                       Selected="@_selectedItems.Contains(item.Id)"
+                                       SelectedChanged="@(v => ToggleItemSelection(item.Id, v))"
+                                       Draggable="true"
+                                       OnDragStart="@(() => StartItemDrag(item))"
+                                       OnDragEnd="EndDrag"
+                                       OnOpen="@(() => Nav.NavigateTo($"items/{item.Id}"))" />
+                        </MudItem>
+                    }
+                </MudGrid>
+            }
+        }
+    </div>
+</div>
+
+@* ─── Selection action bar ──────────────────────────────────────────────────── *@
+@if (SelectionCount > 0)
+{
+    <div class="places-action-bar mud-elevation-6">
+        <MudText Typo="Typo.subtitle2">@SelectionCount selected</MudText>
+        <MudButton Color="Color.Primary" Variant="Variant.Filled" Size="Size.Small"
+                   StartIcon="@Icons.Material.Filled.DriveFileMove" OnClick="OpenMoveDialog">Move to…</MudButton>
+        <MudButton Variant="Variant.Text" Size="Size.Small" OnClick="ClearSelection">Clear</MudButton>
+    </div>
+}
+
+@code {
+    [Parameter] public int? LocationId { get; set; }
+    [Parameter] public int? ContainerId { get; set; }
+
+    private List<Location> _locations = new();
+    private PlaceCounts _counts = new(new Dictionary<int, int>(), new Dictionary<int, int>());
+    private Location? _room;
+    private Container? _container;
+    private List<Item> _items = new();
+    private bool _loading = true;
+
+    private readonly HashSet<int> _expanded = new();
+    private readonly HashSet<int> _selectedItems = new();
+    private readonly HashSet<int> _selectedContainers = new();
+
+    // Drag payload: either items (from the current view) or one container.
+    private sealed record DragPayload(List<int> ItemIds, int? ContainerId, int? SourceLocationId, int? SourceContainerId);
+    private DragPayload? _drag;
+    private (int RoomId, int? ContainerId)? _sidebarHover;
+    private int _crumbHover;
+    private bool CrumbHover => _crumbHover > 0 && _drag is { ItemIds.Count: > 0, SourceContainerId: not null };
+
+    private int SelectionCount => _selectedItems.Count + _selectedContainers.Count;
+
+    protected override async Task OnParametersSetAsync()
+    {
+        _loading = true;
+        await LoadAsync();
+        if (_room is not null) _expanded.Add(_room.Id);
+        ClearSelection();
+        _loading = false;
+    }
+
+    private async Task LoadAsync()
+    {
+        _locations = await Containers.GetLocationsAsync();
+        _counts = await Containers.GetPlaceCountsAsync();
+        _room = LocationId is { } loc ? _locations.FirstOrDefault(l => l.Id == loc) : null;
+        _container = _room is not null && ContainerId is { } c
+            ? _room.Containers.FirstOrDefault(x => x.Id == c)
+            : null;
+
+        _items = _container is not null
+            ? await Inventory.QueryAsync(new ItemQuery(ContainerId: _container.Id))
+            : _room is not null
+                ? await Inventory.QueryAsync(new ItemQuery(LocationId: _room.Id, LooseOnly: true))
+                : new List<Item>();
+    }
+
+    // --- Selection --------------------------------------------------------------
+
+    private void ToggleItemSelection(int id, bool selected)
+    {
+        if (selected) _selectedItems.Add(id); else _selectedItems.Remove(id);
+    }
+
+    private void ToggleContainerSelection(int id, bool selected)
+    {
+        if (selected) _selectedContainers.Add(id); else _selectedContainers.Remove(id);
+    }
+
+    private void ClearSelection()
+    {
+        _selectedItems.Clear();
+        _selectedContainers.Clear();
+    }
+
+    private void ToggleExpand(int roomId)
+    {
+        if (!_expanded.Remove(roomId)) _expanded.Add(roomId);
+    }
+
+    // --- Drag & drop ------------------------------------------------------------
+
+    private void StartItemDrag(Item item)
+    {
+        // Dragging a selected card drags the whole selection; otherwise just this card.
+        var ids = _selectedItems.Contains(item.Id) ? _selectedItems.ToList() : new List<int> { item.Id };
+        _drag = new DragPayload(ids, null, _room?.Id, _container?.Id);
+    }
+
+    private void StartContainerDrag(Container c) =>
+        _drag = new DragPayload(new List<int>(), c.Id, c.LocationId, null);
+
+    private void EndDrag()
+    {
+        _drag = null;
+        _sidebarHover = null;
+        _crumbHover = 0;
+        StateHasChanged();
+    }
+
+    private bool CanDropOnContainer(int containerId) =>
+        _drag is { ItemIds.Count: > 0 } d && d.SourceContainerId != containerId;
+
+    private bool CanDropOnRoom(int roomId) => _drag switch
+    {
+        { ItemIds.Count: > 0 } d => d.SourceContainerId is not null || d.SourceLocationId != roomId,
+        { ContainerId: not null } d => d.SourceLocationId != roomId,
+        _ => false
+    };
+
+    private bool SidebarHover(int roomId, int? containerId) =>
+        _sidebarHover == (roomId, containerId)
+        && (containerId is null ? CanDropOnRoom(roomId) : CanDropOnContainer(containerId.Value));
+
+    private void SidebarEnter(int roomId, int? containerId) => _sidebarHover = (roomId, containerId);
+
+    private void SidebarLeave(int roomId, int? containerId)
+    {
+        if (_sidebarHover == (roomId, containerId)) _sidebarHover = null;
+    }
+
+    private async Task DropOnContainer(Container target)
+    {
+        if (_drag is not { ItemIds.Count: > 0 } d || !CanDropOnContainer(target.Id)) { EndDrag(); return; }
+        await MoveItemsAsync(d.ItemIds, target.LocationId, target.Id,
+            $"{RoomName(target.LocationId)} › {target.Name}");
+    }
+
+    private async Task DropOnRoom(Location target)
+    {
+        var drag = _drag;
+        if (drag is null || !CanDropOnRoom(target.Id)) { EndDrag(); return; }
+
+        if (drag.ContainerId is { } containerId)
+        {
+            var prevLocation = drag.SourceLocationId;
+            await Containers.MoveContainerAsync(containerId, target.Id);
+            EndDrag();
+            await LoadAsync();
+            Snackbar.Add($"Moved container to {target.Name}.", Severity.Success, cfg =>
+            {
+                cfg.Action = "Undo";
+                cfg.VisibleStateDuration = 8000;
+                cfg.OnClick = async _ =>
+                {
+                    if (prevLocation is { } p) await Containers.MoveContainerAsync(containerId, p);
+                    await LoadAsync();
+                    await InvokeAsync(StateHasChanged);
+                };
+            });
+            return;
+        }
+
+        await MoveItemsAsync(drag.ItemIds, target.Id, null, $"loose in {target.Name}");
+    }
+
+    private async Task MoveItemsAsync(List<int> ids, int? locationId, int? containerId, string destinationLabel)
+    {
+        var previous = await Inventory.MoveItemsAsync(ids, locationId, containerId);
+        EndDrag();
+        ClearSelection();
+        await LoadAsync();
+        Snackbar.Add($"Moved {ids.Count} item{(ids.Count == 1 ? "" : "s")} to {destinationLabel}.",
+            Severity.Success, cfg =>
+            {
+                cfg.Action = "Undo";
+                cfg.VisibleStateDuration = 8000;
+                cfg.OnClick = async _ =>
+                {
+                    await Inventory.RestorePlacementsAsync(previous);
+                    await LoadAsync();
+                    await InvokeAsync(StateHasChanged);
+                };
+            });
+    }
+
+    // --- Move-to dialog (touch / keyboard path) ----------------------------------
+
+    private async Task OpenMoveDialog()
+    {
+        var parameters = new DialogParameters
+        {
+            ["Locations"] = _locations,
+            ["ThingLabel"] = $"{SelectionCount} selected",
+            ["DisabledContainerIds"] = new HashSet<int>(_selectedContainers),
+            ["RoomsOnly"] = _selectedItems.Count == 0 // containers only → room picker
+        };
+        var dialog = await Dialogs.ShowAsync<MoveToDialog>("Move to", parameters);
+        var result = await dialog.Result;
+        if (result is not { Canceled: false, Data: MoveToDialog.Destination dest }) return;
+
+        // Containers in the selection go to the destination room; items to the exact spot.
+        foreach (var containerId in _selectedContainers)
+            await Containers.MoveContainerAsync(containerId, dest.LocationId);
+
+        if (_selectedItems.Count > 0)
+        {
+            var label = dest.ContainerId is { } c
+                ? $"{RoomName(dest.LocationId)} › {ContainerName(c)}"
+                : $"loose in {RoomName(dest.LocationId)}";
+            await MoveItemsAsync(_selectedItems.ToList(), dest.LocationId, dest.ContainerId, label);
+        }
+        else
+        {
+            ClearSelection();
+            await LoadAsync();
+            Snackbar.Add($"Moved to {RoomName(dest.LocationId)}.", Severity.Success);
+        }
+    }
+
+    // --- Add / edit dialogs (reused from the old Locations page) ------------------
+
+    private async Task EditRoom(Location? room)
+    {
+        var dialog = await Dialogs.ShowAsync<LocationEditDialog>(room is null ? "Add room" : "Edit room",
+            new DialogParameters { ["Location"] = room ?? new Location() });
+        var result = await dialog.Result;
+        if (result is { Canceled: false, Data: Location edited })
+        {
+            await Containers.SaveLocationAsync(edited);
+            await LoadAsync();
+        }
+    }
+
+    private async Task EditContainer(Container? container)
+    {
+        var target = container ?? new Container { LocationId = _room!.Id, QrSlug = ContainerService.GenerateSlug() };
+        var dialog = await Dialogs.ShowAsync<ContainerEditDialog>(container is null ? "Add container" : "Edit container",
+            new DialogParameters { ["Container"] = target });
+        var result = await dialog.Result;
+        if (result is { Canceled: false, Data: Container edited })
+        {
+            await Containers.SaveContainerAsync(edited);
+            await LoadAsync();
+        }
+    }
+
+    // --- Display helpers ----------------------------------------------------------
+
+    private string RoomName(int id) => _locations.FirstOrDefault(l => l.Id == id)?.Name ?? "room";
+
+    private string ContainerName(int id) =>
+        _locations.SelectMany(l => l.Containers).FirstOrDefault(c => c.Id == id)?.Name ?? "container";
+
+    private string RoomChip(Location room) =>
+        $"{room.Containers.Count} containers · {_counts.LooseByLocation.GetValueOrDefault(room.Id)} loose";
+
+    private string RoomBadge(Location room) =>
+        (room.Containers.Sum(c => _counts.ItemsByContainer.GetValueOrDefault(c.Id))
+         + _counts.LooseByLocation.GetValueOrDefault(room.Id)).ToString();
+}

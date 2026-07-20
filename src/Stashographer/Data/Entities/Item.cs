@@ -38,11 +38,15 @@ public class Item
     public int? ContainerId { get; set; }
     public Container? Container { get; set; }
 
-    /// <summary>Remote image URL (from a lookup provider).</summary>
+    /// <summary>Remote image URL (from a lookup provider). Used as a fallback when no
+    /// <see cref="ImageId"/> is set.</summary>
     public string? ThumbnailUrl { get; set; }
 
     /// <summary>Relative path to a locally-stored photo, if one was captured.</summary>
     public string? PhotoPath { get; set; }
+
+    /// <summary>Primary stored image (see <c>Images</c> table), served at <c>/img/{id}</c>.</summary>
+    public int? ImageId { get; set; }
 
     /// <summary>Flexible per-item metadata, persisted as JSON in <c>AttributesJson</c>.</summary>
     public Dictionary<string, string> Attributes { get; set; } = new();

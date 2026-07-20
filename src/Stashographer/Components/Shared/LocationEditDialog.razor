@@ -1,0 +1,35 @@
+@* Edit a location's name, description and photo. *@
+
+<MudDialog>
+    <DialogContent>
+        <div class="d-flex justify-center mb-3">
+            <ImagePicker @bind-ImageId="_location.ImageId" Label="Add location photo" Width="200px" Height="180px" />
+        </div>
+        <MudTextField @bind-Value="_location.Name" Label="Name" Variant="Variant.Outlined"
+                      Required="true" Class="mb-3" />
+        <MudTextField @bind-Value="_location.Description" Label="Description" Variant="Variant.Outlined" Lines="2" />
+    </DialogContent>
+    <DialogActions>
+        <MudButton OnClick="Cancel">Cancel</MudButton>
+        <MudButton Color="Color.Primary" Variant="Variant.Filled" OnClick="Save"
+                   Disabled="@string.IsNullOrWhiteSpace(_location.Name)">Save</MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private IMudDialogInstance Dialog { get; set; } = default!;
+    [Parameter] public Location Location { get; set; } = new();
+
+    private Location _location = new();
+
+    protected override void OnInitialized() => _location = new Location
+    {
+        Id = Location.Id,
+        Name = Location.Name,
+        Description = Location.Description,
+        ImageId = Location.ImageId
+    };
+
+    private void Save() => Dialog.Close(DialogResult.Ok(_location));
+    private void Cancel() => Dialog.Cancel();
+}

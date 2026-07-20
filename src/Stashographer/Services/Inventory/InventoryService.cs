@@ -5,12 +5,22 @@ using Stashographer.Data.Entities;
 
 namespace Stashographer.Services.Inventory;
 
-/// <summary>Filter criteria for the inventory list.</summary>
+/// <summary>
+/// Filter criteria for the inventory list. Kind filtering supports multiple positive
+/// (include, OR-ed) and negative (exclude) selections, e.g. "Books + Tools" or "NOT Books".
+/// <see cref="LooseOnly"/> restricts to items not inside any container (used with
+/// <see cref="LocationId"/> for a room's loose items).
+/// </summary>
 public record ItemQuery(
     string? Search = null,
-    int? KindId = null,
+    IReadOnlyList<int>? IncludeKindIds = null,
+    IReadOnlyList<int>? ExcludeKindIds = null,
     int? LocationId = null,
-    int? ContainerId = null);
+    int? ContainerId = null,
+    bool LooseOnly = false);
+
+/// <summary>An item's placement (for exact move-undo).</summary>
+public record ItemPlacement(int ItemId, int? LocationId, int? ContainerId);
 
 public record DashboardSummary(
     int TotalItems,
@@ -28,7 +38,7 @@ public class InventoryService(IDbConnectionFactory db)
     private const string SelectItem = """
         SELECT i.Id, i.Code, i.Name, i.Description, i.ItemKindId, i.Quantity, i.Unit,
                i.LowStockThreshold, i.ExpiryDate, i.LocationId, i.ContainerId, i.ThumbnailUrl,
-               i.PhotoPath, i.AttributesJson, i.Notes, i.CreatedAt, i.UpdatedAt,
+               i.PhotoPath, i.ImageId, i.AttributesJson, i.Notes, i.CreatedAt, i.UpdatedAt,
                k.Name AS KindName, k.Icon AS KindIcon,
                dl.Name AS DirectLocationName,
                c.Name AS ContainerName, c.LocationId AS ContainerLocationId,
@@ -44,9 +54,14 @@ public class InventoryService(IDbConnectionFactory db)
     public async Task<List<Item>> QueryAsync(ItemQuery query, CancellationToken ct = default)
     {
         var where = new List<string>();
-        if (query.KindId is not null) where.Add("i.ItemKindId = @KindId");
+        if (query.IncludeKindIds is { Count: > 0 }) where.Add("i.ItemKindId IN @IncludeKindIds");
+        if (query.ExcludeKindIds is { Count: > 0 }) where.Add("i.ItemKindId NOT IN @ExcludeKindIds");
         if (query.ContainerId is not null) where.Add("i.ContainerId = @ContainerId");
-        if (query.LocationId is not null) where.Add("(i.LocationId = @LocationId OR c.LocationId = @LocationId)");
+        if (query.LooseOnly) where.Add("i.ContainerId IS NULL");
+        if (query.LocationId is not null)
+            where.Add(query.LooseOnly
+                ? "i.LocationId = @LocationId"
+                : "(i.LocationId = @LocationId OR c.LocationId = @LocationId)");
         if (!string.IsNullOrWhiteSpace(query.Search))
             where.Add("(i.Name LIKE @Like OR i.Code LIKE @Like OR i.Description LIKE @Like)");
 
@@ -57,13 +72,69 @@ public class InventoryService(IDbConnectionFactory db)
         using var conn = await db.OpenAsync(ct);
         var rows = await conn.QueryAsync<ItemRow>(sql, new
         {
-            query.KindId,
+            query.IncludeKindIds,
+            query.ExcludeKindIds,
             query.ContainerId,
             query.LocationId,
             Like = $"%{query.Search}%"
         });
         return rows.Select(Map).ToList();
     }
+
+    /// <summary>
+    /// Finds existing items that might be the same product as an identified photo: an exact
+    /// barcode match wins outright; otherwise a tokenized fuzzy match over names, scored by
+    /// how many name tokens each item contains.
+    /// </summary>
+    public async Task<List<Item>> FindCandidatesAsync(
+        string? name, string? barcode = null, int top = 8, CancellationToken ct = default)
+    {
+        using var conn = await db.OpenAsync(ct);
+
+        if (!string.IsNullOrWhiteSpace(barcode))
+        {
+            var exact = (await conn.QueryAsync<ItemRow>(
+                SelectItem + " WHERE i.Code = @barcode", new { barcode })).Select(Map).ToList();
+            if (exact.Count > 0) return exact;
+        }
+
+        if (string.IsNullOrWhiteSpace(name)) return new List<Item>();
+
+        var tokens = Tokenize(name);
+        if (tokens.Count == 0) return new List<Item>();
+
+        var clauses = new List<string>();
+        var parameters = new Dapper.DynamicParameters();
+        for (var i = 0; i < tokens.Count; i++)
+        {
+            clauses.Add($"i.Name LIKE @t{i}");
+            parameters.Add($"t{i}", $"%{tokens[i]}%");
+        }
+
+        var rows = (await conn.QueryAsync<ItemRow>(
+            SelectItem + " WHERE " + string.Join(" OR ", clauses), parameters)).Select(Map);
+
+        // Score in memory: number of query tokens the item name contains.
+        return rows
+            .Select(i => (Item: i, Score: tokens.Count(t => i.Name.Contains(t, StringComparison.OrdinalIgnoreCase))))
+            .OrderByDescending(x => x.Score)
+            .ThenBy(x => x.Item.Name, StringComparer.OrdinalIgnoreCase)
+            .Take(top)
+            .Select(x => x.Item)
+            .ToList();
+    }
+
+    /// <summary>Alphanumeric-only, lowercased form of a name for equality comparison.</summary>
+    public static string NormalizeName(string? name) =>
+        new(( name ?? string.Empty).Where(char.IsLetterOrDigit).Select(char.ToLowerInvariant).ToArray());
+
+    private static List<string> Tokenize(string name) =>
+        name.Split(new[] { ' ', ',', '-', '(', ')', '/', '.' },
+                StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Where(t => t.Length >= 2)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Take(6)
+            .ToList();
 
     public async Task<Item?> GetAsync(int id, CancellationToken ct = default)
     {
@@ -90,6 +161,7 @@ public class InventoryService(IDbConnectionFactory db)
             item.ContainerId,
             item.ThumbnailUrl,
             item.PhotoPath,
+            item.ImageId,
             AttributesJson = JsonSerializer.Serialize(item.Attributes, Json),
             item.Notes,
             CreatedAt = now.ToString("O"),
@@ -101,10 +173,10 @@ public class InventoryService(IDbConnectionFactory db)
         {
             item.Id = await conn.ExecuteScalarAsync<int>("""
                 INSERT INTO Items (Code, Name, Description, ItemKindId, Quantity, Unit, LowStockThreshold,
-                                   ExpiryDate, LocationId, ContainerId, ThumbnailUrl, PhotoPath, AttributesJson,
+                                   ExpiryDate, LocationId, ContainerId, ThumbnailUrl, PhotoPath, ImageId, AttributesJson,
                                    Notes, CreatedAt, UpdatedAt)
                 VALUES (@Code, @Name, @Description, @ItemKindId, @Quantity, @Unit, @LowStockThreshold,
-                        @ExpiryDate, @LocationId, @ContainerId, @ThumbnailUrl, @PhotoPath, @AttributesJson,
+                        @ExpiryDate, @LocationId, @ContainerId, @ThumbnailUrl, @PhotoPath, @ImageId, @AttributesJson,
                         @Notes, @CreatedAt, @UpdatedAt);
                 SELECT last_insert_rowid();
                 """, p);
@@ -115,11 +187,58 @@ public class InventoryService(IDbConnectionFactory db)
                 UPDATE Items SET Code=@Code, Name=@Name, Description=@Description, ItemKindId=@ItemKindId,
                     Quantity=@Quantity, Unit=@Unit, LowStockThreshold=@LowStockThreshold, ExpiryDate=@ExpiryDate,
                     LocationId=@LocationId, ContainerId=@ContainerId, ThumbnailUrl=@ThumbnailUrl, PhotoPath=@PhotoPath,
-                    AttributesJson=@AttributesJson, Notes=@Notes, UpdatedAt=@UpdatedAt
+                    ImageId=@ImageId, AttributesJson=@AttributesJson, Notes=@Notes, UpdatedAt=@UpdatedAt
                 WHERE Id=@Id;
                 """, p);
         }
         return item;
+    }
+
+    /// <summary>
+    /// Moves items to a place: a container (<paramref name="containerId"/> set — stored
+    /// location becomes NULL per the existing convention) or loose into a room. Returns the
+    /// previous placements so the move can be undone exactly.
+    /// </summary>
+    public async Task<List<ItemPlacement>> MoveItemsAsync(
+        IReadOnlyList<int> itemIds, int? locationId, int? containerId, CancellationToken ct = default)
+    {
+        if (itemIds.Count == 0) return new List<ItemPlacement>();
+        using var conn = await db.OpenAsync(ct);
+
+        var previous = (await conn.QueryAsync<(int Id, int? LocationId, int? ContainerId)>(
+                "SELECT Id, LocationId, ContainerId FROM Items WHERE Id IN @itemIds",
+                new { itemIds }))
+            .Select(r => new ItemPlacement(r.Id, r.LocationId, r.ContainerId))
+            .ToList();
+
+        await conn.ExecuteAsync("""
+            UPDATE Items SET
+                ContainerId = @containerId,
+                LocationId  = @locationId,
+                UpdatedAt   = @now
+            WHERE Id IN @itemIds;
+            """, new
+        {
+            itemIds,
+            containerId,
+            locationId = containerId is null ? locationId : null,
+            now = DateTimeOffset.UtcNow.ToString("O")
+        });
+
+        return previous;
+    }
+
+    /// <summary>Puts items back exactly where they were (undo for <see cref="MoveItemsAsync"/>).</summary>
+    public async Task RestorePlacementsAsync(IReadOnlyList<ItemPlacement> placements, CancellationToken ct = default)
+    {
+        if (placements.Count == 0) return;
+        using var conn = await db.OpenAsync(ct);
+        foreach (var p in placements)
+        {
+            await conn.ExecuteAsync(
+                "UPDATE Items SET LocationId = @LocationId, ContainerId = @ContainerId, UpdatedAt = @now WHERE Id = @ItemId",
+                new { p.ItemId, p.LocationId, p.ContainerId, now = DateTimeOffset.UtcNow.ToString("O") });
+        }
     }
 
     public async Task AdjustQuantityAsync(int id, decimal delta, CancellationToken ct = default)
@@ -184,6 +303,7 @@ public class InventoryService(IDbConnectionFactory db)
         ContainerId = r.ContainerId,
         ThumbnailUrl = r.ThumbnailUrl,
         PhotoPath = r.PhotoPath,
+        ImageId = r.ImageId,
         Notes = r.Notes,
         CreatedAt = DateTimeOffset.Parse(r.CreatedAt),
         UpdatedAt = DateTimeOffset.Parse(r.UpdatedAt),
@@ -220,6 +340,7 @@ public class InventoryService(IDbConnectionFactory db)
         public int? ContainerId { get; set; }
         public string? ThumbnailUrl { get; set; }
         public string? PhotoPath { get; set; }
+        public int? ImageId { get; set; }
         public string? AttributesJson { get; set; }
         public string? Notes { get; set; }
         public string CreatedAt { get; set; } = "";

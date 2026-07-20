@@ -1,0 +1,118 @@
+@* Review board for a multi-item photo: one card per detected crop, pre-resolved by the AI
+   pipeline. Per-card override (switch match / force create / discard), then one Apply all. *@
+@inject PhotoIntakeService Intake
+@inject ISnackbar Snackbar
+
+<MudPaper Class="pa-3" Outlined="true">
+    <div class="d-flex justify-space-between align-center mb-2">
+        <MudText Typo="Typo.h6">Detected items (@_cards.Count(c => !c.Discarded))</MudText>
+        <div class="d-flex gap-2">
+            <MudButton Variant="Variant.Text" OnClick="@(() => OnDone.InvokeAsync())">Cancel</MudButton>
+            <MudButton Color="Color.Primary" Variant="Variant.Filled" StartIcon="@Icons.Material.Filled.DoneAll"
+                       OnClick="ApplyAllAsync" Disabled="@(_applying || _cards.All(c => c.Discarded))">
+                @(_applying ? "Applying…" : "Apply all")
+            </MudButton>
+        </div>
+    </div>
+
+    <MudGrid>
+        @foreach (var card in _cards.Where(c => !c.Discarded))
+        {
+            <MudItem xs="12" sm="6" md="4">
+                <MudPaper Class="pa-2" Outlined="true">
+                    <MudImage Src="@ImageUrls.For(card.Result.ImageId, null, 360)" Width="240" Height="140"
+                              ObjectFit="ObjectFit.Contain" Class="rounded d-block mx-auto" />
+                    <MudText Typo="Typo.subtitle2" Class="mt-1">@DisplayName(card)</MudText>
+                    <MudText Typo="Typo.caption" Color="@(card.Action == IntakeAction.CreateNew ? Color.Primary : Color.Success)">
+                        @Summary(card)
+                    </MudText>
+                    <div class="d-flex justify-space-between align-center mt-1">
+                        <MudMenu Label="Change" Size="Size.Small" Variant="Variant.Text"
+                                 EndIcon="@Icons.Material.Filled.ArrowDropDown">
+                            @foreach (var cand in card.Result.Candidates)
+                            {
+                                <MudMenuItem OnClick="@(() => SetIncrement(card, cand))">
+                                    ↑ Add to "@cand.Name"
+                                </MudMenuItem>
+                            }
+                            <MudMenuItem OnClick="@(() => SetCreate(card))">✚ Create as new item</MudMenuItem>
+                        </MudMenu>
+                        <MudIconButton Icon="@Icons.Material.Filled.Close" Size="Size.Small"
+                                       OnClick="@(() => { card.Discarded = true; })" />
+                    </div>
+                </MudPaper>
+            </MudItem>
+        }
+    </MudGrid>
+</MudPaper>
+
+@code {
+    [Parameter] public List<IntakeResult> Results { get; set; } = new();
+    [Parameter] public EventCallback OnDone { get; set; }
+
+    private sealed class Card
+    {
+        public required IntakeResult Result { get; init; }
+        public IntakeAction Action { get; set; }
+        public int? MatchId { get; set; }
+        public string? MatchName { get; set; }
+        public bool Discarded { get; set; }
+    }
+
+    private List<Card> _cards = new();
+    private bool _applying;
+
+    protected override void OnParametersSet()
+    {
+        _cards = Results.Select(r => new Card
+        {
+            Result = r,
+            // Medium confidence is pre-selected here (the board itself is the review step).
+            Action = r.Proposal.Action == IntakeAction.CreateNew ? IntakeAction.CreateNew : IntakeAction.IncrementExisting,
+            MatchId = r.Proposal.MatchedItemId,
+            MatchName = r.Proposal.MatchedItemName
+        }).ToList();
+    }
+
+    private static string DisplayName(Card c) =>
+        c.Action == IntakeAction.CreateNew
+            ? (string.IsNullOrWhiteSpace(c.Result.Proposal.Draft.Name) ? "Unidentified item" : c.Result.Proposal.Draft.Name)
+            : c.MatchName ?? "item";
+
+    private static string Summary(Card c) =>
+        c.Action == IntakeAction.CreateNew
+            ? "New item will be created"
+            : $"+{c.Result.Proposal.IncrementBy:0.##} to existing";
+
+    private void SetIncrement(Card card, Item candidate)
+    {
+        card.Action = IntakeAction.IncrementExisting;
+        card.MatchId = candidate.Id;
+        card.MatchName = candidate.Name;
+    }
+
+    private void SetCreate(Card card)
+    {
+        card.Action = IntakeAction.CreateNew;
+        card.MatchId = null;
+    }
+
+    private async Task ApplyAllAsync()
+    {
+        _applying = true;
+        var incremented = 0;
+        var created = 0;
+        try
+        {
+            foreach (var card in _cards.Where(c => !c.Discarded))
+            {
+                var applied = await Intake.ApplyAsync(card.Result, card.Action, card.MatchId);
+                if (applied.Action == IntakeAction.IncrementExisting) incremented++;
+                else created++;
+            }
+            Snackbar.Add($"Applied: {incremented} incremented, {created} created.", Severity.Success);
+            await OnDone.InvokeAsync();
+        }
+        finally { _applying = false; }
+    }
+}

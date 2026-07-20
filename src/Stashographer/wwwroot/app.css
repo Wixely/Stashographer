@@ -2,6 +2,183 @@ html, body {
     font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
 }
 
+/* Home launcher tiles */
+.quick-tile {
+    transition: box-shadow 120ms ease, transform 120ms ease;
+}
+.quick-tile:hover {
+    box-shadow: var(--mud-elevation-8);
+    transform: translateY(-2px);
+}
+
+/* Image picker */
+.image-picker-tile {
+    display: block;
+    position: relative;
+    width: 100%;
+    border: 1px dashed var(--mud-palette-lines-inputs);
+    border-radius: 8px;
+    overflow: hidden;
+    cursor: pointer;
+    background: var(--mud-palette-background-grey);
+}
+.image-picker-tile img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
+}
+.image-picker-empty {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    height: 100%;
+    gap: 4px;
+    color: var(--mud-palette-text-secondary);
+}
+.image-picker-overlay {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+    color: #fff;
+    background: rgba(0, 0, 0, 0.45);
+    opacity: 0;
+    transition: opacity 120ms ease;
+}
+.image-picker-tile:hover .image-picker-overlay {
+    opacity: 1;
+}
+
+/* ─── Places explorer ─────────────────────────────────────────────────────── */
+
+.places-sidebar {
+    width: 230px;
+    flex-shrink: 0;
+    border-right: 1px solid var(--mud-palette-lines-default);
+    padding-right: 8px;
+}
+
+.places-tree-row {
+    display: flex;
+    align-items: center;
+    padding: 4px 6px;
+    border-radius: 6px;
+    cursor: pointer;
+    border: 2px solid transparent; /* reserves space so the drop glow doesn't shift layout */
+    user-select: none;
+    transition: border-color 80ms ease, background 80ms ease;
+}
+
+/* While a drag is live, children of drop targets must not intercept pointer events —
+   otherwise crossing the icon/label/badge fires dragleave on the row and the highlight
+   flickers. Rows/cards/crumbs stay targets; their innards go inert for the drag. */
+.places-dragging .places-tree-row * ,
+.places-dragging .places-crumb * ,
+.places-dragging .place-card * {
+    pointer-events: none;
+}
+.places-tree-row:hover { background: var(--mud-palette-action-default-hover); }
+.places-tree-child { padding-left: 38px; }
+.places-tree-current { background: var(--mud-palette-primary-hover); }
+.places-tree-label { flex-grow: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.places-tree-badge {
+    font-size: 0.7rem;
+    color: var(--mud-palette-text-secondary);
+    background: var(--mud-palette-background-grey);
+    border-radius: 10px;
+    padding: 1px 7px;
+}
+
+.place-card {
+    position: relative;
+    border: 2px solid var(--mud-palette-lines-default);
+    border-radius: 10px;
+    background: var(--mud-palette-surface);
+    cursor: pointer;
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+    transition: box-shadow 120ms ease, border-color 120ms ease;
+    user-select: none;
+}
+.place-card:hover { box-shadow: var(--mud-elevation-4); }
+.place-card-selected { border-color: var(--mud-palette-primary); background: var(--mud-palette-primary-hover); }
+
+.place-card-media {
+    height: 96px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+    border-radius: 8px 8px 0 0;
+    background: var(--mud-palette-background-grey);
+}
+.place-card-media img { width: 100%; height: 100%; object-fit: cover; }
+.place-card-body { padding: 8px 10px 10px; }
+.place-card-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.place-card-check {
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    z-index: 2;
+    opacity: 0;
+    transition: opacity 100ms ease;
+    background: var(--mud-palette-surface);
+    border-radius: 50%;
+}
+.place-card:hover .place-card-check,
+.place-card-selected .place-card-check { opacity: 1; }
+@media (pointer: coarse) {
+    .place-card-check { opacity: 1; } /* touch: no hover — checkboxes always visible */
+}
+
+.place-card-menu { position: absolute; top: 2px; right: 2px; z-index: 2; }
+
+/* Drop-target glow (cards, sidebar rows, breadcrumb segments) */
+.drop-target-active {
+    border-color: var(--mud-palette-primary) !important;
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--mud-palette-primary) 35%, transparent) !important;
+    background: var(--mud-palette-primary-hover) !important;
+}
+
+/* Breadcrumb */
+.places-breadcrumb { flex-wrap: wrap; }
+.places-crumb {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 4px 8px;
+    border-radius: 6px;
+    border: 2px solid transparent;
+    cursor: pointer;
+    color: var(--mud-palette-primary);
+}
+.places-crumb:hover { background: var(--mud-palette-action-default-hover); }
+.places-crumb-current { color: var(--mud-palette-text-primary); cursor: default; font-weight: 600; }
+.places-crumb-current:hover { background: transparent; }
+
+/* Selection action bar */
+.places-action-bar {
+    position: fixed;
+    bottom: 16px;
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 1300;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 8px 16px;
+    border-radius: 24px;
+    background: var(--mud-palette-surface);
+    border: 1px solid var(--mud-palette-lines-default);
+}
+
 a, .btn-link {
     color: #006bb7;
 }

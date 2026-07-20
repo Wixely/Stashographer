@@ -1,0 +1,98 @@
+@* Add / edit a home quick link. *@
+
+<MudDialog>
+    <DialogContent>
+        <MudTextField @bind-Value="_link.Label" Label="Label" Variant="Variant.Outlined" Required="true" Class="mb-3" />
+
+        <MudSelect T="string" @bind-Value="_link.Icon" Label="Icon" Variant="Variant.Outlined" Class="mb-3">
+            @foreach (var o in IconCatalog.Options)
+            {
+                <MudSelectItem T="string" Value="@o.Key">
+                    <div class="d-flex align-center gap-2">
+                        <MudIcon Icon="@o.Icon" Size="Size.Small" /> @o.Key
+                    </div>
+                </MudSelectItem>
+            }
+        </MudSelect>
+
+        <MudSelect T="QuickLinkTarget" @bind-Value="_link.Target" Label="Goes to" Variant="Variant.Outlined" Class="mb-3">
+            @foreach (var t in Enum.GetValues<QuickLinkTarget>())
+            {
+                <MudSelectItem T="QuickLinkTarget" Value="@t">@Describe(t)</MudSelectItem>
+            }
+        </MudSelect>
+
+        @if (_link.Target == QuickLinkTarget.Inventory)
+        {
+            <MudText Typo="Typo.body2" Class="mb-1">Filters (optional)</MudText>
+            <MudSelect T="int" MultiSelection="true" SelectedValues="_include" SelectedValuesChanged="v => _include = v"
+                       Label="Include kinds" Variant="Variant.Outlined" Class="mb-2"
+                       MultiSelectionTextFunc="@(_ => KindNames(_include))">
+                @foreach (var k in Kinds)
+                {
+                    <MudSelectItem T="int" Value="@k.Id">@k.Name</MudSelectItem>
+                }
+            </MudSelect>
+            <MudSelect T="int" MultiSelection="true" SelectedValues="_exclude" SelectedValuesChanged="v => _exclude = v"
+                       Label="Exclude kinds (NOT)" Variant="Variant.Outlined"
+                       MultiSelectionTextFunc="@(_ => KindNames(_exclude))">
+                @foreach (var k in Kinds)
+                {
+                    <MudSelectItem T="int" Value="@k.Id">@k.Name</MudSelectItem>
+                }
+            </MudSelect>
+        }
+    </DialogContent>
+    <DialogActions>
+        <MudButton OnClick="Cancel">Cancel</MudButton>
+        <MudButton Color="Color.Primary" Variant="Variant.Filled" OnClick="Save"
+                   Disabled="@string.IsNullOrWhiteSpace(_link.Label)">Save</MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private IMudDialogInstance Dialog { get; set; } = default!;
+    [Parameter] public QuickLink Link { get; set; } = new();
+    [Parameter] public List<ItemKind> Kinds { get; set; } = new();
+
+    private QuickLink _link = new();
+    private IReadOnlyCollection<int> _include = new HashSet<int>();
+    private IReadOnlyCollection<int> _exclude = new HashSet<int>();
+
+    protected override void OnInitialized()
+    {
+        // Work on a copy so Cancel doesn't mutate the caller's instance.
+        _link = new QuickLink
+        {
+            Id = Link.Id,
+            Label = Link.Label,
+            Icon = Link.Icon ?? "Category",
+            Target = Link.Target,
+            IncludeKindIds = new List<int>(Link.IncludeKindIds),
+            ExcludeKindIds = new List<int>(Link.ExcludeKindIds),
+            SortOrder = Link.SortOrder
+        };
+        _include = new HashSet<int>(_link.IncludeKindIds);
+        _exclude = new HashSet<int>(_link.ExcludeKindIds);
+    }
+
+    private string KindNames(IReadOnlyCollection<int> ids) =>
+        string.Join(", ", Kinds.Where(k => ids.Contains(k.Id)).Select(k => k.Name));
+
+    private static string Describe(QuickLinkTarget t) => t switch
+    {
+        QuickLinkTarget.Dashboard => "Dashboard",
+        QuickLinkTarget.Scan => "Scan & add",
+        QuickLinkTarget.Inventory => "Inventory (filtered)",
+        _ => t.ToString()
+    };
+
+    private void Save()
+    {
+        _link.IncludeKindIds = _link.Target == QuickLinkTarget.Inventory ? _include.ToList() : new();
+        _link.ExcludeKindIds = _link.Target == QuickLinkTarget.Inventory ? _exclude.ToList() : new();
+        Dialog.Close(DialogResult.Ok(_link));
+    }
+
+    private void Cancel() => Dialog.Cancel();
+}

@@ -15,8 +15,9 @@ FROM mcr.microsoft.com/dotnet/aspnet:10.0 AS runtime
 WORKDIR /app
 COPY --from=build /app ./
 
-# SQLite database lives on a mounted volume so data survives container restarts.
+# SQLite database and image files live on a mounted volume so data survives restarts.
 ENV ConnectionStrings__Default="Data Source=/data/stashographer.db"
+ENV Images__RootPath="/data/images"
 VOLUME /data
 
 EXPOSE 8080

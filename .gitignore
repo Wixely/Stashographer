@@ -11,6 +11,9 @@ obj/
 *.db-shm
 *.db-wal
 
+## Stored images (originals + generated thumbnails)
+App_Data/
+
 ## Rider / VS Code
 .idea/
 .vscode/

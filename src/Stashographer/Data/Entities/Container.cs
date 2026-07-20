@@ -31,6 +31,9 @@ public class Container
     public int LocationId { get; set; }
     public Location? Location { get; set; }
 
+    /// <summary>Primary stored image, served at <c>/img/{id}</c>.</summary>
+    public int? ImageId { get; set; }
+
     /// <summary>Populated by the data layer when a container is loaded with its contents.</summary>
     public List<Item> Items { get; set; } = new();
 }

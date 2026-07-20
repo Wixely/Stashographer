@@ -39,16 +39,21 @@ next to the app. Open the printed URL.
 
 ## Enable AI (optional)
 
-Set the `Ai` configuration (env vars shown; any OpenAI-compatible endpoint works):
+Configure it in **Settings → AI enrichment** — endpoint, API key and models are saved to the
+app database and apply immediately (no restart; works inside Docker). Any OpenAI-compatible
+endpoint works (OpenAI, Azure OpenAI, Ollama, LM Studio, …).
+
+Environment variables provide the initial defaults until settings are saved in the UI:
 
 ```bash
 Ai__Enabled=true
 Ai__ApiKey=sk-...
 Ai__Model=gpt-4o-mini
-Ai__Endpoint=https://your-endpoint/v1   # optional (Azure OpenAI, Ollama, LM Studio, …)
+Ai__VisionModel=gpt-4o           # optional, for photo identify/detect/match
+Ai__Endpoint=https://your-endpoint/v1   # optional
 ```
 
-Without it, AI actions are simply hidden and everything else works.
+Without AI configured, those actions are simply hidden and everything else works.
 
 ## Docker
 

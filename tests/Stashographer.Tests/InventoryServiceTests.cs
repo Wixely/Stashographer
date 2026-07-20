@@ -50,16 +50,48 @@ public class InventoryServiceTests
     {
         await using var db = await TestDb.CreateAsync();
         var svc = new InventoryService(db.Factory);
-        await svc.SaveAsync(new Item { Name = "Baked Beans", ItemKindId = 1 });
-        await svc.SaveAsync(new Item { Name = "Hammer", ItemKindId = 3 });
+        await svc.SaveAsync(new Item { Name = "Baked Beans", ItemKindId = 1 });   // Grocery
+        await svc.SaveAsync(new Item { Name = "Hammer", ItemKindId = 3 });         // Tool
+        await svc.SaveAsync(new Item { Name = "Novel", ItemKindId = 2 });          // Book
 
-        var groceries = await svc.QueryAsync(new ItemQuery(KindId: 1));
+        // Single positive kind filter.
+        var groceries = await svc.QueryAsync(new ItemQuery(IncludeKindIds: new[] { 1 }));
         Assert.Single(groceries);
         Assert.Equal("Baked Beans", groceries[0].Name);
 
         var search = await svc.QueryAsync(new ItemQuery(Search: "hamm"));
         Assert.Single(search);
         Assert.Equal("Hammer", search[0].Name);
+    }
+
+    [Fact]
+    public async Task Query_supports_multiple_include_kinds_or_semantics()
+    {
+        await using var db = await TestDb.CreateAsync();
+        var svc = new InventoryService(db.Factory);
+        await svc.SaveAsync(new Item { Name = "Baked Beans", ItemKindId = 1 });   // Grocery
+        await svc.SaveAsync(new Item { Name = "Hammer", ItemKindId = 3 });         // Tool
+        await svc.SaveAsync(new Item { Name = "Novel", ItemKindId = 2 });          // Book
+
+        // "Books + Tools" → both, not the grocery.
+        var result = await svc.QueryAsync(new ItemQuery(IncludeKindIds: new[] { 2, 3 }));
+        var names = result.Select(i => i.Name).OrderBy(n => n).ToList();
+        Assert.Equal(new[] { "Hammer", "Novel" }, names);
+    }
+
+    [Fact]
+    public async Task Query_supports_exclude_kinds()
+    {
+        await using var db = await TestDb.CreateAsync();
+        var svc = new InventoryService(db.Factory);
+        await svc.SaveAsync(new Item { Name = "Baked Beans", ItemKindId = 1 });   // Grocery
+        await svc.SaveAsync(new Item { Name = "Hammer", ItemKindId = 3 });         // Tool
+        await svc.SaveAsync(new Item { Name = "Novel", ItemKindId = 2 });          // Book
+
+        // "NOT Books" → everything except the book.
+        var result = await svc.QueryAsync(new ItemQuery(ExcludeKindIds: new[] { 2 }));
+        Assert.DoesNotContain(result, i => i.Name == "Novel");
+        Assert.Equal(2, result.Count);
     }
 
     [Fact]

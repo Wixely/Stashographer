@@ -1,36 +1,111 @@
 @page "/settings"
-@inject AiOptions Ai
+@inject IAiClientProvider AiClients
+@inject IAiEnrichmentService Ai
+@inject SettingsService SettingsSvc
+@inject QuickLinksService QuickLinks
+@inject InventoryService Inventory
+@inject IDialogService Dialogs
+@inject ISnackbar Snackbar
 
 <PageTitle>Settings · Stashographer</PageTitle>
 
 <MudText Typo="Typo.h4" Class="mb-4">Settings</MudText>
 
 <MudPaper Class="pa-4 mb-3" Outlined="true">
-    <MudText Typo="Typo.h6" Class="mb-2">AI enrichment</MudText>
-    @if (Ai.IsConfigured)
+    <div class="d-flex justify-space-between align-center mb-2">
+        <MudText Typo="Typo.h6">Home quick links</MudText>
+        <MudButton Color="Color.Primary" Variant="Variant.Filled" Size="Size.Small"
+                   StartIcon="@Icons.Material.Filled.Add" OnClick="@(() => Edit(null))">Add</MudButton>
+    </div>
+    <MudText Typo="Typo.body2" Class="mud-text-secondary mb-3">
+        The large buttons on the home screen. Each opens a page or a pre-filtered inventory view.
+    </MudText>
+
+    @if (_links is null)
     {
-        <MudAlert Severity="Severity.Success" Class="mb-2">
-            AI is enabled using model <b>@Ai.Model</b>@(string.IsNullOrWhiteSpace(Ai.Endpoint) ? "" : $" at {Ai.Endpoint}").
-        </MudAlert>
-        <MudText Typo="Typo.body2">
-            Photo identification and item enrichment are available on the Scan and item pages.
-        </MudText>
+        <MudProgressCircular Indeterminate="true" />
     }
     else
     {
-        <MudAlert Severity="Severity.Info" Class="mb-2">AI features are disabled.</MudAlert>
-        <MudText Typo="Typo.body2" Class="mb-1">
-            Enable them by configuring the <code>Ai</code> section (any OpenAI-compatible endpoint):
-        </MudText>
-        <pre class="mud-elevation-1 pa-3" style="border-radius:8px;overflow:auto">Ai__Enabled=true
-Ai__ApiKey=sk-...
-Ai__Model=gpt-4o-mini
-# optional, for Azure OpenAI / Ollama / LM Studio:
-Ai__Endpoint=https://your-endpoint/v1</pre>
-        <MudText Typo="Typo.caption" Class="mud-text-secondary">
-            Set via environment variables (shown) or the <code>Ai</code> section of appsettings.json, then restart.
-        </MudText>
+        <MudTable Items="_links" Dense="true" Hover="true" T="QuickLink" Breakpoint="Breakpoint.Sm">
+            <HeaderContent>
+                <MudTh Style="width:1%"></MudTh>
+                <MudTh>Label</MudTh>
+                <MudTh>Opens</MudTh>
+                <MudTh Style="width:1%"></MudTh>
+            </HeaderContent>
+            <RowTemplate>
+                <MudTd><MudIcon Icon="@IconCatalog.Resolve(context.Icon)" /></MudTd>
+                <MudTd DataLabel="Label">@context.Label</MudTd>
+                <MudTd DataLabel="Opens">@TargetSummary(context)</MudTd>
+                <MudTd>
+                    <div class="d-flex">
+                        <MudIconButton Icon="@Icons.Material.Filled.ArrowUpward" Size="Size.Small"
+                                       OnClick="@(() => Move(context, -1))" />
+                        <MudIconButton Icon="@Icons.Material.Filled.ArrowDownward" Size="Size.Small"
+                                       OnClick="@(() => Move(context, +1))" />
+                        <MudIconButton Icon="@Icons.Material.Filled.Edit" Size="Size.Small"
+                                       OnClick="@(() => Edit(context))" />
+                        <MudIconButton Icon="@Icons.Material.Filled.Delete" Color="Color.Error" Size="Size.Small"
+                                       OnClick="@(() => Delete(context))" />
+                    </div>
+                </MudTd>
+            </RowTemplate>
+        </MudTable>
     }
+</MudPaper>
+
+<MudPaper Class="pa-4 mb-3" Outlined="true">
+    <div class="d-flex justify-space-between align-center mb-2">
+        <MudText Typo="Typo.h6">AI enrichment</MudText>
+        @if (AiClients.IsConfigured)
+        {
+            <MudChip T="string" Size="Size.Small" Color="Color.Success">Active</MudChip>
+        }
+        else
+        {
+            <MudChip T="string" Size="Size.Small">Off</MudChip>
+        }
+    </div>
+    <MudText Typo="Typo.body2" Class="mud-text-secondary mb-3">
+        Any OpenAI-compatible endpoint (OpenAI, Azure OpenAI, Ollama, LM Studio…). Changes
+        apply immediately — no restart, works inside Docker. Environment variables provide the
+        defaults until settings are saved here.
+    </MudText>
+
+    <MudSwitch T="bool" @bind-Value="_aiEnabled" Label="Enable AI features" Color="Color.Primary" Class="mb-2" />
+
+    <MudGrid>
+        <MudItem xs="12" md="6">
+            <MudTextField @bind-Value="_aiEndpoint" Label="Endpoint" Variant="Variant.Outlined" Margin="Margin.Dense"
+                          Placeholder="blank = api.openai.com" HelperText="e.g. http://ollama:11434/v1" />
+        </MudItem>
+        <MudItem xs="12" md="6">
+            <MudTextField @bind-Value="_aiApiKeyInput" Label="API key" Variant="Variant.Outlined" Margin="Margin.Dense"
+                          InputType="InputType.Password"
+                          Placeholder="@(_hasStoredKey ? "•••••• (leave blank to keep saved key)" : "sk-… (local servers accept any value)")" />
+        </MudItem>
+        <MudItem xs="12" md="6">
+            <MudTextField @bind-Value="_aiModel" Label="Model" Variant="Variant.Outlined" Margin="Margin.Dense"
+                          Placeholder="gpt-4o-mini" />
+        </MudItem>
+        <MudItem xs="12" md="6">
+            <MudTextField @bind-Value="_aiVisionModel" Label="Vision model (optional)" Variant="Variant.Outlined"
+                          Margin="Margin.Dense" HelperText="Blank = same as model. Used for photo identify/detect/match." />
+        </MudItem>
+    </MudGrid>
+
+    <div class="d-flex gap-2 mt-2">
+        <MudButton Color="Color.Primary" Variant="Variant.Filled" StartIcon="@Icons.Material.Filled.Save"
+                   OnClick="SaveAiAsync" Disabled="_aiBusy">Save &amp; apply</MudButton>
+        <MudButton Variant="Variant.Outlined" StartIcon="@Icons.Material.Filled.NetworkCheck"
+                   OnClick="TestAiAsync" Disabled="@(_aiBusy || !AiClients.IsConfigured)">
+            @(_aiBusy ? "Testing…" : "Test connection")
+        </MudButton>
+    </div>
+    <MudText Typo="Typo.caption" Class="mud-text-secondary d-block mt-2">
+        The API key is stored in the app database on this machine/volume.
+    </MudText>
 </MudPaper>
 
 <MudPaper Class="pa-4" Outlined="true">
@@ -39,3 +114,130 @@ Ai__Endpoint=https://your-endpoint/v1</pre>
         Toggle light / dark with the icon in the top bar. Your choice is remembered on this device.
     </MudText>
 </MudPaper>
+
+@code {
+    private List<QuickLink>? _links;
+    private List<ItemKind> _kinds = new();
+
+    // AI form state (API key handled write-only: blank input keeps the stored key).
+    private bool _aiEnabled;
+    private string? _aiEndpoint;
+    private string _aiApiKeyInput = string.Empty;
+    private string _aiModel = string.Empty;
+    private string? _aiVisionModel;
+    private bool _hasStoredKey;
+    private bool _aiBusy;
+
+    protected override async Task OnInitializedAsync()
+    {
+        var current = AiClients.Current;
+        _aiEnabled = current.Enabled;
+        _aiEndpoint = current.Endpoint;
+        _aiModel = current.Model;
+        _aiVisionModel = current.VisionModel;
+        _hasStoredKey = !string.IsNullOrWhiteSpace(current.ApiKey);
+
+        _kinds = await Inventory.GetKindsAsync();
+        await Reload();
+    }
+
+    private async Task SaveAiAsync()
+    {
+        _aiBusy = true;
+        try
+        {
+            var options = new AiOptions
+            {
+                Enabled = _aiEnabled,
+                Endpoint = string.IsNullOrWhiteSpace(_aiEndpoint) ? null : _aiEndpoint!.Trim(),
+                ApiKey = string.IsNullOrWhiteSpace(_aiApiKeyInput) ? AiClients.Current.ApiKey : _aiApiKeyInput.Trim(),
+                Model = string.IsNullOrWhiteSpace(_aiModel) ? new AiOptions().Model : _aiModel.Trim(),
+                VisionModel = string.IsNullOrWhiteSpace(_aiVisionModel) ? null : _aiVisionModel!.Trim()
+            };
+
+            await SettingsSvc.SaveAiOptionsAsync(options);
+            AiClients.Reconfigure(options);
+
+            _aiApiKeyInput = string.Empty;
+            _hasStoredKey = !string.IsNullOrWhiteSpace(options.ApiKey);
+
+            if (options.Enabled && !AiClients.IsConfigured)
+                Snackbar.Add("Saved, but AI is not active — check the API key and endpoint.", Severity.Warning);
+            else
+                Snackbar.Add(AiClients.IsConfigured ? "AI settings applied." : "AI disabled.", Severity.Success);
+        }
+        finally { _aiBusy = false; }
+    }
+
+    private async Task TestAiAsync()
+    {
+        _aiBusy = true;
+        StateHasChanged();
+        try
+        {
+            var error = await Ai.TestConnectionAsync();
+            if (error is null)
+                Snackbar.Add("Connection OK — the model responded.", Severity.Success);
+            else
+                Snackbar.Add($"Connection failed: {error}", Severity.Error);
+        }
+        finally { _aiBusy = false; }
+    }
+
+    private async Task Reload() => _links = await QuickLinks.GetAllAsync();
+
+    private string TargetSummary(QuickLink link) => link.Target switch
+    {
+        QuickLinkTarget.Dashboard => "Dashboard",
+        QuickLinkTarget.Scan => "Scan & add",
+        QuickLinkTarget.Inventory => InventorySummary(link),
+        _ => ""
+    };
+
+    private string InventorySummary(QuickLink link)
+    {
+        var parts = new List<string>();
+        if (link.IncludeKindIds.Count > 0)
+            parts.Add(KindNames(link.IncludeKindIds));
+        if (link.ExcludeKindIds.Count > 0)
+            parts.Add("NOT " + KindNames(link.ExcludeKindIds));
+        return parts.Count > 0 ? $"Inventory · {string.Join(", ", parts)}" : "Inventory (all)";
+    }
+
+    private string KindNames(List<int> ids) =>
+        string.Join(", ", _kinds.Where(k => ids.Contains(k.Id)).Select(k => k.Name));
+
+    private async Task Edit(QuickLink? link)
+    {
+        var parameters = new DialogParameters
+        {
+            ["Link"] = link ?? new QuickLink { Target = QuickLinkTarget.Inventory },
+            ["Kinds"] = _kinds
+        };
+        var dialog = await Dialogs.ShowAsync<QuickLinkDialog>(link is null ? "Add quick link" : "Edit quick link", parameters);
+        var result = await dialog.Result;
+        if (result is { Canceled: false, Data: QuickLink edited })
+        {
+            await QuickLinks.SaveAsync(edited);
+            await Reload();
+        }
+    }
+
+    private async Task Move(QuickLink link, int direction)
+    {
+        await QuickLinks.MoveAsync(link.Id, direction);
+        await Reload();
+    }
+
+    private async Task Delete(QuickLink link)
+    {
+        var ok = await Dialogs.ShowMessageBoxAsync("Delete quick link", $"Delete \"{link.Label}\"?",
+            yesText: "Delete", cancelText: "Cancel");
+        if (ok == true)
+        {
+            await QuickLinks.DeleteAsync(link.Id);
+            Snackbar.Add("Quick link deleted.", Severity.Info);
+            await Reload();
+        }
+    }
+}

@@ -11,23 +11,32 @@
 </div>
 
 <MudPaper Class="pa-3 mb-3" Outlined="true">
-    <MudGrid>
-        <MudItem xs="12" md="6">
-            <MudTextField @bind-Value="_search" Placeholder="Search name, code, description" Immediate="true"
-                          Adornment="Adornment.Start" AdornmentIcon="@Icons.Material.Filled.Search"
-                          Variant="Variant.Outlined" Margin="Margin.Dense" DebounceInterval="300"
-                          OnDebounceIntervalElapsed="ReloadAsync" />
-        </MudItem>
-        <MudItem xs="12" md="6">
-            <MudSelect T="int?" Value="_kindId" Label="Kind" Variant="Variant.Outlined" Margin="Margin.Dense"
-                       Clearable="true" ValueChanged="OnKindChanged">
-                @foreach (var k in _kinds)
-                {
-                    <MudSelectItem T="int?" Value="@k.Id">@k.Name</MudSelectItem>
-                }
-            </MudSelect>
-        </MudItem>
-    </MudGrid>
+    <MudTextField @bind-Value="_search" Placeholder="Search name, code, description" Immediate="true"
+                  Adornment="Adornment.Start" AdornmentIcon="@Icons.Material.Filled.Search"
+                  Variant="Variant.Outlined" Margin="Margin.Dense" DebounceInterval="300"
+                  OnDebounceIntervalElapsed="ReloadAsync" Class="mb-2" />
+
+    <div class="d-flex align-center flex-wrap gap-2">
+        <MudText Typo="Typo.body2" Class="mr-1">Kinds:</MudText>
+        @foreach (var k in _kinds)
+        {
+            var mode = _kindFilter.GetValueOrDefault(k.Id);
+            <MudChip T="string" Size="Size.Small"
+                     Variant="@(mode == FilterMode.Off ? Variant.Outlined : Variant.Filled)"
+                     Color="@ChipColor(mode)"
+                     Icon="@(mode == FilterMode.Exclude ? Icons.Material.Filled.Block : null)"
+                     OnClick="@(() => CycleKindAsync(k.Id))">
+                @(mode == FilterMode.Exclude ? $"NOT {k.Name}" : k.Name)
+            </MudChip>
+        }
+        @if (_kindFilter.Values.Any(m => m != FilterMode.Off))
+        {
+            <MudButton Size="Size.Small" Variant="Variant.Text" OnClick="ClearKindFiltersAsync">Clear</MudButton>
+        }
+    </div>
+    <MudText Typo="Typo.caption" Class="mud-text-secondary">
+        Click a kind to include it, again to exclude (NOT), again to clear. Multiple includes are combined (any match).
+    </MudText>
 </MudPaper>
 
 @if (_items is null)
@@ -51,9 +60,10 @@ else
         <RowTemplate>
             <MudTd DataLabel="Name">
                 <div class="d-flex align-center gap-2">
-                    @if (!string.IsNullOrEmpty(context.ThumbnailUrl))
+                    @{ var thumb = ImageUrls.For(context.ImageId, context.ThumbnailUrl, 80); }
+                    @if (thumb is not null)
                     {
-                        <MudAvatar Size="Size.Small"><MudImage Src="@context.ThumbnailUrl" /></MudAvatar>
+                        <MudAvatar Size="Size.Small"><MudImage Src="@thumb" /></MudAvatar>
                     }
                     <span>@context.Name</span>
                 </div>
@@ -80,33 +90,72 @@ else
 }
 
 @code {
+    private enum FilterMode { Off, Include, Exclude }
+
+    [SupplyParameterFromQuery(Name = "include")] public string? IncludeParam { get; set; }
+    [SupplyParameterFromQuery(Name = "exclude")] public string? ExcludeParam { get; set; }
+
     private List<Item>? _items;
     private List<ItemKind> _kinds = new();
     private string? _search;
-    private int? _kindId;
+    private readonly Dictionary<int, FilterMode> _kindFilter = new();
 
     protected override async Task OnInitializedAsync()
     {
         _kinds = await InventorySvc.GetKindsAsync();
+        foreach (var k in _kinds) _kindFilter[k.Id] = FilterMode.Off;
+        // Preset filters when arriving from a home quick link (e.g. /inventory?include=1&exclude=2).
+        ApplyQueryFilter(IncludeParam, FilterMode.Include);
+        ApplyQueryFilter(ExcludeParam, FilterMode.Exclude);
         await ReloadAsync();
+    }
+
+    private void ApplyQueryFilter(string? csv, FilterMode mode)
+    {
+        if (string.IsNullOrWhiteSpace(csv)) return;
+        foreach (var part in csv.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+            if (int.TryParse(part, out var id) && _kindFilter.ContainsKey(id))
+                _kindFilter[id] = mode;
     }
 
     private async Task ReloadAsync()
     {
-        _items = await InventorySvc.QueryAsync(new ItemQuery(_search, _kindId));
+        var include = _kindFilter.Where(kv => kv.Value == FilterMode.Include).Select(kv => kv.Key).ToList();
+        var exclude = _kindFilter.Where(kv => kv.Value == FilterMode.Exclude).Select(kv => kv.Key).ToList();
+        _items = await InventorySvc.QueryAsync(new ItemQuery(_search, include, exclude));
         StateHasChanged();
     }
 
-    private async Task OnKindChanged(int? value)
+    private async Task CycleKindAsync(int kindId)
     {
-        _kindId = value;
+        _kindFilter[kindId] = _kindFilter.GetValueOrDefault(kindId) switch
+        {
+            FilterMode.Off => FilterMode.Include,
+            FilterMode.Include => FilterMode.Exclude,
+            _ => FilterMode.Off
+        };
         await ReloadAsync();
     }
+
+    private async Task ClearKindFiltersAsync()
+    {
+        foreach (var id in _kindFilter.Keys.ToList()) _kindFilter[id] = FilterMode.Off;
+        await ReloadAsync();
+    }
+
+    private static Color ChipColor(FilterMode mode) => mode switch
+    {
+        FilterMode.Include => Color.Primary,
+        FilterMode.Exclude => Color.Error,
+        _ => Color.Default
+    };
 
     private async Task Adjust(Item item, decimal delta)
     {
         await InventorySvc.AdjustQuantityAsync(item.Id, delta);
-        item.Quantity = Math.Max(0, item.Quantity + delta);
+        // Reload so the table re-renders: mutating a bound item's property alone does not
+        // make MudTable refresh the row.
+        await ReloadAsync();
     }
 
     private void OnRowClick(TableRowClickEventArgs<Item> args) => Nav.NavigateTo($"items/{args.Item!.Id}");

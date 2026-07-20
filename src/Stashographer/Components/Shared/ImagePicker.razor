@@ -1,0 +1,110 @@
+@* Compact photo control: tap the tile to use the device camera / pick a file (one tap on
+   mobile), or add from a URL. Uploads immediately and reports the stored image id. *@
+@inject ImageService Images
+@inject ISnackbar Snackbar
+
+<div class="image-picker" style="@($"width:{Width};")">
+    <label class="image-picker-tile" style="@($"height:{Height};")">
+        @if (ImageUrls.Has(ImageId, FallbackUrl))
+        {
+            <img src="@ImageUrls.For(ImageId, FallbackUrl, PreviewWidth)" alt="@Label" />
+            <div class="image-picker-overlay">
+                <MudIcon Icon="@Icons.Material.Filled.PhotoCamera" />
+                <span>Change</span>
+            </div>
+        }
+        else
+        {
+            <div class="image-picker-empty">
+                <MudIcon Icon="@Icons.Material.Filled.AddAPhoto" Size="Size.Large" />
+                <span>@Label</span>
+            </div>
+        }
+        <InputFile accept="image/*" capture="environment" OnChange="OnFileAsync" style="display:none" />
+    </label>
+
+    <div class="d-flex gap-1 mt-1 justify-center">
+        <MudButton Size="Size.Small" Variant="Variant.Text" StartIcon="@Icons.Material.Filled.Link"
+                   OnClick="@(() => _showUrl = !_showUrl)">URL</MudButton>
+        @if (ImageId is not null)
+        {
+            <MudButton Size="Size.Small" Variant="Variant.Text" Color="Color.Error"
+                       StartIcon="@Icons.Material.Filled.Delete" OnClick="Remove">Remove</MudButton>
+        }
+    </div>
+
+    @if (_showUrl)
+    {
+        <div class="d-flex gap-1 align-center mt-1">
+            <MudTextField @bind-Value="_url" Placeholder="https://…/photo.jpg" Variant="Variant.Outlined"
+                          Margin="Margin.Dense" Immediate="true" />
+            <MudButton Size="Size.Small" Color="Color.Primary" Variant="Variant.Filled"
+                       OnClick="FetchUrlAsync" Disabled="@(_busy || string.IsNullOrWhiteSpace(_url))">Fetch</MudButton>
+        </div>
+    }
+    @if (_busy)
+    {
+        <MudProgressLinear Indeterminate="true" Class="mt-1" />
+    }
+</div>
+
+@code {
+    [Parameter] public int? ImageId { get; set; }
+    [Parameter] public EventCallback<int?> ImageIdChanged { get; set; }
+
+    /// <summary>Remote fallback shown when no image is stored yet (e.g. a lookup cover).</summary>
+    [Parameter] public string? FallbackUrl { get; set; }
+
+    [Parameter] public string Label { get; set; } = "Add photo";
+    [Parameter] public string Width { get; set; } = "180px";
+    [Parameter] public string Height { get; set; } = "160px";
+    [Parameter] public int PreviewWidth { get; set; } = 360;
+
+    private bool _busy;
+    private bool _showUrl;
+    private string _url = string.Empty;
+
+    private async Task OnFileAsync(InputFileChangeEventArgs e)
+    {
+        var file = e.File;
+        if (file is null) return;
+        _busy = true;
+        try
+        {
+            await using var stream = file.OpenReadStream(20 * 1024 * 1024);
+            var image = await Images.SaveAsync(stream, file.ContentType, file.Name);
+            await SetImage(image.Id);
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Couldn't add photo: {ex.Message}", Severity.Error);
+        }
+        finally { _busy = false; }
+    }
+
+    private async Task FetchUrlAsync()
+    {
+        if (string.IsNullOrWhiteSpace(_url)) return;
+        _busy = true;
+        try
+        {
+            var image = await Images.SaveFromUrlAsync(_url.Trim());
+            _url = string.Empty;
+            _showUrl = false;
+            await SetImage(image.Id);
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Couldn't fetch image: {ex.Message}", Severity.Error);
+        }
+        finally { _busy = false; }
+    }
+
+    private async Task Remove() => await SetImage(null);
+
+    private async Task SetImage(int? id)
+    {
+        ImageId = id;
+        await ImageIdChanged.InvokeAsync(id);
+    }
+}

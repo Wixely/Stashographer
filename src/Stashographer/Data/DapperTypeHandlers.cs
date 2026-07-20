@@ -70,5 +70,6 @@ public static class DapperConfig
         SqlMapper.AddTypeHandler(new DateTimeOffsetTypeHandler());
         SqlMapper.AddTypeHandler(new JsonTypeHandler<Dictionary<string, string>>());
         SqlMapper.AddTypeHandler(new JsonTypeHandler<List<string>>());
+        SqlMapper.AddTypeHandler(new JsonTypeHandler<List<int>>());
     }
 }

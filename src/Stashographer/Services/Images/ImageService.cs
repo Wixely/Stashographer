@@ -1,0 +1,204 @@
+using System.Security.Cryptography;
+using Dapper;
+using SixLabors.ImageSharp;
+using SixLabors.ImageSharp.Processing;
+using Stashographer.Data;
+using Entities = Stashographer.Data.Entities;
+
+namespace Stashographer.Services.Images;
+
+/// <summary>
+/// Stores image originals on disk and generates cached thumbnails on demand. Metadata lives
+/// in the <c>Images</c> table; identical uploads are de-duplicated by content hash.
+/// </summary>
+public class ImageService
+{
+    private readonly IDbConnectionFactory _db;
+    private readonly IHttpClientFactory _httpFactory;
+    private readonly ILogger<ImageService> _logger;
+    private readonly string _originalsDir;
+    private readonly string _thumbsDir;
+
+    public ImageService(
+        IDbConnectionFactory db,
+        ImageOptions options,
+        IHostEnvironment env,
+        IHttpClientFactory httpFactory,
+        ILogger<ImageService> logger)
+    {
+        _db = db;
+        _httpFactory = httpFactory;
+        _logger = logger;
+
+        var root = Path.IsPathRooted(options.RootPath)
+            ? options.RootPath
+            : Path.Combine(env.ContentRootPath, options.RootPath);
+        _originalsDir = Path.Combine(root, "originals");
+        _thumbsDir = Path.Combine(root, "thumbs");
+        Directory.CreateDirectory(_originalsDir);
+        Directory.CreateDirectory(_thumbsDir);
+    }
+
+    private const string Columns =
+        "Id, StorageKey, ContentType, OriginalName, Width, Height, ByteSize, Sha256, SourceUrl, CreatedAt";
+
+    public async Task<Entities.Image?> GetAsync(int id, CancellationToken ct = default)
+    {
+        using var conn = await _db.OpenAsync(ct);
+        return await conn.QuerySingleOrDefaultAsync<Entities.Image>(
+            $"SELECT {Columns} FROM Images WHERE Id = @id", new { id });
+    }
+
+    /// <summary>Saves an uploaded/captured image, de-duplicating by content hash.</summary>
+    public async Task<Entities.Image> SaveAsync(
+        Stream content, string? contentType, string? originalName, string? sourceUrl = null,
+        CancellationToken ct = default)
+    {
+        using var buffer = new MemoryStream();
+        await content.CopyToAsync(buffer, ct);
+        var bytes = buffer.ToArray();
+        var sha = Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
+
+        using var conn = await _db.OpenAsync(ct);
+        var existing = await conn.QuerySingleOrDefaultAsync<Entities.Image>(
+            $"SELECT {Columns} FROM Images WHERE Sha256 = @sha LIMIT 1", new { sha });
+        if (existing is not null) return existing;
+
+        var info = SixLabors.ImageSharp.Image.Identify(bytes, out var format);
+        var ext = format.FileExtensions.FirstOrDefault() ?? "bin";
+        var storageKey = $"{Guid.NewGuid():N}.{ext}";
+        await File.WriteAllBytesAsync(Path.Combine(_originalsDir, storageKey), bytes, ct);
+
+        var image = new Entities.Image
+        {
+            StorageKey = storageKey,
+            ContentType = format.DefaultMimeType ?? contentType ?? "application/octet-stream",
+            OriginalName = originalName,
+            Width = info.Width,
+            Height = info.Height,
+            ByteSize = bytes.LongLength,
+            Sha256 = sha,
+            SourceUrl = sourceUrl,
+            CreatedAt = DateTimeOffset.UtcNow
+        };
+        image.Id = await conn.ExecuteScalarAsync<int>($"""
+            INSERT INTO Images (StorageKey, ContentType, OriginalName, Width, Height, ByteSize, Sha256, SourceUrl, CreatedAt)
+            VALUES (@StorageKey, @ContentType, @OriginalName, @Width, @Height, @ByteSize, @Sha256, @SourceUrl, @CreatedAt);
+            SELECT last_insert_rowid();
+            """, image);
+        return image;
+    }
+
+    /// <summary>Downloads an image from a URL and stores it.</summary>
+    public async Task<Entities.Image> SaveFromUrlAsync(string url, CancellationToken ct = default)
+    {
+        var http = _httpFactory.CreateClient(nameof(ImageService));
+        using var resp = await http.GetAsync(url, ct);
+        resp.EnsureSuccessStatusCode();
+        await using var stream = await resp.Content.ReadAsStreamAsync(ct);
+        var name = Path.GetFileName(new Uri(url).AbsolutePath);
+        return await SaveAsync(stream, resp.Content.Headers.ContentType?.MediaType, name, url, ct);
+    }
+
+    public (Stream Stream, string ContentType)? OpenOriginal(Entities.Image image)
+    {
+        var path = Path.Combine(_originalsDir, image.StorageKey);
+        return File.Exists(path)
+            ? (File.OpenRead(path), image.ContentType)
+            : null;
+    }
+
+    /// <summary>Reads an image's original bytes, or null when the file is gone.</summary>
+    public async Task<byte[]?> ReadOriginalBytesAsync(int id, CancellationToken ct = default)
+    {
+        var image = await GetAsync(id, ct);
+        if (image is null) return null;
+        var path = Path.Combine(_originalsDir, image.StorageKey);
+        return File.Exists(path) ? await File.ReadAllBytesAsync(path, ct) : null;
+    }
+
+    /// <summary>
+    /// Crops a normalized (0–1) box out of a stored image — with padding, clamped to the
+    /// image bounds — and stores the crop as a new image (PNG, deduped like any upload).
+    /// </summary>
+    public async Task<Entities.Image?> CropAsync(
+        int imageId, double x, double y, double w, double h, double padding = 0.08,
+        CancellationToken ct = default)
+    {
+        var source = await GetAsync(imageId, ct);
+        if (source is null) return null;
+        var path = Path.Combine(_originalsDir, source.StorageKey);
+        if (!File.Exists(path)) return null;
+
+        using var img = await SixLabors.ImageSharp.Image.LoadAsync(path, ct);
+
+        // Pad the box outward, then clamp to the image.
+        var px = x - w * padding;
+        var py = y - h * padding;
+        var pw = w * (1 + 2 * padding);
+        var ph = h * (1 + 2 * padding);
+
+        var rx = Math.Clamp((int)(px * img.Width), 0, img.Width - 1);
+        var ry = Math.Clamp((int)(py * img.Height), 0, img.Height - 1);
+        var rw = Math.Clamp((int)(pw * img.Width), 1, img.Width - rx);
+        var rh = Math.Clamp((int)(ph * img.Height), 1, img.Height - ry);
+
+        img.Mutate(c => c.Crop(new SixLabors.ImageSharp.Rectangle(rx, ry, rw, rh)));
+
+        using var ms = new MemoryStream();
+        await img.SaveAsPngAsync(ms, ct);
+        ms.Position = 0;
+        return await SaveAsync(ms, "image/png", $"crop-of-{imageId}.png", null, ct);
+    }
+
+    /// <summary>Returns a thumbnail no wider than <paramref name="width"/>, generating and caching it once.</summary>
+    public async Task<(byte[] Bytes, string ContentType)?> GetThumbnailAsync(
+        int id, int width, CancellationToken ct = default)
+    {
+        var image = await GetAsync(id, ct);
+        if (image is null) return null;
+
+        var originalPath = Path.Combine(_originalsDir, image.StorageKey);
+        if (!File.Exists(originalPath)) return null;
+
+        var cacheDir = Path.Combine(_thumbsDir, width.ToString());
+        var cachePath = Path.Combine(cacheDir, image.StorageKey);
+        if (File.Exists(cachePath))
+            return (await File.ReadAllBytesAsync(cachePath, ct), image.ContentType);
+
+        Directory.CreateDirectory(cacheDir);
+        using var img = await SixLabors.ImageSharp.Image.LoadAsync(originalPath, ct);
+        var targetWidth = Math.Min(width, img.Width);
+        img.Mutate(x => x.Resize(new ResizeOptions
+        {
+            Size = new SixLabors.ImageSharp.Size(targetWidth, 0),
+            Mode = ResizeMode.Max
+        }));
+        await img.SaveAsync(cachePath, ct); // encoder chosen by extension → preserves format
+        return (await File.ReadAllBytesAsync(cachePath, ct), image.ContentType);
+    }
+
+    /// <summary>Deletes an image, its cached thumbnails, and clears any references to it.</summary>
+    public async Task DeleteAsync(int id, CancellationToken ct = default)
+    {
+        var image = await GetAsync(id, ct);
+        if (image is null) return;
+
+        using var conn = await _db.OpenAsync(ct);
+        await conn.ExecuteAsync("UPDATE Items SET ImageId = NULL WHERE ImageId = @id", new { id });
+        await conn.ExecuteAsync("UPDATE Containers SET ImageId = NULL WHERE ImageId = @id", new { id });
+        await conn.ExecuteAsync("UPDATE Locations SET ImageId = NULL WHERE ImageId = @id", new { id });
+        await conn.ExecuteAsync("DELETE FROM Images WHERE Id = @id", new { id });
+
+        TryDelete(Path.Combine(_originalsDir, image.StorageKey));
+        if (Directory.Exists(_thumbsDir))
+            foreach (var dir in Directory.EnumerateDirectories(_thumbsDir))
+                TryDelete(Path.Combine(dir, image.StorageKey));
+    }
+
+    private void TryDelete(string path)
+    {
+        try { if (File.Exists(path)) File.Delete(path); }
+        catch (IOException ex) { _logger.LogWarning(ex, "Could not delete image file {Path}", path); }
+    }
+}

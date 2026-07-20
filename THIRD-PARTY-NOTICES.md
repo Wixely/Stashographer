@@ -8,6 +8,7 @@ Stashographer is MIT-licensed and depends only on permissive (non-copyleft) comp
 | Dapper | Apache-2.0 | Micro-ORM for data access |
 | Microsoft.Data.Sqlite | MIT | SQLite ADO.NET provider |
 | QRCoder | MIT | Server-side QR code generation for container labels |
+| SixLabors.ImageSharp (2.1.x) | Apache-2.0 | Image decoding and on-demand thumbnail generation (v2 pinned; v3+ is not permissively licensed) |
 | Microsoft.Extensions.AI / .OpenAI | MIT | Optional AI enrichment over the OpenAI protocol |
 | ASP.NET Core / Blazor (Microsoft.*) | MIT | Web framework |
 

@@ -1,0 +1,101 @@
+@* One explorer card for rooms, containers and items: image/icon, name, chip, hover
+   checkbox, native drag source and (optionally) drop target. Click opens; checkbox or
+   Ctrl+click selects. *@
+
+<div class="place-card @(Selected ? "place-card-selected" : "") @(_dragOver > 0 && DropAllowed ? "drop-target-active" : "")"
+     draggable="@(Draggable ? "true" : "false")"
+     @ondragstart="@(() => OnDragStart.InvokeAsync())"
+     @ondragstart:stopPropagation="true"
+     @ondragend="@(() => { _dragOver = 0; return OnDragEnd.InvokeAsync(); })"
+     @ondragenter="@(() => { if (IsDropTarget) _dragOver++; })"
+     @ondragleave="@(() => { if (IsDropTarget && _dragOver > 0) _dragOver--; })"
+     @ondragover:preventDefault="@IsDropTarget"
+     @ondrop="HandleDrop"
+     @ondrop:preventDefault="@IsDropTarget"
+     @onclick="HandleClick">
+
+    @if (Selectable)
+    {
+        <div class="place-card-check" @onclick:stopPropagation="true">
+            <MudCheckBox T="bool" Value="@Selected" ValueChanged="@(v => SelectedChanged.InvokeAsync(v))"
+                         Size="Size.Small" Color="Color.Primary" />
+        </div>
+    }
+
+    @if (MenuContent is not null)
+    {
+        <div class="place-card-menu" @onclick:stopPropagation="true">
+            <MudMenu Icon="@Icons.Material.Filled.MoreVert" Size="Size.Small" Dense="true"
+                     AnchorOrigin="Origin.BottomRight" TransformOrigin="Origin.TopRight">
+                @MenuContent
+            </MudMenu>
+        </div>
+    }
+
+    <div class="place-card-media">
+        @if (!string.IsNullOrEmpty(ImageUrl))
+        {
+            <img src="@ImageUrl" alt="@Title" loading="lazy" />
+        }
+        else
+        {
+            <MudIcon Icon="@(Icon ?? Icons.Material.Filled.Category)" Size="Size.Large"
+                     Color="@(IconColor)" />
+        }
+    </div>
+
+    <div class="place-card-body">
+        <MudText Typo="Typo.subtitle2" Class="place-card-title">@Title</MudText>
+        @if (!string.IsNullOrWhiteSpace(Subtitle))
+        {
+            <MudText Typo="Typo.caption" Class="mud-text-secondary">@Subtitle</MudText>
+        }
+        @if (!string.IsNullOrWhiteSpace(Chip))
+        {
+            <MudChip T="string" Size="Size.Small" Class="mt-1">@Chip</MudChip>
+        }
+    </div>
+</div>
+
+@code {
+    [Parameter] public string Title { get; set; } = string.Empty;
+    [Parameter] public string? Subtitle { get; set; }
+    [Parameter] public string? Chip { get; set; }
+    [Parameter] public string? ImageUrl { get; set; }
+    [Parameter] public string? Icon { get; set; }
+    [Parameter] public Color IconColor { get; set; } = Color.Primary;
+
+    [Parameter] public bool Selectable { get; set; }
+    [Parameter] public bool Selected { get; set; }
+    [Parameter] public EventCallback<bool> SelectedChanged { get; set; }
+
+    [Parameter] public bool Draggable { get; set; }
+    [Parameter] public EventCallback OnDragStart { get; set; }
+    [Parameter] public EventCallback OnDragEnd { get; set; }
+
+    [Parameter] public bool IsDropTarget { get; set; }
+    /// <summary>Whether the current drag payload may drop here (drives the highlight).</summary>
+    [Parameter] public bool DropAllowed { get; set; }
+    [Parameter] public EventCallback OnDrop { get; set; }
+
+    [Parameter] public EventCallback OnOpen { get; set; }
+    [Parameter] public RenderFragment? MenuContent { get; set; }
+
+    private int _dragOver;
+
+    private async Task HandleDrop()
+    {
+        _dragOver = 0;
+        if (IsDropTarget && DropAllowed) await OnDrop.InvokeAsync();
+    }
+
+    private async Task HandleClick(MouseEventArgs e)
+    {
+        if (Selectable && (e.CtrlKey || e.MetaKey))
+        {
+            await SelectedChanged.InvokeAsync(!Selected);
+            return;
+        }
+        await OnOpen.InvokeAsync();
+    }
+}
