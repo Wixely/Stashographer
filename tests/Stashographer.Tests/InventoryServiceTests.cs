@@ -113,6 +113,22 @@ public class InventoryServiceTests
     }
 
     [Fact]
+    public async Task Kind_icons_are_short_iconcatalog_keys_after_migrations()
+    {
+        await using var db = await TestDb.CreateAsync();
+        var svc = new InventoryService(db.Factory);
+
+        var kinds = await svc.GetKindsAsync();
+
+        Assert.All(kinds, k =>
+        {
+            Assert.False(string.IsNullOrWhiteSpace(k.Icon));
+            Assert.DoesNotContain(".", k.Icon); // 0006 strips 'Icons.Material.Filled.'
+        });
+        Assert.Equal("MenuBook", kinds.Single(k => k.Name == "Book").Icon);
+    }
+
+    [Fact]
     public async Task Delete_removes_item()
     {
         await using var db = await TestDb.CreateAsync();

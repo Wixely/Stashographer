@@ -11,7 +11,7 @@ public class ItemKind
 
     public required string Name { get; set; }
 
-    /// <summary>Optional MudBlazor icon name shown in lists.</summary>
+    /// <summary>Icon key resolved via <c>IconCatalog</c> (e.g. "Kitchen", "MenuBook").</summary>
     public string? Icon { get; set; }
 
     /// <summary>

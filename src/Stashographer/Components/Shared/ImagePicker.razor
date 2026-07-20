@@ -26,10 +26,10 @@
     <div class="d-flex gap-1 mt-1 justify-center">
         <MudButton Size="Size.Small" Variant="Variant.Text" StartIcon="@Icons.Material.Filled.Link"
                    OnClick="@(() => _showUrl = !_showUrl)">URL</MudButton>
-        @if (ImageId is not null)
+        @if (ImageUrls.Has(ImageId, FallbackUrl))
         {
             <MudButton Size="Size.Small" Variant="Variant.Text" Color="Color.Error"
-                       StartIcon="@Icons.Material.Filled.Delete" OnClick="Remove">Remove</MudButton>
+                       StartIcon="@Icons.Material.Filled.Delete" OnClick="ClearAsync">Clear</MudButton>
         }
     </div>
 
@@ -52,8 +52,10 @@
     [Parameter] public int? ImageId { get; set; }
     [Parameter] public EventCallback<int?> ImageIdChanged { get; set; }
 
-    /// <summary>Remote fallback shown when no image is stored yet (e.g. a lookup cover).</summary>
+    /// <summary>Remote fallback shown when no image is stored yet (e.g. a lookup cover).
+    /// Two-way bindable so Clear can wipe it along with the stored image.</summary>
     [Parameter] public string? FallbackUrl { get; set; }
+    [Parameter] public EventCallback<string?> FallbackUrlChanged { get; set; }
 
     [Parameter] public string Label { get; set; } = "Add photo";
     [Parameter] public string Width { get; set; } = "180px";
@@ -100,7 +102,16 @@
         finally { _busy = false; }
     }
 
-    private async Task Remove() => await SetImage(null);
+    /// <summary>Removes whatever is showing: the stored image reference and the remote fallback.</summary>
+    private async Task ClearAsync()
+    {
+        await SetImage(null);
+        if (FallbackUrl is not null)
+        {
+            FallbackUrl = null;
+            await FallbackUrlChanged.InvokeAsync(null);
+        }
+    }
 
     private async Task SetImage(int? id)
     {

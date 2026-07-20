@@ -73,7 +73,7 @@ else if (CurrentView == InventoryView.Gallery)
                         }
                         else
                         {
-                            <span class="cover-initial">@Initial(item.Name)</span>
+                            <MudIcon Icon="@IconCatalog.Resolve(item.Kind?.Icon)" Class="cover-kind-icon" />
                         }
                     </div>
                     <div class="cover-body">
@@ -108,6 +108,12 @@ else
                     @if (thumb is not null)
                     {
                         <MudAvatar Size="Size.Small"><MudImage Src="@thumb" /></MudAvatar>
+                    }
+                    else
+                    {
+                        <MudAvatar Size="Size.Small">
+                            <MudIcon Icon="@IconCatalog.Resolve(context.Kind?.Icon)" Size="Size.Small" />
+                        </MudAvatar>
                     }
                     <span>@context.Name</span>
                 </div>
@@ -151,9 +157,6 @@ else
         Nav.NavigateTo(
             Nav.GetUriWithQueryParameter("view", view == InventoryView.Gallery ? "gallery" : null),
             replace: true);
-
-    private static string Initial(string name) =>
-        string.IsNullOrWhiteSpace(name) ? "?" : char.ToUpperInvariant(name.Trim()[0]).ToString();
 
     private List<Item>? _items;
     private List<ItemKind> _kinds = new();

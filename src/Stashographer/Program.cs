@@ -48,7 +48,10 @@ builder.Services.AddScoped<SampleDataSeeder>();
 var imageOptions = builder.Configuration.GetSection(ImageOptions.SectionName).Get<ImageOptions>() ?? new ImageOptions();
 builder.Services.AddSingleton(imageOptions);
 builder.Services.AddHttpClient(nameof(ImageService), c =>
-    c.DefaultRequestHeaders.UserAgent.ParseAdd("Stashographer/1.0 (household inventory app)"));
+{
+    c.DefaultRequestHeaders.UserAgent.ParseAdd("Stashographer/1.0 (household inventory app)");
+    c.Timeout = TimeSpan.FromSeconds(15); // remote image fetches must not hang item saves
+});
 builder.Services.AddScoped<ImageService>();
 
 // --- Sample/test data (development) -------------------------------------------

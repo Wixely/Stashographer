@@ -2,6 +2,7 @@ using System.Text.Json;
 using Dapper;
 using Stashographer.Data;
 using Stashographer.Data.Entities;
+using Stashographer.Services.Images;
 
 namespace Stashographer.Services.Inventory;
 
@@ -30,7 +31,7 @@ public record DashboardSummary(
     List<Item> CheckedOut);
 
 /// <summary>CRUD and query operations for inventory items, via Dapper.</summary>
-public class InventoryService(IDbConnectionFactory db)
+public class InventoryService(IDbConnectionFactory db, ImageService? images = null)
 {
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
 
@@ -145,6 +146,8 @@ public class InventoryService(IDbConnectionFactory db)
 
     public async Task<Item> SaveAsync(Item item, CancellationToken ct = default)
     {
+        await TryIngestRemoteThumbnailAsync(item, ct);
+
         using var conn = await db.OpenAsync(ct);
         var now = DateTimeOffset.UtcNow;
         var p = new
@@ -238,6 +241,33 @@ public class InventoryService(IDbConnectionFactory db)
             await conn.ExecuteAsync(
                 "UPDATE Items SET LocationId = @LocationId, ContainerId = @ContainerId, UpdatedAt = @now WHERE Id = @ItemId",
                 new { p.ItemId, p.LocationId, p.ContainerId, now = DateTimeOffset.UtcNow.ToString("O") });
+        }
+    }
+
+    /// <summary>
+    /// Remote lookup covers are not meant to stay remote: when an item is saved carrying a
+    /// remote <see cref="Item.ThumbnailUrl"/> and no stored image, download it through the
+    /// sanitizing ingest (verified, re-encoded, deduped) and reference the local copy
+    /// instead. Failures (offline, dead URL, not-an-image) keep the remote URL so the UI
+    /// still has its fallback — ingestion retries on the next save.
+    /// </summary>
+    private async Task TryIngestRemoteThumbnailAsync(Item item, CancellationToken ct)
+    {
+        if (images is null || item.ImageId is not null) return;
+        var url = item.ThumbnailUrl;
+        if (string.IsNullOrWhiteSpace(url)
+            || !url.StartsWith("http", StringComparison.OrdinalIgnoreCase)) return;
+
+        try
+        {
+            var stored = await images.SaveFromUrlAsync(url!, ct);
+            item.ImageId = stored.Id;
+            item.ThumbnailUrl = null;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            // Deliberate: keep the remote URL as the display fallback.
+            _ = ex;
         }
     }
 

@@ -16,6 +16,7 @@ public class ImageService
     private readonly IDbConnectionFactory _db;
     private readonly IHttpClientFactory _httpFactory;
     private readonly ILogger<ImageService> _logger;
+    private readonly ImageOptions _options;
     private readonly string _originalsDir;
     private readonly string _thumbsDir;
 
@@ -29,6 +30,7 @@ public class ImageService
         _db = db;
         _httpFactory = httpFactory;
         _logger = logger;
+        _options = options;
 
         var root = Path.IsPathRooted(options.RootPath)
             ? options.RootPath
@@ -49,34 +51,81 @@ public class ImageService
             $"SELECT {Columns} FROM Images WHERE Id = @id", new { id });
     }
 
-    /// <summary>Saves an uploaded/captured image, de-duplicating by content hash.</summary>
+    /// <summary>
+    /// Saves an uploaded/captured/downloaded image, de-duplicating by content hash.
+    /// Untrusted input is sanitized: size-bounded, dimension-guarded (decompression bombs),
+    /// fully decoded, stripped of all metadata (EXIF/ICC/IPTC/XMP), downscaled to the
+    /// configured maximum, and re-encoded into our standard formats (JPEG for JPEG sources,
+    /// PNG for everything else). Only the clean re-encoded bytes ever touch disk — nothing
+    /// from the original container survives except the pixels.
+    /// </summary>
     public async Task<Entities.Image> SaveAsync(
         Stream content, string? contentType, string? originalName, string? sourceUrl = null,
         CancellationToken ct = default)
     {
-        using var buffer = new MemoryStream();
-        await content.CopyToAsync(buffer, ct);
-        var bytes = buffer.ToArray();
-        var sha = Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
+        var bytes = await ReadBoundedAsync(content, _options.MaxUploadBytes, ct);
+
+        // Cheap header sniff first: format + declared dimensions, no full decode yet.
+        var info = SixLabors.ImageSharp.Image.Identify(bytes, out var sourceFormat);
+        if (info is null || sourceFormat is null)
+            throw new InvalidDataException("The data is not a recognized image.");
+        if (info.Width <= 0 || info.Height <= 0
+            || (long)info.Width * info.Height > _options.MaxDecodedPixels)
+            throw new InvalidDataException("The image dimensions are not acceptable.");
+
+        // Sanitize: decode → strip metadata → cap size → re-encode.
+        byte[] clean;
+        int width, height;
+        string ext, mime;
+        using (var img = SixLabors.ImageSharp.Image.Load(bytes))
+        {
+            img.Metadata.ExifProfile = null;
+            img.Metadata.IccProfile = null;
+            img.Metadata.IptcProfile = null;
+            img.Metadata.XmpProfile = null;
+
+            var max = _options.MaxStoredDimension;
+            if (img.Width > max || img.Height > max)
+                img.Mutate(x => x.Resize(new ResizeOptions
+                {
+                    Size = new SixLabors.ImageSharp.Size(max, max),
+                    Mode = ResizeMode.Max
+                }));
+
+            using var ms = new MemoryStream();
+            if (string.Equals(sourceFormat.Name, "JPEG", StringComparison.OrdinalIgnoreCase))
+            {
+                await img.SaveAsJpegAsync(ms, new SixLabors.ImageSharp.Formats.Jpeg.JpegEncoder { Quality = 85 }, ct);
+                (ext, mime) = ("jpg", "image/jpeg");
+            }
+            else
+            {
+                await img.SaveAsPngAsync(ms, ct); // preserves alpha for png/gif/bmp/webp sources
+                (ext, mime) = ("png", "image/png");
+            }
+            clean = ms.ToArray();
+            (width, height) = (img.Width, img.Height);
+        }
+
+        // Dedup on the sanitized bytes: the same source always re-encodes identically.
+        var sha = Convert.ToHexString(SHA256.HashData(clean)).ToLowerInvariant();
 
         using var conn = await _db.OpenAsync(ct);
         var existing = await conn.QuerySingleOrDefaultAsync<Entities.Image>(
             $"SELECT {Columns} FROM Images WHERE Sha256 = @sha LIMIT 1", new { sha });
         if (existing is not null) return existing;
 
-        var info = SixLabors.ImageSharp.Image.Identify(bytes, out var format);
-        var ext = format.FileExtensions.FirstOrDefault() ?? "bin";
         var storageKey = $"{Guid.NewGuid():N}.{ext}";
-        await File.WriteAllBytesAsync(Path.Combine(_originalsDir, storageKey), bytes, ct);
+        await File.WriteAllBytesAsync(Path.Combine(_originalsDir, storageKey), clean, ct);
 
         var image = new Entities.Image
         {
             StorageKey = storageKey,
-            ContentType = format.DefaultMimeType ?? contentType ?? "application/octet-stream",
+            ContentType = mime,
             OriginalName = originalName,
-            Width = info.Width,
-            Height = info.Height,
-            ByteSize = bytes.LongLength,
+            Width = width,
+            Height = height,
+            ByteSize = clean.LongLength,
             Sha256 = sha,
             SourceUrl = sourceUrl,
             CreatedAt = DateTimeOffset.UtcNow
@@ -89,15 +138,42 @@ public class ImageService
         return image;
     }
 
-    /// <summary>Downloads an image from a URL and stores it.</summary>
+    /// <summary>
+    /// Downloads an image from a URL and stores it (sanitized like any other ingest).
+    /// http/https only; size-capped before and during download; errors stay generic so
+    /// nothing about a probed endpoint's response is echoed back.
+    /// </summary>
     public async Task<Entities.Image> SaveFromUrlAsync(string url, CancellationToken ct = default)
     {
+        if (!Uri.TryCreate(url, UriKind.Absolute, out var uri)
+            || (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps))
+            throw new InvalidOperationException("Only http(s) image URLs are supported.");
+
         var http = _httpFactory.CreateClient(nameof(ImageService));
-        using var resp = await http.GetAsync(url, ct);
+        using var resp = await http.GetAsync(uri, HttpCompletionOption.ResponseHeadersRead, ct);
         resp.EnsureSuccessStatusCode();
+        if (resp.Content.Headers.ContentLength is { } declared && declared > _options.MaxUploadBytes)
+            throw new InvalidDataException("The image is too large.");
+
         await using var stream = await resp.Content.ReadAsStreamAsync(ct);
-        var name = Path.GetFileName(new Uri(url).AbsolutePath);
-        return await SaveAsync(stream, resp.Content.Headers.ContentType?.MediaType, name, url, ct);
+        var name = Path.GetFileName(uri.AbsolutePath);
+        return await SaveAsync(stream, resp.Content.Headers.ContentType?.MediaType,
+            string.IsNullOrWhiteSpace(name) ? "download" : name, url, ct);
+    }
+
+    /// <summary>Reads a stream into memory, rejecting anything over the limit mid-stream.</summary>
+    private static async Task<byte[]> ReadBoundedAsync(Stream content, long limit, CancellationToken ct)
+    {
+        using var buffer = new MemoryStream();
+        var chunk = new byte[81920];
+        int read;
+        while ((read = await content.ReadAsync(chunk, ct)) > 0)
+        {
+            if (buffer.Length + read > limit)
+                throw new InvalidDataException("The image is too large.");
+            buffer.Write(chunk, 0, read);
+        }
+        return buffer.ToArray();
     }
 
     public (Stream Stream, string ContentType)? OpenOriginal(Entities.Image image)

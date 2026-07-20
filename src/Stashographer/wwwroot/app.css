@@ -194,12 +194,12 @@ html, body {
     height: 100%;
     object-fit: cover;
 }
-.cover-initial {
-    font-size: 3rem;
-    font-weight: 600;
+.cover-kind-icon {
+    font-size: 3.5rem;
+    width: 3.5rem;
+    height: 3.5rem;
     color: var(--mud-palette-text-secondary);
     opacity: 0.55;
-    user-select: none;
 }
 
 .cover-body { padding: 8px 10px 10px; }
