@@ -101,17 +101,22 @@ app.MapRazorComponents<App>()
 // Image content for a given id is immutable (a new upload gets a new id), so cache hard.
 app.MapGet("/img/{id:int}", async (int id, int? w, ImageService images, HttpContext ctx, CancellationToken ct) =>
 {
-    ctx.Response.Headers.CacheControl = "public,max-age=31536000,immutable";
+    // Cache hard only on success — an immutable-cached 404 would stick for a year.
+    void CacheForever() => ctx.Response.Headers.CacheControl = "public,max-age=31536000,immutable";
+
     if (w is > 0)
     {
         var thumb = await images.GetThumbnailAsync(id, Math.Clamp(w.Value, 16, 2000), ct);
-        return thumb is null ? Results.NotFound() : Results.Bytes(thumb.Value.Bytes, thumb.Value.ContentType);
+        if (thumb is null) return Results.NotFound();
+        CacheForever();
+        return Results.Bytes(thumb.Value.Bytes, thumb.Value.ContentType);
     }
 
     var image = await images.GetAsync(id, ct);
-    if (image is null) return Results.NotFound();
-    var original = images.OpenOriginal(image);
-    return original is null ? Results.NotFound() : Results.Stream(original.Value.Stream, original.Value.ContentType);
+    var original = image is null ? null : images.OpenOriginal(image);
+    if (original is null) return Results.NotFound();
+    CacheForever();
+    return Results.Stream(original.Value.Stream, original.Value.ContentType);
 });
 
 app.Run();

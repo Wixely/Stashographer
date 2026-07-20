@@ -45,7 +45,9 @@ public class OpenLibraryProvider(HttpClient http, ILogger<OpenLibraryProvider> l
                 Found = true,
                 Code = isbn,
                 Name = name,
-                ThumbnailUrl = $"https://covers.openlibrary.org/b/isbn/{isbn}-M.jpg",
+                // default=false → 404 for missing covers (instead of a blank 1×1 GIF),
+                // which lets the client-side broken-image fallback show a placeholder.
+                ThumbnailUrl = $"https://covers.openlibrary.org/b/isbn/{isbn}-M.jpg?default=false",
                 SuggestedKind = "Book",
                 Attributes = attributes,
                 Source = Name

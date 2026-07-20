@@ -9,6 +9,26 @@ window.stashTheme = {
     prefersDark: () => window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches
 };
 
+// Broken-image fallback: any <img> that fails to load (dead lookup cover, missing stored
+// file) is swapped for a neutral inline-SVG placeholder instead of the browser's broken
+// icon. Capture phase because the error event does not bubble. data-fallback guards
+// against loops if the placeholder itself ever failed.
+(() => {
+    const placeholder = 'data:image/svg+xml,' + encodeURIComponent(
+        "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 96 96'>" +
+        "<rect width='96' height='96' rx='8' fill='#9e9e9e' fill-opacity='0.15'/>" +
+        "<circle cx='36' cy='36' r='7' fill='#9e9e9e' fill-opacity='0.6'/>" +
+        "<path d='M22 70l16-18 11 12 9-10 16 16z' fill='#9e9e9e' fill-opacity='0.6'/>" +
+        "</svg>");
+    document.addEventListener('error', e => {
+        const img = e.target;
+        if (img instanceof HTMLImageElement && !img.dataset.fallback) {
+            img.dataset.fallback = '1';
+            img.src = placeholder;
+        }
+    }, true);
+})();
+
 window.stashScanner = (() => {
     let stream = null;
     let detector = null;

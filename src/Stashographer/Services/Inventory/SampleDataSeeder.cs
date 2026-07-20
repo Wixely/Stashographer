@@ -76,7 +76,7 @@ public class SampleDataSeeder(
         {
             Name = "Introduction to Algorithms", Code = "9780262033848", ItemKindId = 2,
             Quantity = 1, LocationId = 5,
-            ThumbnailUrl = "https://covers.openlibrary.org/b/isbn/9780262033848-M.jpg",
+            ThumbnailUrl = "https://covers.openlibrary.org/b/isbn/9780262033848-M.jpg?default=false",
             Attributes = new() { ["Author"] = "Cormen, Leiserson, Rivest, Stein", ["Publisher"] = "The MIT Press", ["Pages"] = "1292" }
         }, ct);
         await inventory.SaveAsync(new Item
