@@ -3,6 +3,7 @@
 @inject IAiEnrichmentService Ai
 @inject PhotoIntakeService Intake
 @inject InventoryService Inventory
+@inject ImageService Images
 @inject ItemDraftState Draft
 @inject NavigationManager Nav
 @inject ISnackbar Snackbar
@@ -15,28 +16,31 @@
     <MudItem xs="12" md="6">
         <ScanControl OnCode="OnCode" />
 
-        @if (Ai.IsEnabled)
-        {
-            <MudPaper Class="pa-4 mt-3" Outlined="true">
-                <div class="d-flex justify-space-between align-center mb-2">
-                    <MudText Typo="Typo.subtitle2">Add from a photo</MudText>
+        <MudPaper Class="pa-4 mt-3" Outlined="true">
+            <div class="d-flex justify-space-between align-center mb-2">
+                <MudText Typo="Typo.subtitle2">Add from a photo</MudText>
+                @if (Ai.IsEnabled)
+                {
                     <MudSwitch T="bool" @bind-Value="_multiMode" Label="Multiple items" Color="Color.Primary" Size="Size.Small" />
-                </div>
-                <MudText Typo="Typo.caption" Class="mud-text-secondary d-block mb-2">
-                    @(_multiMode
+                }
+            </div>
+            <MudText Typo="Typo.caption" Class="mud-text-secondary d-block mb-2">
+                @(Ai.IsEnabled
+                    ? _multiMode
                         ? "One photo of several things — each is detected, cropped and added."
-                        : "Snap one item — it's matched against your inventory and counted up, or created.")
-                </MudText>
-                <MudFileUpload T="IBrowserFile" Accept="image/*" FilesChanged="OnIntakePhoto">
-                    <ActivatorContent>
-                        <MudButton Variant="Variant.Filled" Color="Color.Primary"
-                                   StartIcon="@Icons.Material.Filled.PhotoCamera" Disabled="_busy">
-                            Take / choose photo
-                        </MudButton>
-                    </ActivatorContent>
-                </MudFileUpload>
-            </MudPaper>
-        }
+                        : "Snap or upload one item — it's matched against your inventory and counted up, or created."
+                    : "The photo is attached to a new item for you to fill in. Enable AI in Settings to identify and count items automatically.")
+            </MudText>
+
+            <InputFile id="scan-photo-camera" OnChange="OnIntakePhotoChange" hidden accept="image/*" capture="environment" />
+            <InputFile id="scan-photo-upload" OnChange="OnIntakePhotoChange" hidden accept="image/*" />
+            <div class="d-flex gap-2 flex-wrap">
+                <MudButton HtmlTag="label" for="scan-photo-camera" Variant="Variant.Filled" Color="Color.Primary"
+                           StartIcon="@Icons.Material.Filled.PhotoCamera" Disabled="_busy">Take photo</MudButton>
+                <MudButton HtmlTag="label" for="scan-photo-upload" Variant="Variant.Outlined" Color="Color.Primary"
+                           StartIcon="@Icons.Material.Filled.Upload" Disabled="_busy">Upload image</MudButton>
+            </div>
+        </MudPaper>
     </MudItem>
 
     <MudItem xs="12" md="6">
@@ -154,7 +158,7 @@
         else
         {
             <MudAlert Severity="Severity.Info">
-                Scan a barcode, enter one manually@(Ai.IsEnabled ? ", or snap a photo" : "") to add items.
+                Scan a barcode, enter one manually, or add a photo to get items in.
             </MudAlert>
         }
     </MudItem>
@@ -216,11 +220,36 @@
 
     // --- Photo intake path -----------------------------------------------------------
 
+    private async Task OnIntakePhotoChange(InputFileChangeEventArgs e) => await OnIntakePhoto(e.File);
+
     private async Task OnIntakePhoto(IBrowserFile? file)
     {
         if (file is null) return;
         ClearIntake();
         _result = null;
+
+        // Without AI, the photo still comes in: sanitize/store it and hand the user a
+        // new-item draft with the photo attached.
+        if (!Ai.IsEnabled)
+        {
+            _busy = true;
+            _busyText = "Adding photo…";
+            StateHasChanged();
+            try
+            {
+                await using var upload = file.OpenReadStream(20 * 1024 * 1024);
+                var stored = await Images.SaveAsync(upload, file.ContentType, file.Name);
+                Draft.Set(new Item { Name = string.Empty, ItemKindId = 7, ImageId = stored.Id });
+                Nav.NavigateTo("items/new");
+            }
+            catch (Exception ex)
+            {
+                Snackbar.Add($"Couldn't add photo: {ex.Message}", Severity.Error);
+            }
+            finally { _busy = false; }
+            return;
+        }
+
         _busy = true;
         _busyText = _multiMode ? "Detecting items…" : "Identifying…";
         StateHasChanged();
