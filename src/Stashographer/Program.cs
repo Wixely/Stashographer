@@ -100,6 +100,11 @@ app.MapStaticAssets();
 app.MapRazorComponents<App>()
     .AddInteractiveServerRenderMode();
 
+// Container liveness probe (Docker HEALTHCHECK / compose). Deliberately does not touch
+// the database: migrations already ran at startup, so a DB fault here would be a reason
+// to look at logs, not to have the orchestrator restart-loop the container.
+app.MapGet("/health", () => Results.Ok("healthy"));
+
 // Image serving: /img/{id} for the original, /img/{id}?w=240 for an on-demand thumbnail.
 // Image content for a given id is immutable (a new upload gets a new id), so cache hard.
 app.MapGet("/img/{id:int}", async (int id, int? w, ImageService images, HttpContext ctx, CancellationToken ct) =>

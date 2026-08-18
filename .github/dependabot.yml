@@ -1,0 +1,28 @@
+version: 2
+
+updates:
+  - package-ecosystem: nuget
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      # These ship in lockstep; separate PRs for each just create merge conflicts.
+      microsoft-extensions-ai:
+        patterns:
+          - Microsoft.Extensions.AI*
+      test-tooling:
+        patterns:
+          - xunit*
+          - Microsoft.NET.Test.Sdk
+          - coverlet.*
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly

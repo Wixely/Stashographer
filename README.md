@@ -1,9 +1,30 @@
 # Stashographer
 
+[![CI](https://github.com/Wixely/Stashographer/actions/workflows/ci.yml/badge.svg)](https://github.com/Wixely/Stashographer/actions/workflows/ci.yml)
+[![Docker](https://github.com/Wixely/Stashographer/actions/workflows/docker.yml/badge.svg)](https://github.com/Wixely/Stashographer/actions/workflows/docker.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![.NET 10](https://img.shields.io/badge/.NET-10-512BD4)](https://dotnet.microsoft.com/)
+
 A household inventory manager. Scan a barcode, ISBN, or QR code (or type it in) and
 Stashographer auto-fills the details from free public APIs — or, optionally, an AI vision
 model — then tracks quantity, where each thing lives (room → container), expiry dates, and
 who currently has it on loan.
+
+Self-hosted, single container, SQLite on a volume. No account, no cloud, no telemetry.
+
+## Screenshots
+
+| Dashboard | Inventory |
+|---|---|
+| ![Dashboard — item counts, expiring soon, low stock, currently out](docs/screenshots/dashboard.png) | ![Inventory — filterable item list with inline quantity controls](docs/screenshots/inventory.png) |
+
+| Scan & add | Places |
+|---|---|
+| ![Scan & add — camera scanning, manual barcode entry, add from photo](docs/screenshots/scan.png) | ![Places — rooms and containers explorer](docs/screenshots/places.png) |
+
+Every container gets a printable QR code — scan it to see what's meant to be inside:
+
+![Container view — contents of a shelf with its QR code](docs/screenshots/container.png)
 
 ## Features
 
@@ -22,13 +43,30 @@ who currently has it on loan.
   "season" any item with extra detail, via any **OpenAI-protocol** endpoint.
 - **Light / dark themes**, mobile-friendly (MudBlazor).
 
-## Tech
+## Quick start
 
-.NET 10 Blazor Web App (Interactive Server) · SQLite via **Dapper** with hand-written SQL
-migrations · MudBlazor · QRCoder · Microsoft.Extensions.AI. MIT-licensed, permissive
-dependencies only (see [THIRD-PARTY-NOTICES](THIRD-PARTY-NOTICES.md)).
+### Docker Compose (recommended)
 
-## Run locally
+```bash
+docker compose up -d --build
+```
+
+Then open <http://localhost:8080>. A sample [`docker-compose.yml`](docker-compose.yml) is
+included — the database and images live on the `stash-data` volume, so `docker compose down`
+keeps your data.
+
+### Docker
+
+```bash
+docker build -t stashographer .
+docker run -d -p 8080:8080 -v stash-data:/data stashographer
+```
+
+The image runs unprivileged (UID 1654) and exposes a `/health` endpoint used by its
+`HEALTHCHECK`. If you swap the named volume for a bind mount, `chown 1654` the host directory
+first — bind mounts keep the host's ownership, so the app cannot write to it otherwise.
+
+### From source
 
 ```bash
 dotnet run --project src/Stashographer
@@ -55,22 +93,34 @@ Ai__Endpoint=https://your-endpoint/v1   # optional
 
 Without AI configured, those actions are simply hidden and everything else works.
 
-## Docker
+> Keep the key out of git. Put it in a `.env` file next to `docker-compose.yml` (already
+> covered by `.gitignore`) and reference it as `${STASH_AI_API_KEY}`.
+
+## Tech
+
+.NET 10 Blazor Web App (Interactive Server) · SQLite via **Dapper** with hand-written SQL
+migrations · MudBlazor · QRCoder · Microsoft.Extensions.AI. MIT-licensed, permissive
+dependencies only (see [THIRD-PARTY-NOTICES](THIRD-PARTY-NOTICES.md)).
+
+## Development
 
 ```bash
-docker build -t stashographer .
-docker run -p 8080:8080 -v stash-data:/data stashographer
+dotnet test                    # 70 tests, no network access required
+dotnet build -c Release
 ```
 
-The database is stored on the `/data` volume so it survives restarts.
+CI runs build + tests on every push and PR to `main`, and builds the Docker image; pushes to
+`main` publish it to `ghcr.io/wixely/stashographer` and smoke-test that the container serves
+`/health`.
 
-## Tests
-
-```bash
-dotnet test
-```
+Sample data is seeded automatically in the Development environment (see
+`appsettings.Development.json`) — that is what the screenshots above show.
 
 ## Roadmap (phase 2)
 
 Postgres/other database providers, tags UI, shopping lists from low stock, consumption
 history, CSV import/export, optional multi-user auth, PWA/offline.
+
+## License
+
+MIT — see [LICENSE](LICENSE).

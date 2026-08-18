@@ -6,5 +6,10 @@
 **/*.db-*
 .git/
 .gitignore
+.github/
 tests/
+docs/
 *.md
+.env
+*.env
+docker-compose*.yml

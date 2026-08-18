@@ -1,0 +1,47 @@
+# Sample deployment. Copy, adjust, and run:  docker compose up -d
+#
+#   docker compose up -d --build     build from this checkout
+#   docker compose logs -f           follow logs
+#   docker compose down              stop (the named volume, and your data, survives)
+
+services:
+  stashographer:
+    # Build from source, or comment this out and use the published image instead:
+    # image: ghcr.io/wixely/stashographer:latest
+    build: .
+    image: stashographer:local
+    container_name: stashographer
+    restart: unless-stopped
+
+    ports:
+      - "8080:8080"
+
+    environment:
+      # The database and images both live under /data, which is the volume below.
+      ConnectionStrings__Default: "Data Source=/data/stashographer.db"
+      Images__RootPath: "/data/images"
+
+      # --- AI enrichment (optional) --------------------------------------------
+      # Leave these out entirely to run without AI; every non-AI feature works.
+      # Settings saved in the UI (Settings -> AI enrichment) are stored in the
+      # database and override these, so they are only the initial defaults.
+      # Ai__Enabled: "true"
+      # Ai__Endpoint: "https://api.openai.com/v1"
+      # Ai__ApiKey: "${STASH_AI_API_KEY}"   # from a .env file — never commit the key
+      # Ai__Model: "gpt-4o-mini"
+      # Ai__VisionModel: "gpt-4o"
+
+    volumes:
+      - stash-data:/data
+
+    # The image already declares an equivalent HEALTHCHECK; repeated here so it stays
+    # visible and tunable at the compose layer.
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 15s
+      retries: 3
+
+volumes:
+  stash-data:

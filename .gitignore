@@ -14,6 +14,11 @@ obj/
 ## Stored images (originals + generated thumbnails)
 App_Data/
 
+## Local secrets — docker compose reads .env for Ai__ApiKey and friends
+.env
+*.env
+!.env.example
+
 ## Rider / VS Code
 .idea/
 .vscode/
