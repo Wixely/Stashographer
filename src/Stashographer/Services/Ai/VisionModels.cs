@@ -12,6 +12,12 @@ public record VisionIdentification
 
     public Dictionary<string, string> Attributes { get; init; } = new();
 
+    /// <summary>Visible unit price, kept typed and separate from ordinary attributes.</summary>
+    public decimal? PriceAmount { get; init; }
+
+    /// <summary>Three-letter ISO currency code for <see cref="PriceAmount"/>.</summary>
+    public string? PriceCurrency { get; init; }
+
     /// <summary>Barcode digits, only when clearly readable in the photo.</summary>
     public string? Barcode { get; init; }
 

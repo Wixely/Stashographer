@@ -42,6 +42,30 @@ else
             </MudPaper>
         </MudItem>
 
+        @if (_summary.PriceMetrics.Count > 0)
+        {
+            <MudItem xs="12">
+                <MudPaper Class="pa-4" Outlined="true">
+                    <MudText Typo="Typo.h6" Class="mb-2">Inventory value</MudText>
+                    <MudText Typo="Typo.caption" Class="mud-text-secondary d-block mb-2">
+                        Quantity × unit price. Currencies remain separate until an exchange rate is explicitly supplied.
+                    </MudText>
+                    <div class="d-flex gap-3 flex-wrap">
+                        @foreach (var metric in _summary.PriceMetrics)
+                        {
+                            <div>
+                                <MudText Typo="Typo.overline">@metric.CurrencyCode · @metric.PricedEntries priced</MudText>
+                                <MudText Typo="Typo.h5">@FormatMetric(metric.TotalValue, metric.CurrencyCode)</MudText>
+                                <MudText Typo="Typo.caption" Class="mud-text-secondary">
+                                    Unit range @FormatMetric(metric.MinimumUnitPrice, metric.CurrencyCode)–@FormatMetric(metric.MaximumUnitPrice, metric.CurrencyCode)
+                                </MudText>
+                            </div>
+                        }
+                    </div>
+                </MudPaper>
+            </MudItem>
+        }
+
         <MudItem xs="12" md="4">
             <MudPaper Class="pa-4" Outlined="true">
                 <MudText Typo="Typo.h6" Class="mb-2">Expiring soon</MudText>
@@ -113,4 +137,11 @@ else
     protected override async Task OnInitializedAsync() => _summary = await Inventory.GetDashboardAsync();
 
     private void Open(int id) => Nav.NavigateTo($"items/{id}");
+
+    private static string FormatMetric(decimal amount, string currency) =>
+        SpecialAttributeCatalog.FormatPrice(new SpecialAttributeValue
+        {
+            DecimalValue = amount,
+            CurrencyCode = currency
+        });
 }

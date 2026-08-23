@@ -150,6 +150,8 @@ else
                                          @bind-ContainerId="_containerId" />
 
                         <div class="mt-3">
+                            <SpecialAttributeEditor Item="queued.Draft" DefaultCurrency="_defaultCurrency" />
+                            <MudDivider Class="my-3" />
                             <AttributeEditor Attributes="queued.Draft.Attributes" Suggestions="SuggestionsForKind(queued.Draft.ItemKindId)" />
                         </div>
 
@@ -226,6 +228,7 @@ else
     private int? _rememberedContainerId;
     private bool _loading = true;
     private bool _working;
+    private string _defaultCurrency = "GBP";
 
     private IntakeQueueItem? Current => _items.Count == 0 ? null : _items[Math.Clamp(_index, 0, _items.Count - 1)];
     private Location? RememberedLocation => _locations.FirstOrDefault(x => x.Id == _rememberedLocationId);
@@ -235,6 +238,7 @@ else
     protected override async Task OnInitializedAsync()
     {
         _options = await SettingsSvc.GetIntakeOptionsAsync();
+        _defaultCurrency = await SettingsSvc.GetDefaultCurrencyAsync();
         _kinds = await Inventory.GetKindsAsync();
         _locations = await Containers.GetLocationsAsync();
         _session = await IntakeQueue.GetCurrentSessionAsync();

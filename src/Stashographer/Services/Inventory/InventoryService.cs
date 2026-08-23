@@ -18,7 +18,15 @@ public record ItemQuery(
     IReadOnlyList<int>? ExcludeKindIds = null,
     int? LocationId = null,
     int? ContainerId = null,
-    bool LooseOnly = false);
+    bool LooseOnly = false,
+    ItemSort Sort = ItemSort.Name);
+
+public enum ItemSort
+{
+    Name,
+    PriceLowToHigh,
+    PriceHighToLow
+}
 
 /// <summary>An item's placement (for exact move-undo).</summary>
 public record ItemPlacement(int ItemId, int? LocationId, int? ContainerId);
@@ -31,7 +39,18 @@ public record DashboardSummary(
     decimal TotalQuantity,
     List<Item> LowStock,
     List<Item> ExpiringSoon,
-    List<Item> CheckedOut);
+    List<Item> CheckedOut,
+    List<PriceMetric> PriceMetrics);
+
+/// <summary>Price metrics remain separated by currency until an explicit exchange rate is supplied.</summary>
+public sealed class PriceMetric
+{
+    public string CurrencyCode { get; set; } = string.Empty;
+    public int PricedEntries { get; set; }
+    public decimal TotalValue { get; set; }
+    public decimal MinimumUnitPrice { get; set; }
+    public decimal MaximumUnitPrice { get; set; }
+}
 
 /// <summary>CRUD and query operations for inventory items, via Dapper.</summary>
 public class InventoryService(
@@ -45,7 +64,7 @@ public class InventoryService(
     private const string SelectItem = """
         SELECT i.Id, i.CollectionKey, i.Code, i.Name, i.Description, i.ItemKindId, i.Quantity, i.Unit,
                i.LowStockThreshold, i.ExpiryDate, i.LocationId, i.ContainerId, i.ThumbnailUrl,
-               i.PhotoPath, i.ImageId, i.AttributesJson, i.Notes, i.CreatedAt, i.UpdatedAt,
+               i.PhotoPath, i.ImageId, i.AttributesJson, i.SpecialAttributesJson, i.Notes, i.CreatedAt, i.UpdatedAt,
                k.Name AS KindName, k.Icon AS KindIcon,
                dl.Name AS DirectLocationName,
                c.Name AS ContainerName, c.LocationId AS ContainerLocationId,
@@ -72,9 +91,21 @@ public class InventoryService(
         if (!string.IsNullOrWhiteSpace(query.Search))
             where.Add("(i.Name LIKE @Like OR i.Code LIKE @Like OR i.Description LIKE @Like)");
 
+        var orderBy = query.Sort switch
+        {
+            ItemSort.PriceLowToHigh =>
+                "CASE WHEN json_extract(i.SpecialAttributesJson, '$.price.decimalValue') IS NULL THEN 1 ELSE 0 END, " +
+                "json_extract(i.SpecialAttributesJson, '$.price.currencyCode'), " +
+                "CAST(json_extract(i.SpecialAttributesJson, '$.price.decimalValue') AS NUMERIC), i.Name COLLATE NOCASE",
+            ItemSort.PriceHighToLow =>
+                "CASE WHEN json_extract(i.SpecialAttributesJson, '$.price.decimalValue') IS NULL THEN 1 ELSE 0 END, " +
+                "json_extract(i.SpecialAttributesJson, '$.price.currencyCode'), " +
+                "CAST(json_extract(i.SpecialAttributesJson, '$.price.decimalValue') AS NUMERIC) DESC, i.Name COLLATE NOCASE",
+            _ => "i.Name COLLATE NOCASE"
+        };
         var sql = SelectItem
                   + (where.Count > 0 ? " WHERE " + string.Join(" AND ", where) : "")
-                  + " ORDER BY i.Name COLLATE NOCASE";
+                  + " ORDER BY " + orderBy;
 
         using var conn = await db.OpenAsync(ct);
         var rows = await conn.QueryAsync<ItemRow>(sql, new
@@ -173,6 +204,8 @@ public class InventoryService(
         if (attributeNames is not null && item.Attributes.Count > 0)
             item.Attributes = await attributeNames.CanonicalizeAsync(
                 item.Attributes, kindId: item.ItemKindId, ct: ct);
+        SpecialAttributeCatalog.PromoteFromOrdinaryAttributes(item);
+        SpecialAttributeCatalog.Normalize(item);
 
         using var conn = await db.OpenAsync(ct);
         var now = DateTimeOffset.UtcNow;
@@ -193,6 +226,7 @@ public class InventoryService(
             item.PhotoPath,
             item.ImageId,
             AttributesJson = JsonSerializer.Serialize(item.Attributes, Json),
+            SpecialAttributesJson = JsonSerializer.Serialize(item.SpecialAttributes, Json),
             item.Notes,
             CreatedAt = now.ToString("O"),
             UpdatedAt = now.ToString("O"),
@@ -204,10 +238,10 @@ public class InventoryService(
             item.Id = await conn.ExecuteScalarAsync<int>("""
                 INSERT INTO Items (CollectionKey, Code, Name, Description, ItemKindId, Quantity, Unit, LowStockThreshold,
                                    ExpiryDate, LocationId, ContainerId, ThumbnailUrl, PhotoPath, ImageId, AttributesJson,
-                                   Notes, CreatedAt, UpdatedAt)
+                                   SpecialAttributesJson, Notes, CreatedAt, UpdatedAt)
                 VALUES (@CollectionKey, @Code, @Name, @Description, @ItemKindId, @Quantity, @Unit, @LowStockThreshold,
                         @ExpiryDate, @LocationId, @ContainerId, @ThumbnailUrl, @PhotoPath, @ImageId, @AttributesJson,
-                        @Notes, @CreatedAt, @UpdatedAt);
+                        @SpecialAttributesJson, @Notes, @CreatedAt, @UpdatedAt);
                 SELECT last_insert_rowid();
                 """, p);
         }
@@ -217,7 +251,8 @@ public class InventoryService(
                 UPDATE Items SET CollectionKey=@CollectionKey, Code=@Code, Name=@Name, Description=@Description, ItemKindId=@ItemKindId,
                     Quantity=@Quantity, Unit=@Unit, LowStockThreshold=@LowStockThreshold, ExpiryDate=@ExpiryDate,
                     LocationId=@LocationId, ContainerId=@ContainerId, ThumbnailUrl=@ThumbnailUrl, PhotoPath=@PhotoPath,
-                    ImageId=@ImageId, AttributesJson=@AttributesJson, Notes=@Notes, UpdatedAt=@UpdatedAt
+                    ImageId=@ImageId, AttributesJson=@AttributesJson, SpecialAttributesJson=@SpecialAttributesJson,
+                    Notes=@Notes, UpdatedAt=@UpdatedAt
                 WHERE Id=@Id;
                 """, p);
         }
@@ -283,10 +318,10 @@ public class InventoryService(
             INSERT INTO Items
                 (CollectionKey, Code, Name, Description, ItemKindId, Quantity, Unit, LowStockThreshold,
                  ExpiryDate, LocationId, ContainerId, ThumbnailUrl, PhotoPath, ImageId, AttributesJson,
-                 Notes, CreatedAt, UpdatedAt)
+                 SpecialAttributesJson, Notes, CreatedAt, UpdatedAt)
             SELECT @collectionKey, Code, Name, Description, ItemKindId, @quantity, Unit, LowStockThreshold,
                    ExpiryDate, @locationId, @containerId, ThumbnailUrl, PhotoPath, ImageId, AttributesJson,
-                   Notes, @now, @now
+                   SpecialAttributesJson, Notes, @now, @now
             FROM Items WHERE Id = @itemId;
             SELECT last_insert_rowid();
             """, new { itemId, quantity, collectionKey, locationId, containerId, now }, tx);
@@ -430,7 +465,19 @@ public class InventoryService(
                        + " ORDER BY i.Name LIMIT 20"))
             .Select(Map).ToList();
 
-        return new DashboardSummary(total, totalQty, lowStock, expiring, checkedOut);
+        var priceMetrics = (await conn.QueryAsync<PriceMetric>("""
+            SELECT json_extract(SpecialAttributesJson, '$.price.currencyCode') AS CurrencyCode,
+                   COUNT(*) AS PricedEntries,
+                   SUM(Quantity * CAST(json_extract(SpecialAttributesJson, '$.price.decimalValue') AS NUMERIC)) AS TotalValue,
+                   MIN(CAST(json_extract(SpecialAttributesJson, '$.price.decimalValue') AS NUMERIC)) AS MinimumUnitPrice,
+                   MAX(CAST(json_extract(SpecialAttributesJson, '$.price.decimalValue') AS NUMERIC)) AS MaximumUnitPrice
+            FROM Items
+            WHERE json_extract(SpecialAttributesJson, '$.price.decimalValue') IS NOT NULL
+            GROUP BY json_extract(SpecialAttributesJson, '$.price.currencyCode')
+            ORDER BY CurrencyCode;
+            """)).ToList();
+
+        return new DashboardSummary(total, totalQty, lowStock, expiring, checkedOut, priceMetrics);
     }
 
     private static Item Map(ItemRow r) => new()
@@ -457,6 +504,7 @@ public class InventoryService(
         Attributes = string.IsNullOrWhiteSpace(r.AttributesJson)
             ? new()
             : JsonSerializer.Deserialize<Dictionary<string, string>>(r.AttributesJson, Json) ?? new(),
+        SpecialAttributes = DeserializeSpecialAttributes(r.SpecialAttributesJson),
         Kind = new ItemKind { Id = r.ItemKindId, Name = r.KindName ?? "", Icon = r.KindIcon },
         Location = r.LocationId is { } lid ? new Location { Id = lid, Name = r.DirectLocationName ?? "" } : null,
         Container = r.ContainerId is { } cid
@@ -469,6 +517,19 @@ public class InventoryService(
             }
             : null
     };
+
+    private static Dictionary<string, SpecialAttributeValue> DeserializeSpecialAttributes(string? json)
+    {
+        if (string.IsNullOrWhiteSpace(json)) return new();
+        try
+        {
+            return JsonSerializer.Deserialize<Dictionary<string, SpecialAttributeValue>>(json, Json) ?? new();
+        }
+        catch (JsonException)
+        {
+            return new();
+        }
+    }
 
     /// <summary>Flat row shape for the item projection above.</summary>
     private sealed class ItemRow
@@ -489,6 +550,7 @@ public class InventoryService(
         public string? PhotoPath { get; set; }
         public int? ImageId { get; set; }
         public string? AttributesJson { get; set; }
+        public string? SpecialAttributesJson { get; set; }
         public string? Notes { get; set; }
         public string CreatedAt { get; set; } = "";
         public string UpdatedAt { get; set; } = "";

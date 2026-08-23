@@ -1,5 +1,6 @@
 using Dapper;
 using Stashographer.Data;
+using Stashographer.Data.Entities;
 using Stashographer.Services.Ai;
 
 namespace Stashographer.Services.Config;
@@ -13,6 +14,7 @@ public class SettingsService(IDbConnectionFactory db)
 {
     private const string AiPrefix = "Ai.";
     private const string IntakePrefix = "Intake.";
+    private const string InventoryPrefix = "Inventory.";
 
     public async Task<Dictionary<string, string>> GetAllAsync(string? prefix = null, CancellationToken ct = default)
     {
@@ -92,6 +94,28 @@ public class SettingsService(IDbConnectionFactory db)
             ["Intake.AutoProcessPhotos"] = options.AutoProcessPhotos.ToString(),
             ["Intake.RequireReview"] = options.RequireReview.ToString(),
             ["Intake.ContextItemCount"] = Math.Clamp(options.ContextItemCount, 0, 25).ToString()
+        }, ct);
+
+    // --- Inventory options ----------------------------------------------------------
+
+    public async Task<string> GetDefaultCurrencyAsync(CancellationToken ct = default)
+    {
+        var stored = await GetAllAsync(InventoryPrefix, ct);
+        try
+        {
+            return SpecialAttributeCatalog.NormalizeCurrencyCode(
+                stored.GetValueOrDefault("Inventory.DefaultCurrency") ?? "GBP");
+        }
+        catch (InvalidOperationException)
+        {
+            return "GBP";
+        }
+    }
+
+    public Task SaveDefaultCurrencyAsync(string currencyCode, CancellationToken ct = default) =>
+        SetManyAsync(new Dictionary<string, string>
+        {
+            ["Inventory.DefaultCurrency"] = SpecialAttributeCatalog.NormalizeCurrencyCode(currencyCode)
         }, ct);
 
     private static bool ReadBool(

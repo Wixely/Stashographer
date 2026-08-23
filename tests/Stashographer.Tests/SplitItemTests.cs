@@ -22,6 +22,8 @@ public class SplitItemTests
             LocationId = 1,
             Attributes = new() { ["Brand"] = "Example" }
         });
+        SpecialAttributeCatalog.SetPrice(item, 2.50m, "GBP");
+        await inventory.SaveAsync(item);
 
         var split = await inventory.SplitAsync(item.Id, 2, null, box.Id);
 
@@ -33,6 +35,7 @@ public class SplitItemTests
         Assert.Equal(split.Source.CollectionKey, split.Created.CollectionKey);
         Assert.Equal(item.Code, split.Created.Code);
         Assert.Equal("Example", split.Created.Attributes["Brand"]);
+        Assert.Equal(2.50m, SpecialAttributeCatalog.GetPrice(split.Created)!.DecimalValue);
 
         var members = await inventory.GetCollectionMembersAsync(item.Id);
         Assert.Equal(2, members.Count);

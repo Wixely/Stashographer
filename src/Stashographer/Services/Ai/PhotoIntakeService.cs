@@ -310,7 +310,7 @@ public class PhotoIntakeService(
             ?? kinds.FirstOrDefault()?.Id
             ?? 7;
 
-        return new Item
+        var draft = new Item
         {
             Name = ident?.Name ?? string.Empty,
             Description = ident?.Description,
@@ -320,6 +320,9 @@ public class PhotoIntakeService(
             ImageId = imageId,
             Attributes = ident is null ? new() : new(ident.Attributes)
         };
+        if (ident?.PriceAmount is { } price && ident.PriceCurrency is { } currency)
+            SpecialAttributeCatalog.SetPrice(draft, price, currency);
+        return draft;
     }
 
     private async Task<List<MatchCandidate>> ToMatchCandidatesAsync(List<Item> candidates, CancellationToken ct)

@@ -41,10 +41,12 @@ public class OpenAiEnrichmentService(
         var system =
             "You catalogue household inventory from photos. Reply with ONLY a JSON object shaped as: " +
             $"{{\"name\": string, \"kind\": one of [{kinds}], \"description\": string, " +
-            "\"attributes\": { key: value, ... }, \"barcode\": string or null, \"count\": integer}. " +
+            "\"attributes\": { key: value, ... }, \"price\": {\"amount\": number, \"currency\": three-letter ISO code} or null, " +
+            "\"barcode\": string or null, \"count\": integer}. " +
             "name = short product/item name. barcode = digits only, and ONLY when a barcode is clearly readable, else null. " +
             "count = how many of this same item are visible (default 1). " +
-            "Use concise attribute keys (Brand, Model, Colour, Size). Omit fields you cannot determine. " +
+            "Only return price when it is visibly printed; never estimate it. Price is the unit price and must not also appear in attributes. " +
+            "Use concise ordinary attribute keys (Brand, Model, Colour, Size). Omit fields you cannot determine. " +
             attributeRule;
 
         var messages = new List<ChatMessage>
@@ -218,6 +220,7 @@ public class OpenAiEnrichmentService(
         {
             using var doc = JsonDocument.Parse(json);
             var root = doc.RootElement;
+            var (priceAmount, priceCurrency) = GetPrice(root);
             return new VisionIdentification
             {
                 Name = GetString(root, "name"),
@@ -226,7 +229,9 @@ public class OpenAiEnrichmentService(
                 Barcode = NormalizeBarcode(GetString(root, "barcode")),
                 Count = root.TryGetProperty("count", out var c)
                         && c.ValueKind == JsonValueKind.Number && c.TryGetInt32(out var n) && n > 0 ? n : 1,
-                Attributes = GetAttributes(root)
+                Attributes = GetAttributes(root),
+                PriceAmount = priceAmount,
+                PriceCurrency = priceCurrency
             };
         }
         catch (JsonException ex)
@@ -345,6 +350,21 @@ public class OpenAiEnrichmentService(
             }
         }
         return attributes;
+    }
+
+    private static (decimal? Amount, string? Currency) GetPrice(JsonElement root)
+    {
+        if (!root.TryGetProperty("price", out var price) || price.ValueKind != JsonValueKind.Object)
+            return (null, null);
+        if (!price.TryGetProperty("amount", out var amountElement)
+            || amountElement.ValueKind != JsonValueKind.Number
+            || !amountElement.TryGetDecimal(out var amount)
+            || amount < 0)
+            return (null, null);
+        var currency = GetString(price, "currency")?.Trim().ToUpperInvariant();
+        return currency is { Length: 3 } && currency.All(c => c is >= 'A' and <= 'Z')
+            ? (amount, currency)
+            : (null, null);
     }
 
     private static string? NormalizeBarcode(string? barcode)

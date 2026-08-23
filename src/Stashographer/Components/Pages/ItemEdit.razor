@@ -8,6 +8,7 @@
 @inject NavigationManager Nav
 @inject ISnackbar Snackbar
 @inject IDialogService Dialogs
+@inject SettingsService SettingsSvc
 
 <PageTitle>@(_item.Id == 0 ? "New item" : _item.Name) · Stashographer</PageTitle>
 
@@ -135,6 +136,8 @@ else
             </MudPaper>
 
             <MudPaper Class="pa-4" Outlined="true">
+                <SpecialAttributeEditor Item="_item" DefaultCurrency="_defaultCurrency" />
+                <MudDivider Class="my-4" />
                 <AttributeEditor Attributes="_item.Attributes" Suggestions="SuggestionsForKind()" />
                 @if (Ai.IsEnabled)
                 {
@@ -167,12 +170,14 @@ else
     private int? _containerId;
     private bool _loading = true;
     private bool _enriching;
+    private string _defaultCurrency = "GBP";
 
     protected override async Task OnParametersSetAsync()
     {
         _loading = true;
         _kinds = await Inventory.GetKindsAsync();
         _locations = await Containers.GetLocationsAsync();
+        _defaultCurrency = await SettingsSvc.GetDefaultCurrencyAsync();
 
         if (Id is { } id)
         {
@@ -208,13 +213,20 @@ else
 
     private async Task Save()
     {
-        _item.ExpiryDate = _expiry is { } d ? DateOnly.FromDateTime(d) : null;
-        // A container implies its location; otherwise use the chosen location directly.
-        _item.ContainerId = _containerId;
-        _item.LocationId = _containerId is null ? _locationId : null;
-        await Inventory.SaveAsync(_item);
-        Snackbar.Add("Saved.", Severity.Success);
-        Nav.NavigateTo("inventory");
+        try
+        {
+            _item.ExpiryDate = _expiry is { } d ? DateOnly.FromDateTime(d) : null;
+            // A container implies its location; otherwise use the chosen location directly.
+            _item.ContainerId = _containerId;
+            _item.LocationId = _containerId is null ? _locationId : null;
+            await Inventory.SaveAsync(_item);
+            Snackbar.Add("Saved.", Severity.Success);
+            Nav.NavigateTo("inventory");
+        }
+        catch (InvalidOperationException ex)
+        {
+            Snackbar.Add(ex.Message, Severity.Error);
+        }
     }
 
     private async Task Delete()

@@ -1,0 +1,64 @@
+@* Typed fields recognized by application features. Add new registered fields here as their UI is introduced. *@
+
+<MudText Typo="Typo.subtitle2" Class="mb-1">Special attributes</MudText>
+<MudText Typo="Typo.caption" Class="mud-text-secondary d-block mb-2">
+    These fields power sorting and metrics, so their values are stored in a structured form.
+</MudText>
+
+<MudGrid Spacing="2">
+    <MudItem xs="8">
+        <MudNumericField T="decimal?" Value="_priceAmount" ValueChanged="SetPriceAmount"
+                         Label="Unit price" Variant="Variant.Outlined" Margin="Margin.Dense"
+                         Min="0" Clearable="true" />
+    </MudItem>
+    <MudItem xs="4">
+        <MudTextField T="string" Value="_priceCurrency" ValueChanged="SetPriceCurrency"
+                      Label="Currency" Variant="Variant.Outlined" Margin="Margin.Dense"
+                      MaxLength="3" HelperText="ISO code" />
+    </MudItem>
+</MudGrid>
+
+@code {
+    [Parameter, EditorRequired] public Item Item { get; set; } = default!;
+    [Parameter] public string DefaultCurrency { get; set; } = "GBP";
+
+    private decimal? _priceAmount;
+    private string _priceCurrency = "GBP";
+    private Item? _loadedItem;
+
+    protected override void OnParametersSet()
+    {
+        if (ReferenceEquals(_loadedItem, Item)) return;
+        _loadedItem = Item;
+        var price = SpecialAttributeCatalog.GetPrice(Item);
+        _priceAmount = price?.DecimalValue;
+        _priceCurrency = price?.CurrencyCode ?? DefaultCurrency;
+    }
+
+    private void SetPriceAmount(decimal? value)
+    {
+        _priceAmount = value;
+        SyncPrice();
+    }
+
+    private void SetPriceCurrency(string value)
+    {
+        _priceCurrency = value.ToUpperInvariant();
+        SyncPrice();
+    }
+
+    private void SyncPrice()
+    {
+        if (_priceAmount is null)
+        {
+            Item.SpecialAttributes.Remove(SpecialAttributeCatalog.PriceKey);
+            return;
+        }
+
+        Item.SpecialAttributes[SpecialAttributeCatalog.PriceKey] = new SpecialAttributeValue
+        {
+            DecimalValue = _priceAmount,
+            CurrencyCode = _priceCurrency
+        };
+    }
+}

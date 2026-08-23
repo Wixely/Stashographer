@@ -57,6 +57,20 @@
 </MudPaper>
 
 <MudPaper Class="pa-4 mb-3" Outlined="true">
+    <MudText Typo="Typo.h6" Class="mb-2">Inventory values</MudText>
+    <MudText Typo="Typo.body2" Class="mud-text-secondary mb-3">
+        The currency pre-filled when you add a unit price. Existing prices keep their own currency.
+    </MudText>
+    <div class="d-flex gap-2 align-start flex-wrap">
+        <MudTextField T="string" @bind-Value="_defaultCurrency" Label="Default currency"
+                      Variant="Variant.Outlined" Margin="Margin.Dense" MaxLength="3"
+                      HelperText="Three-letter ISO code, e.g. GBP, EUR, USD" />
+        <MudButton Color="Color.Primary" Variant="Variant.Filled" StartIcon="@Icons.Material.Filled.Save"
+                   OnClick="SaveInventoryAsync">Save currency</MudButton>
+    </div>
+</MudPaper>
+
+<MudPaper Class="pa-4 mb-3" Outlined="true">
     <MudText Typo="Typo.h6" Class="mb-2">Intake workflow</MudText>
     <MudText Typo="Typo.body2" Class="mud-text-secondary mb-3">
         Queue-first capture keeps barcode scanners and phone cameras ready for the next item.
@@ -161,6 +175,7 @@
     private bool _autoProcessPhotos = true;
     private bool _requireReview = true;
     private int _contextItemCount = 8;
+    private string _defaultCurrency = "GBP";
 
     protected override async Task OnInitializedAsync()
     {
@@ -177,9 +192,24 @@
         _autoProcessPhotos = intake.AutoProcessPhotos;
         _requireReview = intake.RequireReview;
         _contextItemCount = intake.ContextItemCount;
+        _defaultCurrency = await SettingsSvc.GetDefaultCurrencyAsync();
 
         _kinds = await Inventory.GetKindsAsync();
         await Reload();
+    }
+
+    private async Task SaveInventoryAsync()
+    {
+        try
+        {
+            await SettingsSvc.SaveDefaultCurrencyAsync(_defaultCurrency);
+            _defaultCurrency = await SettingsSvc.GetDefaultCurrencyAsync();
+            Snackbar.Add("Default currency saved.", Severity.Success);
+        }
+        catch (InvalidOperationException ex)
+        {
+            Snackbar.Add(ex.Message, Severity.Error);
+        }
     }
 
     private async Task SaveIntakeAsync()

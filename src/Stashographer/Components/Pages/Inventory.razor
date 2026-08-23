@@ -37,6 +37,12 @@
                 <MudTooltip Text="Gallery — cover grid"><MudIcon Icon="@Icons.Material.Filled.GridView" Size="Size.Small" /></MudTooltip>
             </MudToggleItem>
         </MudToggleGroup>
+        <MudSelect T="ItemSort" Value="_sort" ValueChanged="SetSortAsync" Label="Sort"
+                   Variant="Variant.Outlined" Margin="Margin.Dense" Style="min-width:11rem">
+            <MudSelectItem Value="ItemSort.Name">Name</MudSelectItem>
+            <MudSelectItem Value="ItemSort.PriceLowToHigh">Price within currency ↑</MudSelectItem>
+            <MudSelectItem Value="ItemSort.PriceHighToLow">Price within currency ↓</MudSelectItem>
+        </MudSelect>
     </div>
 
     <div class="d-flex align-center flex-wrap gap-2">
@@ -107,6 +113,10 @@ else if (CurrentView == InventoryView.Gallery)
                         <MudText Typo="Typo.subtitle2" Class="cover-title" title="@item.Name">@item.Name</MudText>
                         <div class="d-flex align-center gap-1 flex-wrap">
                             <MudChip T="string" Size="Size.Small">@($"{item.Quantity:0.##} {item.Unit}".Trim())</MudChip>
+                            @if (SpecialAttributeCatalog.GetPrice(item) is { } price)
+                            {
+                                <MudChip T="string" Size="Size.Small" Color="Color.Primary">@SpecialAttributeCatalog.FormatPrice(price)</MudChip>
+                            }
                             @if (item.IsCheckedOut)
                             {
                                 <MudChip T="string" Size="Size.Small" Color="Color.Secondary">Out</MudChip>
@@ -129,6 +139,7 @@ else
             <MudTh>Kind</MudTh>
             <MudTh>Location</MudTh>
             <MudTh Style="text-align:right">Qty</MudTh>
+            <MudTh Style="text-align:right">Unit price</MudTh>
             <MudTh Style="text-align:center">Status</MudTh>
         </HeaderContent>
         <RowTemplate>
@@ -178,6 +189,11 @@ else
                                    OnClick="@(() => Adjust(context, +1))" />
                 </div>
             </MudTd>
+            <MudTd DataLabel="Unit price" Style="text-align:right">
+                <div @oncontextmenu="@((MouseEventArgs e) => OpenContextMenu(e, context))" @oncontextmenu:preventDefault>
+                    @SpecialAttributeCatalog.FormatPrice(SpecialAttributeCatalog.GetPrice(context))
+                </div>
+            </MudTd>
             <MudTd DataLabel="Status" Style="text-align:center">
                 <div @oncontextmenu="@((MouseEventArgs e) => OpenContextMenu(e, context))" @oncontextmenu:preventDefault>
                     @if (context.IsCheckedOut)
@@ -216,6 +232,7 @@ else
     private List<ItemKind> _kinds = new();
     private List<Location> _locations = new();
     private string? _search;
+    private ItemSort _sort = ItemSort.Name;
     private readonly Dictionary<int, FilterMode> _kindFilter = new();
     private readonly HashSet<int> _selectedIds = new();
     private readonly HashSet<int> _dragVisited = new();
@@ -250,7 +267,7 @@ else
     {
         var include = _kindFilter.Where(kv => kv.Value == FilterMode.Include).Select(kv => kv.Key).ToList();
         var exclude = _kindFilter.Where(kv => kv.Value == FilterMode.Exclude).Select(kv => kv.Key).ToList();
-        _items = await InventorySvc.QueryAsync(new ItemQuery(_search, include, exclude));
+        _items = await InventorySvc.QueryAsync(new ItemQuery(_search, include, exclude, Sort: _sort));
         _selectedIds.IntersectWith(_items.Select(x => x.Id));
         StateHasChanged();
     }
@@ -311,6 +328,12 @@ else
             _selectedIds.Clear();
             _selectedIds.Add(item.Id);
         }
+    }
+
+    private async Task SetSortAsync(ItemSort sort)
+    {
+        _sort = sort;
+        await ReloadAsync();
     }
 
     private void OnRowMouseLeave(TableRowHoverEventArgs<Item> args) => ContinueDrag(args);

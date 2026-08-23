@@ -1,6 +1,7 @@
 using System.Text.Json;
 using Dapper;
 using Stashographer.Data;
+using Stashographer.Data.Entities;
 
 namespace Stashographer.Services.Inventory;
 
@@ -34,7 +35,8 @@ public class AttributeNameService(IDbConnectionFactory db)
             foreach (var key in ParseAttributes(json).Keys)
             {
                 var clean = Clean(key);
-                if (clean.Length > 0) usage[clean] = usage.GetValueOrDefault(clean) + 1;
+                if (clean.Length > 0 && !SpecialAttributeCatalog.IsReservedName(clean))
+                    usage[clean] = usage.GetValueOrDefault(clean) + 1;
             }
         }
 
@@ -49,7 +51,8 @@ public class AttributeNameService(IDbConnectionFactory db)
         }
 
         return candidates
-            .Where(x => x.Name.Length > 0 && SemanticKey(x.Name).Length > 0)
+            .Where(x => x.Name.Length > 0 && SemanticKey(x.Name).Length > 0
+                                               && !SpecialAttributeCatalog.IsReservedName(x.Name))
             .GroupBy(x => SemanticKey(x.Name), StringComparer.Ordinal)
             .Select(group => group
                 .OrderByDescending(x => x.Preferred)

@@ -33,7 +33,8 @@ public class VisionParsingTests
     {
         var ident = Service().ParseIdentification("""
             {"name":"Heinz Baked Beans","kind":"Grocery","description":"Tin of beans",
-             "attributes":{"Brand":"Heinz"},"barcode":"50-0015 7024671","count":2}
+             "attributes":{"Brand":"Heinz"},"price":{"amount":1.25,"currency":"gbp"},
+             "barcode":"50-0015 7024671","count":2}
             """);
 
         Assert.NotNull(ident);
@@ -42,6 +43,8 @@ public class VisionParsingTests
         Assert.Equal("5000157024671", ident.Barcode); // digits only
         Assert.Equal(2, ident.Count);
         Assert.Equal("Heinz", ident.Attributes["Brand"]);
+        Assert.Equal(1.25m, ident.PriceAmount);
+        Assert.Equal("GBP", ident.PriceCurrency);
 
         var noCount = Service().ParseIdentification("""{"name":"Thing","barcode":"123"}""");
         Assert.Equal(1, noCount!.Count);          // default

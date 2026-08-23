@@ -179,7 +179,9 @@ public class PhotoIntakeTests
             Name = "Cordless Screwdriver",
             Kind = "Tool",
             Description = "Compact electric screwdriver",
-            Attributes = new() { ["Brand"] = "Bosch" }
+            Attributes = new() { ["Brand"] = "Bosch" },
+            PriceAmount = 24.99m,
+            PriceCurrency = "GBP"
         };
 
         var result = await h.Intake.ProcessSingleAsync(await PhotoAsync(), "image/png");
@@ -193,6 +195,7 @@ public class PhotoIntakeTests
         Assert.Equal("Cordless Screwdriver", created!.Name);
         Assert.Equal("Tool", created.Kind?.Name);
         Assert.Equal("Bosch", created.Attributes["Brand"]);
+        Assert.Equal(24.99m, SpecialAttributeCatalog.GetPrice(created)!.DecimalValue);
         Assert.Equal(result.ImageId, created.ImageId); // photo attached
     }
 

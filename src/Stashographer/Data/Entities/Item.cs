@@ -57,6 +57,12 @@ public class Item
     /// <summary>Flexible per-item metadata, persisted as JSON in <c>AttributesJson</c>.</summary>
     public Dictionary<string, string> Attributes { get; set; } = new();
 
+    /// <summary>
+    /// Typed, system-recognized metadata such as price. Kept separate from ordinary attributes
+    /// so application features can query and aggregate values without parsing display strings.
+    /// </summary>
+    public Dictionary<string, SpecialAttributeValue> SpecialAttributes { get; set; } = new();
+
     public string? Notes { get; set; }
 
     public DateTimeOffset CreatedAt { get; set; }

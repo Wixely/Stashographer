@@ -126,6 +126,10 @@
                 }
                 else
                 {
+                    @if (SpecialAttributeCatalog.GetPrice(_pendingIntake.Proposal.Draft) is { } price)
+                    {
+                        <MudText Typo="Typo.body2"><b>Unit price:</b> @SpecialAttributeCatalog.FormatPrice(price)</MudText>
+                    }
                     @foreach (var kv in _pendingIntake.Proposal.Draft.Attributes)
                     {
                         <MudText Typo="Typo.body2"><b>@kv.Key:</b> @kv.Value</MudText>

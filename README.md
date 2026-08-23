@@ -30,6 +30,9 @@ Every container gets a printable QR code — scan it to see what's meant to be i
 
 - **Any kind of item** — groceries, books, tools, electronics, clothing, or anything else,
   with flexible per-item attributes.
+- **Typed special attributes** — price is stored as a numeric unit price plus ISO currency,
+  separate from ordinary text attributes. Inventory can display and sort by price, while the
+  dashboard reports quantity-weighted value separately for each currency.
 - **Barcode & ISBN lookup** — [Open Food Facts](https://world.openfoodfacts.org) for
   groceries and [Open Library](https://openlibrary.org) for books, routed automatically by
   the code's shape.
@@ -136,6 +139,13 @@ and item-kind suggestions. The vocabulary is included in model prompts, then saf
 case and formatting variants are normalized deterministically before review or storage;
 genuinely new attribute names are preserved.
 
+Price is the first **special attribute**. Its stable `price` key and typed value are available
+to metrics and organization features without parsing display text. AI returns a price only
+when one is visibly printed, and legacy values such as `Price: £12.50` are promoted into the
+typed field. Settings → **Inventory values** controls the currency pre-filled for new prices.
+Currency totals are not combined implicitly: conversion requires an explicit positive
+exchange rate, so a stale or guessed rate can never silently change an inventory metric.
+
 > Keep the key out of git. Put it in a `.env` file next to `docker-compose.yml` (already
 > covered by `.gitignore`) and reference it as `${STASH_AI_API_KEY}`.
 
@@ -148,7 +158,7 @@ dependencies only (see [THIRD-PARTY-NOTICES](THIRD-PARTY-NOTICES.md)).
 ## Development
 
 ```bash
-dotnet test                    # 95 tests, no network access required
+dotnet test                    # 100 tests, no network access required
 dotnet build -c Release
 ```
 
