@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Microsoft.Extensions.AI;
+using Stashographer.Services.Inventory;
 
 namespace Stashographer.Services.Ai;
 
@@ -12,7 +13,8 @@ namespace Stashographer.Services.Ai;
 /// </summary>
 public class OpenAiEnrichmentService(
     IAiClientProvider clients,
-    ILogger<OpenAiEnrichmentService> logger) : IAiEnrichmentService
+    ILogger<OpenAiEnrichmentService> logger,
+    AttributeNameService? attributeNames = null) : IAiEnrichmentService
 {
     public bool IsEnabled => clients.IsConfigured;
 
@@ -32,13 +34,18 @@ public class OpenAiEnrichmentService(
         CancellationToken ct = default, string? intakeContext = null)
     {
         var kinds = knownKinds.Count > 0 ? string.Join(", ", knownKinds) : "Other";
+        var canonicalNames = attributeNames is null
+            ? Array.Empty<string>()
+            : (await attributeNames.GetCanonicalNamesAsync(ct: ct)).ToArray();
+        var attributeRule = AttributeRule(canonicalNames);
         var system =
             "You catalogue household inventory from photos. Reply with ONLY a JSON object shaped as: " +
             $"{{\"name\": string, \"kind\": one of [{kinds}], \"description\": string, " +
             "\"attributes\": { key: value, ... }, \"barcode\": string or null, \"count\": integer}. " +
             "name = short product/item name. barcode = digits only, and ONLY when a barcode is clearly readable, else null. " +
             "count = how many of this same item are visible (default 1). " +
-            "Use concise attribute keys (Brand, Model, Colour, Size). Omit fields you cannot determine.";
+            "Use concise attribute keys (Brand, Model, Colour, Size). Omit fields you cannot determine. " +
+            attributeRule;
 
         var messages = new List<ChatMessage>
         {
@@ -55,7 +62,10 @@ public class OpenAiEnrichmentService(
         };
 
         var json = await CompleteJsonAsync(useVision: true, messages, ct);
-        return json is null ? null : ParseIdentification(json);
+        var parsed = json is null ? null : ParseIdentification(json);
+        if (parsed is null || attributeNames is null) return parsed;
+        var focusedNames = await attributeNames.GetCanonicalNamesAsync(kindName: parsed.Kind, ct: ct);
+        return parsed with { Attributes = AttributeNameService.Canonicalize(parsed.Attributes, focusedNames) };
     }
 
     // --- Detect -------------------------------------------------------------------
@@ -122,11 +132,15 @@ public class OpenAiEnrichmentService(
     public async Task<AiSuggestion?> EnrichAsync(
         string name, string? kind, IReadOnlyDictionary<string, string> known, CancellationToken ct = default)
     {
-        const string system =
+        var canonicalNames = attributeNames is null
+            ? Array.Empty<string>()
+            : (await attributeNames.GetCanonicalNamesAsync(kindName: kind, ct: ct)).ToArray();
+        var system =
             "You catalogue household inventory. Reply with ONLY a JSON object, no prose, shaped as: " +
             "{\"name\": string, \"kind\": one of [Grocery, Book, Tool, Electronics, Media, Clothing, Other], " +
             "\"description\": string, \"attributes\": { key: value, ... }}. " +
-            "Use concise attribute keys (e.g. Brand, Model, Colour). Omit fields you cannot determine.";
+            "Use concise attribute keys (e.g. Brand, Model, Colour). Omit fields you cannot determine. " +
+            AttributeRule(canonicalNames);
         var prompt =
             $"Item name: {name}\nKind: {kind ?? "unknown"}\nKnown attributes: {JsonSerializer.Serialize(known)}\n" +
             "Add a helpful description and any additional attributes you are confident about.";
@@ -138,7 +152,10 @@ public class OpenAiEnrichmentService(
         };
 
         var json = await CompleteJsonAsync(useVision: false, messages, ct);
-        return json is null ? null : ParseSuggestion(json);
+        var parsed = json is null ? null : ParseSuggestion(json);
+        return parsed is null || attributeNames is null
+            ? parsed
+            : parsed with { Attributes = AttributeNameService.Canonicalize(parsed.Attributes, canonicalNames) };
     }
 
     // --- Connection test ------------------------------------------------------------
@@ -177,6 +194,13 @@ public class OpenAiEnrichmentService(
             return null;
         }
     }
+
+    private static string AttributeRule(IReadOnlyList<string> canonicalNames) =>
+        canonicalNames.Count == 0
+            ? string.Empty
+            : "Existing canonical attribute names are: " + JsonSerializer.Serialize(canonicalNames) + ". " +
+              "When one has the same meaning as an attribute you identify, use that exact name. " +
+              "Create a new attribute name only when none is semantically equivalent.";
 
     /// <summary>Pulls the outermost JSON object out of a response, tolerating stray prose.</summary>
     internal static string? ExtractJson(string? text)

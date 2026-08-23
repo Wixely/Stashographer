@@ -156,6 +156,55 @@ public class IntakeQueueTests
         Assert.All(open, x => Assert.Equal("Detected item", x.Draft.Name));
     }
 
+    [Fact]
+    public async Task Queue_remembers_last_location_and_container_independently_per_session()
+    {
+        await using var harness = await Harness.CreateAsync();
+        var session = await harness.Queue.GetCurrentSessionAsync();
+        var first = await harness.Queue.EnqueueBarcodeAsync("4444444444444");
+        await harness.Queue.AcceptAsync(first.Id, new Item
+        {
+            Name = "Loose item", ItemKindId = 7, LocationId = 1
+        }, null);
+
+        var box = await new ContainerService(harness.Db.Factory).SaveContainerAsync(new Container
+        {
+            Name = "Batch box", LocationId = 3
+        });
+        var second = await harness.Queue.EnqueueBarcodeAsync("5555555555555");
+        await harness.Queue.AcceptAsync(second.Id, new Item
+        {
+            Name = "Boxed item", ItemKindId = 7, ContainerId = box.Id
+        }, null);
+
+        var remembered = await harness.Queue.GetRememberedDestinationsAsync(session.Id);
+        Assert.Equal(1, remembered.LocationId);
+        Assert.Equal(box.Id, remembered.ContainerId);
+
+        var nextSession = await harness.Queue.StartNewSessionAsync();
+        Assert.Equal(new RememberedDestinations(null, null),
+            await harness.Queue.GetRememberedDestinationsAsync(nextSession.Id));
+    }
+
+    [Fact]
+    public async Task Accepting_a_matched_item_applies_the_reviewed_destination()
+    {
+        await using var harness = await Harness.CreateAsync();
+        var existing = await harness.Inventory.SaveAsync(new Item
+        {
+            Name = "Drill", Code = "6666666666666", ItemKindId = 3, LocationId = 3
+        });
+        var queued = await harness.Queue.EnqueueBarcodeAsync(existing.Code!);
+        await harness.Queue.AcceptAsync(queued.Id, new Item
+        {
+            Name = existing.Name, Code = existing.Code, ItemKindId = 3, LocationId = 5
+        }, existing.Id);
+
+        var moved = await harness.Inventory.GetAsync(existing.Id);
+        Assert.Equal(5, moved!.LocationId);
+        Assert.Equal(2, moved.Quantity);
+    }
+
     private sealed class Harness : IAsyncDisposable
     {
         public required TestDb Db { get; init; }

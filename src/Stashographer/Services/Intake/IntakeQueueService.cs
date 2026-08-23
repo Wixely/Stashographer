@@ -10,6 +10,8 @@ using Stashographer.Services.Lookup;
 
 namespace Stashographer.Services.Intake;
 
+public record RememberedDestinations(int? LocationId, int? ContainerId);
+
 public record IntakeQueueCounts(int Waiting, int Processing, int Ready, int Failed, int Completed);
 
 /// <summary>
@@ -116,6 +118,32 @@ public class IntakeQueueService(
             SELECT last_insert_rowid();
             """, new { now });
         return new IntakeSession(id, DateTimeOffset.Parse(now), null);
+    }
+
+    /// <summary>
+    /// Finds the most recently accepted direct location and container independently for an
+    /// intake session. Deriving this from accepted drafts keeps the shortcut durable without
+    /// maintaining duplicate mutable state.
+    /// </summary>
+    public async Task<RememberedDestinations> GetRememberedDestinationsAsync(
+        int sessionId, CancellationToken ct = default)
+    {
+        using var conn = await db.OpenAsync(ct);
+        var drafts = await conn.QueryAsync<string>("""
+            SELECT DraftJson FROM IntakeQueueItems
+            WHERE SessionId = @sessionId AND Status = @accepted AND DraftJson IS NOT NULL
+            ORDER BY ReviewedAt DESC, Id DESC;
+            """, new { sessionId, accepted = (int)IntakeQueueStatus.Accepted });
+        int? locationId = null;
+        int? containerId = null;
+        foreach (var json in drafts)
+        {
+            var draft = DeserializeDraft(json);
+            locationId ??= draft.LocationId;
+            containerId ??= draft.ContainerId;
+            if (locationId is not null && containerId is not null) break;
+        }
+        return new RememberedDestinations(locationId, containerId);
     }
 
     /// <summary>Processes one specific capture. Returns false when another worker claimed it.</summary>
@@ -269,6 +297,8 @@ public class IntakeQueueService(
             var existing = await inventory.GetAsync(existingId)
                 ?? throw new InvalidOperationException("The selected inventory item no longer exists.");
             await inventory.AdjustQuantityAsync(existingId, queued.IncrementBy, ct);
+            if (draft.LocationId is not null || draft.ContainerId is not null)
+                await inventory.MoveItemsAsync([existingId], draft.LocationId, draft.ContainerId, ct);
             applied = new IntakeApplied(IntakeAction.IncrementExisting, existingId, existing.Name, queued.IncrementBy);
         }
         else

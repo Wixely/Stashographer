@@ -1,0 +1,57 @@
+<MudGrid Class="@Class">
+    <MudItem xs="12" sm="6">
+        <MudSelect Value="LocationId" ValueChanged="ChangeLocationAsync" T="int?"
+                   Label="Location" Variant="Variant.Outlined" Clearable="true">
+            @foreach (var location in Locations)
+            {
+                <MudSelectItem T="int?" Value="@location.Id">@location.Name</MudSelectItem>
+            }
+        </MudSelect>
+    </MudItem>
+    <MudItem xs="12" sm="6">
+        <MudSelect Value="ContainerId" ValueChanged="ChangeContainerAsync" T="int?"
+                   Label="Container" Variant="Variant.Outlined" Clearable="true"
+                   HelperText="@(LocationId is null ? "Showing containers in every location" : null)">
+            @foreach (var option in ContainerOptions)
+            {
+                <MudSelectItem T="int?" Value="@option.Container.Id" Disabled="@DisabledContainerIds.Contains(option.Container.Id)">
+                    @(LocationId is null ? $"{option.Location.Name} › {option.Container.Name}" : option.Container.Name)
+                </MudSelectItem>
+            }
+        </MudSelect>
+    </MudItem>
+</MudGrid>
+
+@code {
+    [Parameter] public IReadOnlyList<Location> Locations { get; set; } = Array.Empty<Location>();
+    [Parameter] public int? LocationId { get; set; }
+    [Parameter] public EventCallback<int?> LocationIdChanged { get; set; }
+    [Parameter] public int? ContainerId { get; set; }
+    [Parameter] public EventCallback<int?> ContainerIdChanged { get; set; }
+    [Parameter] public HashSet<int> DisabledContainerIds { get; set; } = new();
+    [Parameter] public string? Class { get; set; }
+
+    private IEnumerable<(Location Location, Container Container)> ContainerOptions =>
+        Locations
+            .Where(location => LocationId is null || location.Id == LocationId)
+            .SelectMany(location => location.Containers.Select(container => (location, container)));
+
+    private async Task ChangeLocationAsync(int? locationId)
+    {
+        LocationId = locationId;
+        await LocationIdChanged.InvokeAsync(locationId);
+
+        if (ContainerId is { } containerId
+            && !ContainerOptions.Any(x => x.Container.Id == containerId))
+        {
+            ContainerId = null;
+            await ContainerIdChanged.InvokeAsync(null);
+        }
+    }
+
+    private async Task ChangeContainerAsync(int? containerId)
+    {
+        ContainerId = containerId;
+        await ContainerIdChanged.InvokeAsync(containerId);
+    }
+}

@@ -1,0 +1,22 @@
+::deep .inventory-row-selected > td {
+    background-color: color-mix(in srgb, var(--mud-palette-primary) 16%, transparent) !important;
+}
+
+::deep .mud-table-row {
+    user-select: none;
+}
+
+.inventory-context-scrim {
+    position: fixed;
+    inset: 0;
+    z-index: 1299;
+}
+
+.inventory-context-menu {
+    position: fixed;
+    z-index: 1300;
+    left: min(var(--inventory-context-x), calc(100vw - 14rem));
+    top: min(var(--inventory-context-y), calc(100vh - 4rem));
+    min-width: 13rem;
+    max-width: calc(100vw - 1rem);
+}

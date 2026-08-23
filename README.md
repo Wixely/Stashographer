@@ -41,6 +41,8 @@ Every container gets a printable QR code — scan it to see what's meant to be i
   and the review queue presents every suggestion for item-by-item acceptance or correction.
 - **Locations & containers** — put items in a room or inside a box/shelf/drawer/bin. Each
   container gets a **printable QR code**; scan it to see what's (meant to be) inside.
+- **Fast placement** — queue review remembers recent location/container targets, while the
+  inventory supports multi-selection and Quick Move from either the toolbar or context menu.
 - **Checkout / lending** — record who took an item and where, and check it back in later.
 - **Dashboard** — low stock, expiring soon, and currently checked-out at a glance.
 - **AI enrichment (optional)** — identify an item from a photo when a barcode won't do, and
@@ -121,6 +123,11 @@ processing, the context window, and mandatory review. Turning queueing off resto
 original immediate lookup/validation flow. Review is on by default; disabling it allows only
 complete, unambiguous results to apply automatically.
 
+AI-generated attribute keys are checked against a vocabulary built from existing inventory
+and item-kind suggestions. The vocabulary is included in model prompts, then safe spelling,
+case and formatting variants are normalized deterministically before review or storage;
+genuinely new attribute names are preserved.
+
 > Keep the key out of git. Put it in a `.env` file next to `docker-compose.yml` (already
 > covered by `.gitignore`) and reference it as `${STASH_AI_API_KEY}`.
 
@@ -133,7 +140,7 @@ dependencies only (see [THIRD-PARTY-NOTICES](THIRD-PARTY-NOTICES.md)).
 ## Development
 
 ```bash
-dotnet test                    # 80 tests, no network access required
+dotnet test                    # 85 tests, no network access required
 dotnet build -c Release
 ```
 

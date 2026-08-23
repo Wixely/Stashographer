@@ -1,13 +1,25 @@
 @page "/inventory"
 @inject InventoryService InventorySvc
+@inject ContainerService Containers
+@inject IDialogService Dialogs
+@inject ISnackbar Snackbar
 @inject NavigationManager Nav
 
 <PageTitle>Inventory · Stashographer</PageTitle>
 
 <div class="d-flex justify-space-between align-center mb-4">
     <MudText Typo="Typo.h4">Inventory</MudText>
-    <MudButton Color="Color.Primary" Variant="Variant.Filled" StartIcon="@Icons.Material.Filled.Add"
-               Href="scan">Add item</MudButton>
+    <div class="d-flex gap-2 align-center flex-wrap">
+        @if (_selectedIds.Count > 0)
+        {
+            <MudChip T="string" Color="Color.Primary">@_selectedIds.Count selected</MudChip>
+            <MudButton Color="Color.Primary" Variant="Variant.Filled" StartIcon="@Icons.Material.Filled.DriveFileMove"
+                       OnClick="OpenQuickMoveAsync">Quick Move</MudButton>
+            <MudButton Variant="Variant.Text" OnClick="ClearSelection">Clear</MudButton>
+        }
+        <MudButton Color="Color.Primary" Variant="Variant.Filled" StartIcon="@Icons.Material.Filled.Add"
+                   Href="scan">Add item</MudButton>
+    </div>
 </div>
 
 <MudPaper Class="pa-3 mb-3" Outlined="true">
@@ -48,7 +60,22 @@
     <MudText Typo="Typo.caption" Class="mud-text-secondary">
         Click a kind to include it, again to exclude (NOT), again to clear. Multiple includes are combined (any match).
     </MudText>
+    @if (CurrentView == InventoryView.List)
+    {
+        <MudText Typo="Typo.caption" Class="mud-text-secondary d-block mt-1">
+            Click to select, Ctrl+click to toggle, drag across rows to select several, or double-click to open an item.
+        </MudText>
+    }
 </MudPaper>
+
+@if (_contextMenuOpen)
+{
+    <div class="inventory-context-scrim" @onclick="CloseContextMenu"></div>
+    <MudPaper Class="inventory-context-menu pa-1" Style="@ContextMenuStyle" Elevation="8">
+        <MudButton FullWidth="true" Variant="Variant.Text" StartIcon="@Icons.Material.Filled.DriveFileMove"
+                   OnClick="OpenQuickMoveAsync">Quick Move @_selectedIds.Count selected</MudButton>
+    </MudPaper>
+}
 
 @if (_items is null)
 {
@@ -93,8 +120,11 @@ else if (CurrentView == InventoryView.Gallery)
 }
 else
 {
-    <MudTable Items="_items" Hover="true" Breakpoint="Breakpoint.Sm" Dense="true" OnRowClick="OnRowClick" T="Item">
+    <MudTable Items="_items" Hover="true" Breakpoint="Breakpoint.Sm" Dense="true"
+              OnRowClick="OnRowClick" OnRowMouseEnter="OnRowMouseEnter" OnRowMouseLeave="OnRowMouseLeave"
+              RowClassFunc="RowClass" T="Item">
         <HeaderContent>
+            <MudTh Style="width:2.5rem"></MudTh>
             <MudTh>Name</MudTh>
             <MudTh>Kind</MudTh>
             <MudTh>Location</MudTh>
@@ -102,8 +132,16 @@ else
             <MudTh Style="text-align:center">Status</MudTh>
         </HeaderContent>
         <RowTemplate>
+            <MudTd DataLabel="Selected">
+                <div @oncontextmenu="@((MouseEventArgs e) => OpenContextMenu(e, context))" @oncontextmenu:preventDefault>
+                    <MudCheckBox T="bool" Value="@_selectedIds.Contains(context.Id)"
+                                 ValueChanged="@(selected => SetSelected(context.Id, selected))"
+                                 @onclick:stopPropagation="true" />
+                </div>
+            </MudTd>
             <MudTd DataLabel="Name">
-                <div class="d-flex align-center gap-2">
+                <div class="d-flex align-center gap-2" @oncontextmenu="@((MouseEventArgs e) => OpenContextMenu(e, context))"
+                     @oncontextmenu:preventDefault>
                     @{ var thumb = ImageUrls.For(context.ImageId, context.ThumbnailUrl, 80); }
                     @if (thumb is not null)
                     {
@@ -118,10 +156,15 @@ else
                     <span>@context.Name</span>
                 </div>
             </MudTd>
-            <MudTd DataLabel="Kind">@context.Kind?.Name</MudTd>
-            <MudTd DataLabel="Location">@LocationLabel(context)</MudTd>
+            <MudTd DataLabel="Kind">
+                <div @oncontextmenu="@((MouseEventArgs e) => OpenContextMenu(e, context))" @oncontextmenu:preventDefault>@context.Kind?.Name</div>
+            </MudTd>
+            <MudTd DataLabel="Location">
+                <div @oncontextmenu="@((MouseEventArgs e) => OpenContextMenu(e, context))" @oncontextmenu:preventDefault>@LocationLabel(context)</div>
+            </MudTd>
             <MudTd DataLabel="Qty" Style="text-align:right">
-                <div class="d-flex align-center justify-end gap-1" @onclick:stopPropagation="true">
+                <div class="d-flex align-center justify-end gap-1" @onclick:stopPropagation="true"
+                     @oncontextmenu="@((MouseEventArgs e) => OpenContextMenu(e, context))" @oncontextmenu:preventDefault>
                     <MudIconButton Icon="@Icons.Material.Filled.Remove" Size="Size.Small"
                                    OnClick="@(() => Adjust(context, -1))" />
                     <span style="min-width:2.5rem;text-align:center">@context.Quantity.ToString("0.##") @context.Unit</span>
@@ -130,10 +173,12 @@ else
                 </div>
             </MudTd>
             <MudTd DataLabel="Status" Style="text-align:center">
-                @if (context.IsCheckedOut)
-                {
-                    <MudChip T="string" Size="Size.Small" Color="Color.Secondary">Out</MudChip>
-                }
+                <div @oncontextmenu="@((MouseEventArgs e) => OpenContextMenu(e, context))" @oncontextmenu:preventDefault>
+                    @if (context.IsCheckedOut)
+                    {
+                        <MudChip T="string" Size="Size.Small" Color="Color.Secondary">Out</MudChip>
+                    }
+                </div>
             </MudTd>
         </RowTemplate>
     </MudTable>
@@ -153,19 +198,33 @@ else
             ? InventoryView.Gallery
             : InventoryView.List;
 
-    private void SetView(InventoryView view) =>
+    private void SetView(InventoryView view)
+    {
+        ClearSelection();
         Nav.NavigateTo(
             Nav.GetUriWithQueryParameter("view", view == InventoryView.Gallery ? "gallery" : null),
             replace: true);
+    }
 
     private List<Item>? _items;
     private List<ItemKind> _kinds = new();
+    private List<Location> _locations = new();
     private string? _search;
     private readonly Dictionary<int, FilterMode> _kindFilter = new();
+    private readonly HashSet<int> _selectedIds = new();
+    private readonly HashSet<int> _dragVisited = new();
+    private bool _dragSelecting;
+    private bool _dragSelectValue;
+    private bool _contextMenuOpen;
+    private double _contextMenuX;
+    private double _contextMenuY;
+    private string ContextMenuStyle =>
+        $"--inventory-context-x:{Math.Max(8, _contextMenuX):0}px;--inventory-context-y:{Math.Max(8, _contextMenuY):0}px";
 
     protected override async Task OnInitializedAsync()
     {
         _kinds = await InventorySvc.GetKindsAsync();
+        _locations = await Containers.GetLocationsAsync();
         foreach (var k in _kinds) _kindFilter[k.Id] = FilterMode.Off;
         // Preset filters when arriving from a home quick link (e.g. /inventory?include=1&exclude=2).
         ApplyQueryFilter(IncludeParam, FilterMode.Include);
@@ -186,6 +245,7 @@ else
         var include = _kindFilter.Where(kv => kv.Value == FilterMode.Include).Select(kv => kv.Key).ToList();
         var exclude = _kindFilter.Where(kv => kv.Value == FilterMode.Exclude).Select(kv => kv.Key).ToList();
         _items = await InventorySvc.QueryAsync(new ItemQuery(_search, include, exclude));
+        _selectedIds.IntersectWith(_items.Select(x => x.Id));
         StateHasChanged();
     }
 
@@ -221,7 +281,147 @@ else
         await ReloadAsync();
     }
 
-    private void OnRowClick(TableRowClickEventArgs<Item> args) => Nav.NavigateTo($"items/{args.Item!.Id}");
+    private void OnRowClick(TableRowClickEventArgs<Item> args)
+    {
+        if (args.Item is not { } item) return;
+        if (args.MouseEventArgs.Detail >= 2)
+        {
+            EndDrag();
+            Nav.NavigateTo($"items/{item.Id}");
+            return;
+        }
+
+        if (_dragSelecting)
+        {
+            ApplyDrag(item.Id);
+            EndDrag();
+            return;
+        }
+
+        if (args.MouseEventArgs.CtrlKey || args.MouseEventArgs.MetaKey)
+            SetSelected(item.Id, !_selectedIds.Contains(item.Id));
+        else
+        {
+            _selectedIds.Clear();
+            _selectedIds.Add(item.Id);
+        }
+    }
+
+    private void OnRowMouseLeave(TableRowHoverEventArgs<Item> args) => ContinueDrag(args);
+
+    private void OnRowMouseEnter(TableRowHoverEventArgs<Item> args)
+    {
+        if ((args.PointerEventArgs.Buttons & 1) == 0)
+        {
+            EndDrag();
+            return;
+        }
+        ContinueDrag(args);
+    }
+
+    private void ContinueDrag(TableRowHoverEventArgs<Item> args)
+    {
+        if (args.Item is not { } item || (args.PointerEventArgs.Buttons & 1) == 0) return;
+        if (!_dragSelecting)
+        {
+            _dragSelecting = true;
+            _dragVisited.Clear();
+            _dragSelectValue = !_selectedIds.Contains(item.Id);
+            if (!args.PointerEventArgs.CtrlKey && !args.PointerEventArgs.MetaKey)
+            {
+                _selectedIds.Clear();
+                _dragSelectValue = true;
+            }
+        }
+        ApplyDrag(item.Id);
+    }
+
+    private void ApplyDrag(int itemId)
+    {
+        if (!_dragVisited.Add(itemId)) return;
+        SetSelected(itemId, _dragSelectValue);
+    }
+
+    private void EndDrag()
+    {
+        _dragSelecting = false;
+        _dragVisited.Clear();
+    }
+
+    private void SetSelected(int itemId, bool selected)
+    {
+        if (selected) _selectedIds.Add(itemId);
+        else _selectedIds.Remove(itemId);
+    }
+
+    private void ClearSelection()
+    {
+        _selectedIds.Clear();
+        EndDrag();
+        CloseContextMenu();
+    }
+
+    private void OpenContextMenu(MouseEventArgs args, Item item)
+    {
+        EndDrag();
+        if (!_selectedIds.Contains(item.Id))
+        {
+            _selectedIds.Clear();
+            _selectedIds.Add(item.Id);
+        }
+        _contextMenuX = args.ClientX;
+        _contextMenuY = args.ClientY;
+        _contextMenuOpen = true;
+    }
+
+    private void CloseContextMenu() => _contextMenuOpen = false;
+
+    private async Task OpenQuickMoveAsync()
+    {
+        CloseContextMenu();
+        if (_selectedIds.Count == 0) return;
+        var selected = _selectedIds.ToList();
+        var parameters = new DialogParameters
+        {
+            ["Locations"] = _locations,
+            ["ThingLabel"] = $"{selected.Count} selected item{(selected.Count == 1 ? string.Empty : "s")}"
+        };
+        var dialog = await Dialogs.ShowAsync<MoveToDialog>("Quick Move", parameters);
+        var result = await dialog.Result;
+        if (result is not { Canceled: false, Data: MoveToDialog.Destination destination }) return;
+
+        var previous = await InventorySvc.MoveItemsAsync(selected, destination.LocationId, destination.ContainerId);
+        var label = destination.ContainerId is { } containerId
+            ? ContainerLabel(containerId)
+            : $"loose in {LocationName(destination.LocationId)}";
+        ClearSelection();
+        await ReloadAsync();
+        Snackbar.Add($"Moved {selected.Count} item{(selected.Count == 1 ? string.Empty : "s")} to {label}.",
+            Severity.Success, options =>
+            {
+                options.Action = "Undo";
+                options.VisibleStateDuration = 8000;
+                options.OnClick = async _ =>
+                {
+                    await InventorySvc.RestorePlacementsAsync(previous);
+                    await ReloadAsync();
+                    await InvokeAsync(StateHasChanged);
+                };
+            });
+    }
+
+    private string LocationName(int locationId) =>
+        _locations.FirstOrDefault(x => x.Id == locationId)?.Name ?? "location";
+
+    private string ContainerLabel(int containerId)
+    {
+        var location = _locations.FirstOrDefault(x => x.Containers.Any(c => c.Id == containerId));
+        var container = location?.Containers.FirstOrDefault(c => c.Id == containerId);
+        return location is null || container is null ? "container" : $"{location.Name} › {container.Name}";
+    }
+
+    private string RowClass(Item item, int _) =>
+        _selectedIds.Contains(item.Id) ? "inventory-row-selected" : string.Empty;
 
     private static string LocationLabel(Item i) =>
         i.Container is not null ? $"{i.Container.Location?.Name} › {i.Container.Name}"

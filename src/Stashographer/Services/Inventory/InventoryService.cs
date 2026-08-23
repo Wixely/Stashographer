@@ -31,7 +31,10 @@ public record DashboardSummary(
     List<Item> CheckedOut);
 
 /// <summary>CRUD and query operations for inventory items, via Dapper.</summary>
-public class InventoryService(IDbConnectionFactory db, ImageService? images = null)
+public class InventoryService(
+    IDbConnectionFactory db,
+    ImageService? images = null,
+    AttributeNameService? attributeNames = null)
 {
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
 
@@ -147,6 +150,9 @@ public class InventoryService(IDbConnectionFactory db, ImageService? images = nu
     public async Task<Item> SaveAsync(Item item, CancellationToken ct = default)
     {
         await TryIngestRemoteThumbnailAsync(item, ct);
+        if (attributeNames is not null && item.Attributes.Count > 0)
+            item.Attributes = await attributeNames.CanonicalizeAsync(
+                item.Attributes, kindId: item.ItemKindId, ct: ct);
 
         using var conn = await db.OpenAsync(ct);
         var now = DateTimeOffset.UtcNow;
