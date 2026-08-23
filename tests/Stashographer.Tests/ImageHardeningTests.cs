@@ -113,6 +113,30 @@ public class ImageHardeningTests
     }
 
     [Fact]
+    public async Task Camera_orientation_is_applied_before_metadata_is_stripped()
+    {
+        await using var db = await TestDb.CreateAsync();
+        var root = TempRoot();
+        try
+        {
+            var svc = Create(db, root);
+            using var img = new Image<Rgba32>(40, 20);
+            var exif = new SixLabors.ImageSharp.Metadata.Profiles.Exif.ExifProfile();
+            exif.SetValue(SixLabors.ImageSharp.Metadata.Profiles.Exif.ExifTag.Orientation, (ushort)6);
+            img.Metadata.ExifProfile = exif;
+
+            var stored = await svc.SaveAsync(new MemoryStream(await EncodeAsync(img, "jpeg")), null, "portrait.jpg");
+
+            Assert.Equal(20, stored.Width);
+            Assert.Equal(40, stored.Height);
+            var storedBytes = await svc.ReadOriginalBytesAsync(stored.Id);
+            using var reloaded = SixLabors.ImageSharp.Image.Load(storedBytes!);
+            Assert.Null(reloaded.Metadata.ExifProfile);
+        }
+        finally { if (Directory.Exists(root)) Directory.Delete(root, true); }
+    }
+
+    [Fact]
     public async Task Oversized_images_are_downscaled_to_the_cap()
     {
         await using var db = await TestDb.CreateAsync();
@@ -256,7 +280,7 @@ public class ImageHardeningTests
                 using var client = await listener.AcceptTcpClientAsync();
                 var stream = client.GetStream();
                 var request = new byte[4096];
-                await stream.ReadAsync(request); // drain the request line/headers
+                await stream.ReadAtLeastAsync(request, minimumBytes: 1); // drain enough to receive the request
                 var header = Encoding.ASCII.GetBytes(
                     $"HTTP/1.1 200 OK\r\nContent-Type: {contentType}\r\nContent-Length: {body.Length}\r\nConnection: close\r\n\r\n");
                 await stream.WriteAsync(header);

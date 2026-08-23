@@ -1,0 +1,23 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Stashographer (LAN/mobile)",
+      "type": "coreclr",
+      "request": "launch",
+      "preLaunchTask": "build Stashographer",
+      "program": "${workspaceFolder}/src/Stashographer/bin/Debug/net10.0/Stashographer.dll",
+      "cwd": "${workspaceFolder}/src/Stashographer",
+      "stopAtEntry": false,
+      "env": {
+        "ASPNETCORE_ENVIRONMENT": "Development",
+        "ASPNETCORE_URLS": "http://0.0.0.0:5207"
+      },
+      "serverReadyAction": {
+        "action": "openExternally",
+        "pattern": "\\bNow listening on:\\s+http://\\S+:([0-9]+)",
+        "uriFormat": "http://localhost:%s"
+      }
+    }
+  ]
+}

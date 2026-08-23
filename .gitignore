@@ -21,4 +21,6 @@ App_Data/
 
 ## Rider / VS Code
 .idea/
-.vscode/
+.vscode/*
+!.vscode/launch.json
+!.vscode/tasks.json

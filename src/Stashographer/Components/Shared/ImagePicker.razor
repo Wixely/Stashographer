@@ -1,5 +1,6 @@
-@* Compact photo control: tap the tile to use the device camera / pick a file (one tap on
-   mobile), or add from a URL. Uploads immediately and reports the stored image id. *@
+@* Compact photo control: tap the tile to pick a photo (mobile browsers normally offer
+   both the camera and photo library), or add one from a URL. Uploads immediately and
+   reports the stored image id. Dedicated camera capture lives on the Scan page. *@
 @inject ImageService Images
 @inject ISnackbar Snackbar
 
@@ -20,7 +21,10 @@
                 <span>@Label</span>
             </div>
         }
-        <InputFile accept="image/*" capture="environment" OnChange="OnFileAsync" style="display:none" />
+        @* Do not set capture here: several mobile browsers interpret it as "camera only",
+           which makes an existing photo impossible to choose. The Scan page exposes a
+           separate, explicit camera input when direct capture is wanted. *@
+        <InputFile accept="image/*" OnChange="OnFileAsync" style="display:none" />
     </label>
 
     <div class="d-flex gap-1 mt-1 justify-center">

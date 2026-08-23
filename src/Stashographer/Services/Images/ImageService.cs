@@ -79,6 +79,11 @@ public class ImageService
         string ext, mime;
         using (var img = SixLabors.ImageSharp.Image.Load(bytes))
         {
+            // Phone cameras commonly store portrait pixels sideways and describe the intended
+            // rotation in EXIF. Apply that transform before removing metadata so the sanitized
+            // image keeps the orientation the user saw in their camera/gallery.
+            img.Mutate(x => x.AutoOrient());
+
             img.Metadata.ExifProfile = null;
             img.Metadata.IccProfile = null;
             img.Metadata.IptcProfile = null;
