@@ -1,16 +1,35 @@
 @page "/scan"
+@implements IAsyncDisposable
 @inject ILookupRouter Lookup
 @inject IAiEnrichmentService Ai
 @inject PhotoIntakeService Intake
 @inject InventoryService Inventory
 @inject ImageService Images
 @inject ItemDraftState Draft
+@inject IntakeQueueService Queue
+@inject SettingsService SettingsSvc
 @inject NavigationManager Nav
 @inject ISnackbar Snackbar
+@inject IJSRuntime JS
 
 <PageTitle>Scan &amp; add · Stashographer</PageTitle>
 
-<MudText Typo="Typo.h4" Class="mb-4">Scan &amp; add</MudText>
+<div class="d-flex justify-space-between align-center mb-4">
+    <MudText Typo="Typo.h4">Scan &amp; add</MudText>
+    @if (_intakeOptions.QueueEnabled)
+    {
+        <MudButton Href="queue" Variant="Variant.Outlined" StartIcon="@Icons.Material.Filled.PlaylistAddCheck">
+            Queue (@_queuedCount)
+        </MudButton>
+    }
+</div>
+
+@if (_intakeOptions.QueueEnabled)
+{
+    <MudAlert Severity="Severity.Info" Dense="true" Class="mb-3">
+        Queue mode is on. Each capture is saved immediately so you can continue with the next item.
+    </MudAlert>
+}
 
 <MudGrid>
     <MudItem xs="12" md="6">
@@ -34,12 +53,17 @@
 
             <InputFile id="scan-photo-camera" OnChange="OnIntakePhotoChange" hidden accept="image/*" capture="environment" />
             <InputFile id="scan-photo-upload" OnChange="OnIntakePhotoChange" hidden accept="image/*" />
+            <InputFile @key="_clipboardInputKey" id="scan-photo-clipboard"
+                       OnChange="OnClipboardPhotoChange" hidden accept="image/*" />
             <div class="d-flex gap-2 flex-wrap">
                 <MudButton HtmlTag="label" for="scan-photo-camera" Variant="Variant.Filled" Color="Color.Primary"
                            StartIcon="@Icons.Material.Filled.PhotoCamera" Disabled="_busy">Take photo</MudButton>
                 <MudButton HtmlTag="label" for="scan-photo-upload" Variant="Variant.Outlined" Color="Color.Primary"
                            StartIcon="@Icons.Material.Filled.Upload" Disabled="_busy">Upload image</MudButton>
             </div>
+            <MudText Typo="Typo.caption" Class="mud-text-secondary d-block mt-2">
+                You can also paste an image from the clipboard anywhere on this page (Ctrl+V).
+            </MudText>
         </MudPaper>
     </MudItem>
 
@@ -172,12 +196,37 @@
     private IntakeResult? _pendingIntake;
     private List<IntakeResult>? _multiResults;
     private IntakeApplied? _lastApplied;
+    private IntakeOptions _intakeOptions = new();
+    private int _queuedCount;
+    private int _clipboardInputKey;
+    private bool _clipboardInteropEnabled;
+
+    protected override async Task OnInitializedAsync()
+    {
+        _intakeOptions = await SettingsSvc.GetIntakeOptionsAsync();
+        await RefreshQueueCountAsync();
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!firstRender) return;
+        await JS.InvokeVoidAsync("stashClipboardImages.enable", "scan-photo-clipboard");
+        _clipboardInteropEnabled = true;
+    }
 
     // --- Barcode / ISBN lookup path ------------------------------------------------
 
     private async Task OnCode(string code)
     {
         ClearIntake();
+        if (_intakeOptions.QueueEnabled)
+        {
+            var queued = await Queue.EnqueueBarcodeAsync(code);
+            await RefreshQueueCountAsync();
+            Snackbar.Add($"Queued {queued.SourceCode} — ready for the next scan.", Severity.Success);
+            return;
+        }
+
         _busy = true;
         _busyText = "Looking up…";
         _result = null;
@@ -222,11 +271,46 @@
 
     private async Task OnIntakePhotoChange(InputFileChangeEventArgs e) => await OnIntakePhoto(e.File);
 
+    private async Task OnClipboardPhotoChange(InputFileChangeEventArgs e)
+    {
+        try
+        {
+            await OnIntakePhoto(e.File);
+        }
+        finally
+        {
+            // InputFile retains its last browser file list. Replacing it and acknowledging
+            // the client queue guarantees that pasting the same image again raises a change.
+            _clipboardInputKey++;
+            await JS.InvokeVoidAsync("stashClipboardImages.complete");
+        }
+    }
+
     private async Task OnIntakePhoto(IBrowserFile? file)
     {
         if (file is null) return;
         ClearIntake();
         _result = null;
+
+        if (_intakeOptions.QueueEnabled)
+        {
+            _busy = true;
+            _busyText = "Saving to queue…";
+            StateHasChanged();
+            try
+            {
+                await using var upload = file.OpenReadStream(20 * 1024 * 1024);
+                await Queue.EnqueuePhotoAsync(upload, file.ContentType, file.Name, _multiMode);
+                await RefreshQueueCountAsync();
+                Snackbar.Add("Photo queued — ready for the next item.", Severity.Success);
+            }
+            catch (Exception ex)
+            {
+                Snackbar.Add($"Couldn't queue photo: {ex.Message}", Severity.Error);
+            }
+            finally { _busy = false; }
+            return;
+        }
 
         // Without AI, the photo still comes in: sanitize/store it and hand the user a
         // new-item draft with the photo attached.
@@ -329,5 +413,20 @@
         _pendingIntake = null;
         _multiResults = null;
         _lastApplied = null;
+    }
+
+    private async Task RefreshQueueCountAsync()
+    {
+        var counts = await Queue.GetCountsAsync();
+        _queuedCount = counts.Waiting + counts.Processing + counts.Ready + counts.Failed;
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        // A separate component instance is created for static prerendering. It is disposed
+        // without OnAfterRenderAsync ever running, and JS interop is illegal in that phase.
+        if (!_clipboardInteropEnabled) return;
+        try { await JS.InvokeVoidAsync("stashClipboardImages.disable"); }
+        catch (JSDisconnectedException) { }
     }
 }

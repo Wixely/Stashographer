@@ -1,6 +1,8 @@
 @* Camera barcode scanner + manual entry. Raises OnCode with whatever code is captured. *@
 @implements IAsyncDisposable
 @inject IJSRuntime JS
+@inject BarcodeImageDecoder BarcodeDecoder
+@inject ISnackbar Snackbar
 
 <MudPaper Class="pa-4" Elevation="0" Outlined="true">
     @if (_scanning)
@@ -15,12 +17,21 @@
     {
         <div class="d-flex flex-column align-center gap-2 py-4">
             <MudIcon Icon="@Icons.Material.Filled.QrCodeScanner" Size="Size.Large" Color="Color.Primary" />
-            <MudButton Color="Color.Primary" Variant="Variant.Filled" StartIcon="@Icons.Material.Filled.CameraAlt"
-                       OnClick="StartAsync">Scan with camera</MudButton>
-            @if (_unsupported)
+            <div class="d-flex gap-2 flex-wrap justify-center">
+                <MudButton Color="Color.Primary" Variant="Variant.Filled" StartIcon="@Icons.Material.Filled.CameraAlt"
+                           OnClick="StartAsync">Live scan</MudButton>
+                <InputFile @key="_barcodePhotoInputKey" id="barcode-photo-capture" hidden accept="image/*"
+                           capture="environment" OnChange="OnBarcodePhotoAsync" />
+                <MudButton HtmlTag="label" for="barcode-photo-capture" Color="Color.Primary"
+                           Variant="Variant.Outlined" StartIcon="@Icons.Material.Filled.PhotoCamera"
+                           Disabled="_decodingPhoto">
+                    @(_decodingPhoto ? "Reading…" : "Scan barcode photo")
+                </MudButton>
+            </div>
+            @if (_cameraFailure is not null)
             {
                 <MudAlert Severity="Severity.Info" Dense="true" Class="mt-2">
-                    This browser has no built-in barcode scanner (e.g. iOS Safari). Use manual entry below.
+                    @_cameraFailure Use <b>Scan barcode photo</b> instead; it works without the live browser API.
                 </MudAlert>
             }
         </div>
@@ -30,7 +41,7 @@
 
     <MudText Typo="Typo.subtitle2" Class="mb-1">Enter a barcode / ISBN manually</MudText>
     <div class="d-flex gap-2 align-center">
-        <MudTextField @bind-Value="_manual" Placeholder="e.g. 9780262033848" Variant="Variant.Outlined"
+        <MudTextField @ref="_manualField" @bind-Value="_manual" Placeholder="e.g. 9780262033848" Variant="Variant.Outlined"
                       Margin="Margin.Dense" Immediate="true" OnKeyDown="OnManualKey" />
         <MudButton Color="Color.Primary" Variant="Variant.Filled" OnClick="SubmitManual"
                    Disabled="@string.IsNullOrWhiteSpace(_manual)">Look up</MudButton>
@@ -42,8 +53,11 @@
 
     private ElementReference _video;
     private bool _scanning;
-    private bool _unsupported;
+    private string? _cameraFailure;
+    private bool _decodingPhoto;
+    private int _barcodePhotoInputKey;
     private string _manual = string.Empty;
+    private MudTextField<string>? _manualField;
     private DotNetObjectReference<ScanControl>? _selfRef;
 
     private async Task StartAsync()
@@ -57,7 +71,15 @@
         if (!result.Ok)
         {
             _scanning = false;
-            _unsupported = result.Reason == "unsupported";
+            _cameraFailure = result.Reason switch
+            {
+                "insecure" => "Live camera scanning requires HTTPS when opened from another device.",
+                "barcode-api" => "This browser does not provide its own live barcode detector.",
+                "camera-api" => "This browser is not exposing live camera access on this page.",
+                "NotAllowedError" => "Camera permission was denied.",
+                "NotFoundError" => "The browser could not find a camera.",
+                _ => "Live camera scanning could not start."
+            };
             StateHasChanged();
         }
     }
@@ -82,11 +104,39 @@
         var code = _manual.Trim();
         _manual = string.Empty;
         await OnCode.InvokeAsync(code);
+        if (_manualField is not null) await _manualField.FocusAsync();
     }
 
     private async Task OnManualKey(KeyboardEventArgs e)
     {
         if (e.Key is "Enter") await SubmitManual();
+    }
+
+    private async Task OnBarcodePhotoAsync(InputFileChangeEventArgs e)
+    {
+        _decodingPhoto = true;
+        try
+        {
+            await using var stream = e.File.OpenReadStream(20 * 1024 * 1024);
+            var code = await BarcodeDecoder.DecodeAsync(stream);
+            if (code is null)
+            {
+                Snackbar.Add("No barcode was found. Move closer, avoid glare, and try again.", Severity.Warning);
+                return;
+            }
+
+            Snackbar.Add($"Read barcode {code}.", Severity.Success);
+            await OnCode.InvokeAsync(code);
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Couldn't read barcode photo: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            _decodingPhoto = false;
+            _barcodePhotoInputKey++;
+        }
     }
 
     public async ValueTask DisposeAsync()

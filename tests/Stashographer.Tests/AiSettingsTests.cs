@@ -71,4 +71,33 @@ public class AiSettingsTests
         provider.Reconfigure(new AiOptions { Enabled = true, ApiKey = "sk-test" });
         Assert.True(service.IsEnabled); // flips live, no re-registration
     }
+
+    [Fact]
+    public async Task Intake_options_default_to_safe_queue_review_and_roundtrip()
+    {
+        await using var db = await TestDb.CreateAsync();
+        var service = new SettingsService(db.Factory);
+
+        var defaults = await service.GetIntakeOptionsAsync();
+        Assert.True(defaults.QueueEnabled);
+        Assert.True(defaults.AutoProcessBarcodes);
+        Assert.True(defaults.AutoProcessPhotos);
+        Assert.True(defaults.RequireReview);
+
+        await service.SaveIntakeOptionsAsync(new IntakeOptions
+        {
+            QueueEnabled = false,
+            AutoProcessBarcodes = false,
+            AutoProcessPhotos = false,
+            RequireReview = false,
+            ContextItemCount = 99
+        });
+
+        var loaded = await service.GetIntakeOptionsAsync();
+        Assert.False(loaded.QueueEnabled);
+        Assert.False(loaded.AutoProcessBarcodes);
+        Assert.False(loaded.AutoProcessPhotos);
+        Assert.False(loaded.RequireReview);
+        Assert.Equal(25, loaded.ContextItemCount);
+    }
 }

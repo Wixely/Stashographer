@@ -21,7 +21,9 @@ public class PhotoIntakeTests
         public MatchPick? Pick { get; set; }
         public int PickCalls { get; private set; }
 
-        public Task<VisionIdentification?> IdentifyItemAsync(byte[] i, string m, IReadOnlyList<string> k, CancellationToken ct = default)
+        public Task<VisionIdentification?> IdentifyItemAsync(
+            byte[] i, string m, IReadOnlyList<string> k,
+            CancellationToken ct = default, string? intakeContext = null)
             => Task.FromResult(Identification);
 
         public Task<List<DetectedBox>> DetectItemsAsync(byte[] i, string m, CancellationToken ct = default)

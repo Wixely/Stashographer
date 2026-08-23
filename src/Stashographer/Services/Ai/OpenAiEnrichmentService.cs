@@ -18,14 +18,18 @@ public class OpenAiEnrichmentService(
 
     private static readonly ChatOptions JsonOptions = new()
     {
-        ResponseFormat = ChatResponseFormat.Json,
+        // Text is the most interoperable OpenAI-protocol mode. Some local servers (including
+        // Qwen Studio) reject OpenAI's legacy json_object mode while accepting JSON-schema or
+        // text. Prompts still require JSON and ExtractJson defensively isolates the payload.
+        ResponseFormat = ChatResponseFormat.Text,
         Temperature = 0.2f
     };
 
     // --- Identify -----------------------------------------------------------------
 
     public async Task<VisionIdentification?> IdentifyItemAsync(
-        byte[] image, string mediaType, IReadOnlyList<string> knownKinds, CancellationToken ct = default)
+        byte[] image, string mediaType, IReadOnlyList<string> knownKinds,
+        CancellationToken ct = default, string? intakeContext = null)
     {
         var kinds = knownKinds.Count > 0 ? string.Join(", ", knownKinds) : "Other";
         var system =
@@ -41,7 +45,11 @@ public class OpenAiEnrichmentService(
             new(ChatRole.System, system),
             new(ChatRole.User, new List<AIContent>
             {
-                new TextContent("Identify this item for a home inventory."),
+                new TextContent(string.IsNullOrWhiteSpace(intakeContext)
+                    ? "Identify this item for a home inventory."
+                    : "Identify this item for a home inventory. Earlier captures from this same intake session " +
+                      "are included below as weak context. They can suggest a likely item kind or storage area, " +
+                      "but do not copy their product identity or unsupported attributes.\n\n" + intakeContext),
                 new DataContent(image, mediaType)
             })
         };

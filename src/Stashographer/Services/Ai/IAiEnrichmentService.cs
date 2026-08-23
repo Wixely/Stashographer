@@ -20,7 +20,8 @@ public interface IAiEnrichmentService
 
     /// <summary>Identifies a photographed item: name, kind, attributes, visible barcode, count.</summary>
     Task<VisionIdentification?> IdentifyItemAsync(
-        byte[] image, string mediaType, IReadOnlyList<string> knownKinds, CancellationToken ct = default);
+        byte[] image, string mediaType, IReadOnlyList<string> knownKinds,
+        CancellationToken ct = default, string? intakeContext = null);
 
     /// <summary>Detects distinct items (with normalized bounding boxes) in a multi-item photo.</summary>
     Task<List<DetectedBox>> DetectItemsAsync(byte[] image, string mediaType, CancellationToken ct = default);

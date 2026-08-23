@@ -1,0 +1,387 @@
+@page "/queue"
+@implements IAsyncDisposable
+@inject IntakeQueueService IntakeQueue
+@inject SettingsService SettingsSvc
+@inject IAiEnrichmentService Ai
+@inject InventoryService Inventory
+@inject ContainerService Containers
+@inject ISnackbar Snackbar
+
+<PageTitle>Intake queue · Stashographer</PageTitle>
+
+<div class="d-flex justify-space-between align-center flex-wrap gap-2 mb-4">
+    <div>
+        <MudText Typo="Typo.h4">Intake queue</MudText>
+        @if (_session is not null)
+        {
+            <MudText Typo="Typo.caption" Class="mud-text-secondary">
+                Session @_session.Id · started @_session.StartedAt.ToLocalTime().ToString("g")
+            </MudText>
+        }
+    </div>
+    <div class="d-flex gap-2">
+        <MudButton Href="scan" Variant="Variant.Filled" Color="Color.Primary"
+                   StartIcon="@Icons.Material.Filled.Add">Keep adding</MudButton>
+        <MudButton Variant="Variant.Outlined" StartIcon="@Icons.Material.Filled.Refresh"
+                   OnClick="@(() => LoadAsync(true))">Refresh</MudButton>
+        <MudButton Variant="Variant.Text" StartIcon="@Icons.Material.Filled.Flag"
+                   OnClick="StartNewSessionAsync">New session</MudButton>
+    </div>
+</div>
+
+@if (_loading)
+{
+    <MudProgressLinear Indeterminate="true" />
+}
+else if (_items.Count == 0)
+{
+    <MudAlert Severity="Severity.Success">
+        Nothing needs attention. New photos and barcodes will appear here.
+    </MudAlert>
+}
+else
+{
+    <div class="d-flex justify-space-between align-center mb-2">
+        <MudText Typo="Typo.subtitle2">Item @(_index + 1) of @_items.Count</MudText>
+        <div class="d-flex align-center gap-1">
+            <MudIconButton Icon="@Icons.Material.Filled.ChevronLeft" Disabled="_index == 0"
+                           OnClick="Previous" />
+            <MudIconButton Icon="@Icons.Material.Filled.ChevronRight" Disabled="_index >= _items.Count - 1"
+                           OnClick="Next" />
+        </div>
+    </div>
+
+    @if (Current is { } queued)
+    {
+        <MudPaper Class="pa-4" Outlined="true">
+            <div class="d-flex justify-space-between align-center flex-wrap gap-2 mb-3">
+                <div class="d-flex align-center gap-2">
+                    <MudChip T="string" Size="Size.Small" Color="@StatusColor(queued.Status)">
+                        @StatusLabel(queued.Status)
+                    </MudChip>
+                    <MudText Typo="Typo.body2">
+                        @(queued.SourceType == IntakeSourceType.Barcode
+                            ? queued.SourceCode
+                            : queued.IsMultiPhoto ? "Multi-item photo" : "Photo")
+                    </MudText>
+                </div>
+                <MudText Typo="Typo.caption" Class="mud-text-secondary">
+                    Captured @queued.CreatedAt.ToLocalTime().ToString("g")
+                </MudText>
+            </div>
+
+            @if (queued.Status == IntakeQueueStatus.Processing)
+            {
+                <div class="d-flex align-center gap-2 py-6 justify-center">
+                    <MudProgressCircular Indeterminate="true" />
+                    <MudText>Processing…</MudText>
+                </div>
+            }
+            else
+            {
+                @if (queued.Status == IntakeQueueStatus.Failed)
+                {
+                    <MudAlert Severity="Severity.Error" Class="mb-3">@queued.Error</MudAlert>
+                }
+                else if (queued.Status == IntakeQueueStatus.Pending)
+                {
+                    <MudAlert Severity="Severity.Info" Class="mb-3">
+                        Waiting for processing. You can process it now or complete the fields manually.
+                    </MudAlert>
+                }
+
+                <MudGrid>
+                    <MudItem xs="12" md="4">
+                        @if (queued.ImageId is { } imageId)
+                        {
+                            var queueImageUrl = ImageUrls.For(imageId, width: 720);
+                            <MudImage Src="@queueImageUrl" Width="360" Height="280"
+                                      ObjectFit="ObjectFit.Contain" Class="rounded" Style="max-width:100%" />
+                        }
+                        else
+                        {
+                            <div class="d-flex flex-column align-center justify-center pa-6">
+                                <MudIcon Icon="@Icons.Material.Filled.QrCode" Size="Size.Large" Color="Color.Primary" />
+                                <MudText Typo="Typo.h6" Class="mt-2">@queued.SourceCode</MudText>
+                            </div>
+                        }
+
+                        <MudButton FullWidth="true" Class="mt-2" Variant="Variant.Outlined"
+                                   StartIcon="@Icons.Material.Filled.AutoAwesome"
+                                   Disabled="@(_working || (queued.SourceType == IntakeSourceType.Photo && !Ai.IsEnabled))"
+                                   OnClick="ProcessCurrentAsync">
+                            @(_working ? "Processing…" : queued.Status == IntakeQueueStatus.Failed ? "Retry processing" : "Process now")
+                        </MudButton>
+                        @if (queued.SourceType == IntakeSourceType.Photo && !Ai.IsEnabled)
+                        {
+                            <MudText Typo="Typo.caption" Color="Color.Warning" Class="d-block mt-1">
+                                AI vision is not active; fill the item in manually or configure it in Settings.
+                            </MudText>
+                        }
+                    </MudItem>
+
+                    <MudItem xs="12" md="8">
+                        <MudTextField @bind-Value="queued.Draft.Name" Label="Name" Variant="Variant.Outlined"
+                                      Required="true" Class="mb-2" />
+                        <MudGrid>
+                            <MudItem xs="12" sm="6">
+                                <MudSelect @bind-Value="queued.Draft.ItemKindId" Label="Kind" Variant="Variant.Outlined">
+                                    @foreach (var kind in _kinds)
+                                    {
+                                        <MudSelectItem Value="@kind.Id">@kind.Name</MudSelectItem>
+                                    }
+                                </MudSelect>
+                            </MudItem>
+                            <MudItem xs="6" sm="3">
+                                <MudNumericField @bind-Value="queued.Draft.Quantity" Label="Quantity"
+                                                 Variant="Variant.Outlined" Min="0" />
+                            </MudItem>
+                            <MudItem xs="6" sm="3">
+                                <MudTextField @bind-Value="queued.Draft.Unit" Label="Unit" Variant="Variant.Outlined" />
+                            </MudItem>
+                        </MudGrid>
+                        <MudTextField @bind-Value="queued.Draft.Code" Label="Barcode / ISBN"
+                                      Variant="Variant.Outlined" Class="mt-2" />
+                        <MudTextField @bind-Value="queued.Draft.Description" Label="Description"
+                                      Variant="Variant.Outlined" Lines="2" Class="mt-2" />
+
+                        <MudGrid Class="mt-1">
+                            <MudItem xs="12" sm="6">
+                                <MudSelect Value="_locationId" ValueChanged="LocationChanged" T="int?"
+                                           Label="Location" Variant="Variant.Outlined" Clearable="true">
+                                    @foreach (var location in _locations)
+                                    {
+                                        <MudSelectItem T="int?" Value="@location.Id">@location.Name</MudSelectItem>
+                                    }
+                                </MudSelect>
+                            </MudItem>
+                            <MudItem xs="12" sm="6">
+                                <MudSelect @bind-Value="_containerId" T="int?" Label="Container"
+                                           Variant="Variant.Outlined" Clearable="true" Disabled="_locationId is null">
+                                    @foreach (var container in ContainersForLocation())
+                                    {
+                                        <MudSelectItem T="int?" Value="@container.Id">@container.Name</MudSelectItem>
+                                    }
+                                </MudSelect>
+                            </MudItem>
+                        </MudGrid>
+
+                        <div class="mt-3">
+                            <AttributeEditor Attributes="queued.Draft.Attributes" Suggestions="SuggestionsForKind(queued.Draft.ItemKindId)" />
+                        </div>
+
+                        @if (_candidates.Count > 0)
+                        {
+                            <MudSelect @bind-Value="_matchedItemId" T="int?" Label="Inventory action"
+                                       Variant="Variant.Outlined" Class="mt-3" Clearable="true"
+                                       HelperText="Leave blank to create a new inventory item.">
+                                @foreach (var candidate in _candidates)
+                                {
+                                    <MudSelectItem T="int?" Value="@candidate.Id">
+                                        Add @queued.IncrementBy.ToString("0.##") to @candidate.Name (@candidate.Quantity.ToString("0.##") now)
+                                    </MudSelectItem>
+                                }
+                            </MudSelect>
+                        }
+
+                        <div class="d-flex gap-2 flex-wrap mt-4">
+                            <MudButton Color="Color.Success" Variant="Variant.Filled"
+                                       StartIcon="@Icons.Material.Filled.Check"
+                                       Disabled="@(_working || (_matchedItemId is null && string.IsNullOrWhiteSpace(queued.Draft.Name)))"
+                                       OnClick="AcceptCurrentAsync">Accept item</MudButton>
+                            <MudButton Color="Color.Error" Variant="Variant.Outlined"
+                                       StartIcon="@Icons.Material.Filled.Close" Disabled="_working"
+                                       OnClick="RejectCurrentAsync">Reject</MudButton>
+                        </div>
+                    </MudItem>
+                </MudGrid>
+            }
+        </MudPaper>
+    }
+}
+
+@code {
+    private readonly CancellationTokenSource _dispose = new();
+    private List<IntakeQueueItem> _items = new();
+    private List<ItemKind> _kinds = new();
+    private List<Location> _locations = new();
+    private List<Item> _candidates = new();
+    private IntakeSession? _session;
+    private IntakeOptions _options = new();
+    private int _index;
+    private int? _matchedItemId;
+    private int? _locationId;
+    private int? _containerId;
+    private bool _loading = true;
+    private bool _working;
+
+    private IntakeQueueItem? Current => _items.Count == 0 ? null : _items[Math.Clamp(_index, 0, _items.Count - 1)];
+
+    protected override async Task OnInitializedAsync()
+    {
+        _options = await SettingsSvc.GetIntakeOptionsAsync();
+        _kinds = await Inventory.GetKindsAsync();
+        _locations = await Containers.GetLocationsAsync();
+        _session = await IntakeQueue.GetCurrentSessionAsync();
+        await LoadAsync(false);
+        _ = RefreshLoopAsync();
+    }
+
+    private async Task LoadAsync(bool preserveIndex)
+    {
+        var currentId = preserveIndex ? Current?.Id : null;
+        _items = await IntakeQueue.GetOpenAsync();
+        _index = currentId is { } id ? Math.Max(0, _items.FindIndex(x => x.Id == id)) : 0;
+        if (_items.Count > 0 && _index >= _items.Count) _index = _items.Count - 1;
+        await LoadCurrentStateAsync();
+        _loading = false;
+    }
+
+    private async Task LoadCurrentStateAsync()
+    {
+        var current = Current;
+        if (current is null)
+        {
+            _candidates.Clear();
+            return;
+        }
+
+        _locationId = current.Draft.LocationId;
+        _containerId = current.Draft.ContainerId;
+        if (_containerId is { } containerId)
+            _locationId = _locations.SelectMany(x => x.Containers).FirstOrDefault(x => x.Id == containerId)?.LocationId;
+
+        _candidates = await Inventory.FindCandidatesAsync(current.Draft.Name, current.Draft.Code);
+        _matchedItemId = current.ProposalAction == IntakeAction.IncrementExisting
+            || current.ProposalAction == IntakeAction.ChooseCandidate
+                ? current.MatchedItemId
+                : null;
+    }
+
+    private async Task ProcessCurrentAsync()
+    {
+        if (Current is not { } current) return;
+        _working = true;
+        try
+        {
+            if (current.Status == IntakeQueueStatus.Failed) await IntakeQueue.RetryAsync(current.Id);
+            await IntakeQueue.ProcessAsync(current.Id, _options, Ai.IsEnabled);
+            await LoadAsync(true);
+        }
+        finally { _working = false; }
+    }
+
+    private async Task AcceptCurrentAsync()
+    {
+        if (Current is not { } current) return;
+        _working = true;
+        try
+        {
+            current.Draft.ContainerId = _containerId;
+            current.Draft.LocationId = _containerId is null ? _locationId : null;
+            var applied = await IntakeQueue.AcceptAsync(current.Id, current.Draft, _matchedItemId);
+            Snackbar.Add(applied.Action == IntakeAction.IncrementExisting
+                ? $"Added {applied.By:0.##} to {applied.ItemName}."
+                : $"Added {applied.ItemName} to inventory.", Severity.Success);
+            await LoadAsync(false);
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add(ex.Message, Severity.Error);
+        }
+        finally { _working = false; }
+    }
+
+    private async Task RejectCurrentAsync()
+    {
+        if (Current is not { } current) return;
+        _working = true;
+        try
+        {
+            await IntakeQueue.RejectAsync(current.Id);
+            Snackbar.Add("Queue item rejected.", Severity.Info);
+            await LoadAsync(false);
+        }
+        finally { _working = false; }
+    }
+
+    private async Task StartNewSessionAsync()
+    {
+        _session = await IntakeQueue.StartNewSessionAsync();
+        Snackbar.Add("New intake session started. Context has been reset.", Severity.Success);
+    }
+
+    private async Task RefreshLoopAsync()
+    {
+        using var timer = new PeriodicTimer(TimeSpan.FromSeconds(2));
+        try
+        {
+            while (await timer.WaitForNextTickAsync(_dispose.Token))
+            {
+                // Pending records may be being completed manually; do not reload underneath
+                // the user's typing. Processing records are read-only and safe to refresh.
+                if (!_working && Current?.Status == IntakeQueueStatus.Processing)
+                {
+                    await InvokeAsync(async () =>
+                    {
+                        await LoadAsync(true);
+                        StateHasChanged();
+                    });
+                }
+            }
+        }
+        catch (OperationCanceledException) { }
+    }
+
+    private async Task Previous()
+    {
+        if (_index == 0) return;
+        _index--;
+        await LoadCurrentStateAsync();
+    }
+
+    private async Task Next()
+    {
+        if (_index >= _items.Count - 1) return;
+        _index++;
+        await LoadCurrentStateAsync();
+    }
+
+    private void LocationChanged(int? locationId)
+    {
+        _locationId = locationId;
+        _containerId = null;
+    }
+
+    private IEnumerable<Container> ContainersForLocation() =>
+        _locationId is { } locationId
+            ? _locations.FirstOrDefault(x => x.Id == locationId)?.Containers ?? Enumerable.Empty<Container>()
+            : Enumerable.Empty<Container>();
+
+    private List<string>? SuggestionsForKind(int kindId) =>
+        _kinds.FirstOrDefault(x => x.Id == kindId)?.SuggestedAttributes;
+
+    private static string StatusLabel(IntakeQueueStatus status) => status switch
+    {
+        IntakeQueueStatus.Pending => "Waiting",
+        IntakeQueueStatus.Processing => "Processing",
+        IntakeQueueStatus.ReadyForReview => "Ready to verify",
+        IntakeQueueStatus.Failed => "Needs attention",
+        _ => status.ToString()
+    };
+
+    private static Color StatusColor(IntakeQueueStatus status) => status switch
+    {
+        IntakeQueueStatus.ReadyForReview => Color.Success,
+        IntakeQueueStatus.Failed => Color.Error,
+        IntakeQueueStatus.Processing => Color.Info,
+        _ => Color.Default
+    };
+
+    public ValueTask DisposeAsync()
+    {
+        _dispose.Cancel();
+        _dispose.Dispose();
+        return ValueTask.CompletedTask;
+    }
+}

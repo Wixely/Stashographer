@@ -34,7 +34,11 @@ Every container gets a printable QR code — scan it to see what's meant to be i
   groceries and [Open Library](https://openlibrary.org) for books, routed automatically by
   the code's shape.
 - **Camera scanning** via the browser-native `BarcodeDetector`, with manual entry always
-  available (also works with USB keyboard-wedge scanners).
+  available (also works with USB keyboard-wedge scanners). On LAN HTTP or browsers without
+  that API, a rear-camera still-photo fallback decodes locally on the server.
+- **Queue-first intake** — photos and barcodes are persisted immediately so the next item
+  can be captured without waiting. A sequential worker uses earlier session items as context,
+  and the review queue presents every suggestion for item-by-item acceptance or correction.
 - **Locations & containers** — put items in a room or inside a box/shelf/drawer/bin. Each
   container gets a **printable QR code**; scan it to see what's (meant to be) inside.
 - **Checkout / lending** — record who took an item and where, and check it back in later.
@@ -93,6 +97,30 @@ Ai__Endpoint=https://your-endpoint/v1   # optional
 
 Without AI configured, those actions are simply hidden and everything else works.
 
+For local development, `appsettings.Development.json` is preconfigured for Qwen Studio at
+`http://localhost:12345/v1`, using the vision-capable `qwen3.6-27b-mtp@q6_k_xl` for both
+text and photos. Settings saved in the database still take precedence. When Stashographer
+runs in Docker and Qwen Studio runs on the Windows host, use
+`http://host.docker.internal:12345/v1` instead.
+
+## Intake workflow
+
+The intake queue is enabled by default. Barcode scanners can enter a code and press Enter;
+the field clears and regains focus as soon as the capture is stored. Photos can be taken,
+uploaded, or pasted from the clipboard anywhere on the Scan page with Ctrl+V. Processing runs
+in capture order, which lets the model use recent item kinds, attributes, and confirmed
+placement from the same session as weak context.
+
+Open **Intake Queue** to verify one item at a time, edit its fields and placement, choose
+between creating a new item or incrementing a match, then Accept or Reject it. Raw pending
+items can also be completed manually. **New session** resets context for the next inventory
+run without discarding unfinished work.
+
+Settings → **Intake workflow** controls queueing, automatic barcode lookup, automatic photo
+processing, the context window, and mandatory review. Turning queueing off restores the
+original immediate lookup/validation flow. Review is on by default; disabling it allows only
+complete, unambiguous results to apply automatically.
+
 > Keep the key out of git. Put it in a `.env` file next to `docker-compose.yml` (already
 > covered by `.gitignore`) and reference it as `${STASH_AI_API_KEY}`.
 
@@ -105,7 +133,7 @@ dependencies only (see [THIRD-PARTY-NOTICES](THIRD-PARTY-NOTICES.md)).
 ## Development
 
 ```bash
-dotnet test                    # 70 tests, no network access required
+dotnet test                    # 80 tests, no network access required
 dotnet build -c Release
 ```
 

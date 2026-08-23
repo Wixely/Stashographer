@@ -9,6 +9,86 @@ window.stashTheme = {
     prefersDark: () => window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches
 };
 
+// Clipboard image intake for the Scan page. Only image/file clipboard entries are handled;
+// ordinary pasted text (including barcodes) continues to the focused control unchanged.
+window.stashClipboardImages = (() => {
+    let targetInputId = null;
+    let active = false;
+    let sequence = 0;
+    const pending = [];
+
+    function extensionFor(contentType) {
+        switch ((contentType || '').toLowerCase()) {
+            case 'image/jpeg': return 'jpg';
+            case 'image/gif': return 'gif';
+            case 'image/webp': return 'webp';
+            default: return 'png';
+        }
+    }
+
+    function onPaste(event) {
+        if (!targetInputId || !event.clipboardData) return;
+
+        const clipboardItem = Array.from(event.clipboardData.items || [])
+            .find(item => item.kind === 'file' && item.type.startsWith('image/'));
+        if (!clipboardItem) return;
+
+        const pasted = clipboardItem.getAsFile();
+        if (!pasted) return;
+
+        // Clipboard providers commonly reuse "image.png" and its timestamp. Always clone
+        // with a unique identity so repeated pastes cannot be coalesced as the same file.
+        const fileName =
+            `clipboard-${Date.now()}-${++sequence}.${extensionFor(pasted.type)}`;
+        pending.push(new File([pasted], fileName, {
+            type: pasted.type || 'image/png',
+            lastModified: Date.now()
+        }));
+
+        event.preventDefault();
+        pump();
+    }
+
+    function pump() {
+        if (active || pending.length === 0 || !targetInputId) return;
+        const input = document.getElementById(targetInputId);
+        if (!(input instanceof HTMLInputElement)) {
+            setTimeout(pump, 50);
+            return;
+        }
+
+        const file = pending.shift();
+        const transfer = new DataTransfer();
+        transfer.items.add(file);
+        input.value = '';
+        input.files = transfer.files;
+        active = true;
+        input.dispatchEvent(new Event('change', { bubbles: true }));
+    }
+
+    function enable(inputId) {
+        targetInputId = inputId;
+        active = false;
+        pending.length = 0;
+        document.removeEventListener('paste', onPaste);
+        document.addEventListener('paste', onPaste);
+    }
+
+    function complete() {
+        active = false;
+        setTimeout(pump, 0);
+    }
+
+    function disable() {
+        document.removeEventListener('paste', onPaste);
+        targetInputId = null;
+        active = false;
+        pending.length = 0;
+    }
+
+    return { enable, complete, disable };
+})();
+
 // Broken-image fallback: any <img> that fails to load (dead lookup cover, missing stored
 // file) is swapped for a neutral inline-SVG placeholder instead of the browser's broken
 // icon. Capture phase because the error event does not bubble. data-fallback guards
@@ -35,11 +115,19 @@ window.stashScanner = (() => {
     let rafId = null;
     let video = null;
 
-    const supported = () => 'BarcodeDetector' in window;
+    const unavailableReason = () => {
+        if (!window.isSecureContext) return 'insecure';
+        if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) return 'camera-api';
+        if (!('BarcodeDetector' in window)) return 'barcode-api';
+        return null;
+    };
+
+    const supported = () => unavailableReason() === null;
 
     async function start(videoEl, dotNetRef) {
-        if (!supported()) {
-            return { ok: false, reason: 'unsupported' };
+        const unavailable = unavailableReason();
+        if (unavailable) {
+            return { ok: false, reason: unavailable };
         }
         try {
             detector = new BarcodeDetector({

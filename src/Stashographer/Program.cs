@@ -6,6 +6,7 @@ using Stashographer.Services.Ai;
 using Stashographer.Services.Config;
 using Stashographer.Services.Images;
 using Stashographer.Services.Inventory;
+using Stashographer.Services.Intake;
 using Stashographer.Services.Lookup;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -35,6 +36,7 @@ builder.Services.AddHttpClient<OpenLibraryProvider>(c =>
     c.DefaultRequestHeaders.UserAgent.ParseAdd("Stashographer/1.0 (household inventory app)");
 });
 builder.Services.AddScoped<ILookupRouter, LookupRouter>();
+builder.Services.AddSingleton<BarcodeImageDecoder>();
 
 // --- Domain services ----------------------------------------------------------
 builder.Services.AddScoped<InventoryService>();
@@ -66,6 +68,9 @@ builder.Services.AddSingleton<IAiClientProvider, OpenAiClientProvider>();
 builder.Services.AddScoped<IAiEnrichmentService, OpenAiEnrichmentService>();
 builder.Services.AddScoped<SettingsService>();
 builder.Services.AddScoped<PhotoIntakeService>();
+builder.Services.AddSingleton<IntakeQueueSignal>();
+builder.Services.AddScoped<IntakeQueueService>();
+builder.Services.AddHostedService<IntakeQueueWorker>();
 
 var app = builder.Build();
 

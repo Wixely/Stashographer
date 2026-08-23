@@ -57,13 +57,26 @@ public class PhotoIntakeService(
         await content.CopyToAsync(ms, ct);
         var bytes = ms.ToArray();
         var stored = await images.SaveAsync(new MemoryStream(bytes), mediaType, "photo-intake", null, ct);
-        return await ProcessBytesAsync(stored.Id, bytes, stored.ContentType, ct);
+        return await ProcessBytesAsync(stored.Id, bytes, stored.ContentType, null, ct);
     }
 
-    private async Task<IntakeResult> ProcessBytesAsync(int imageId, byte[] bytes, string mediaType, CancellationToken ct)
+    /// <summary>Processes an image that was already durably stored by the intake queue.</summary>
+    public async Task<IntakeResult> ProcessStoredAsync(
+        int imageId, string? intakeContext = null, CancellationToken ct = default)
+    {
+        var stored = await images.GetAsync(imageId, ct)
+            ?? throw new InvalidOperationException("The queued image no longer exists.");
+        var bytes = await images.ReadOriginalBytesAsync(imageId, ct)
+            ?? throw new InvalidOperationException("The queued image file could not be read.");
+        return await ProcessBytesAsync(imageId, bytes, stored.ContentType, intakeContext, ct);
+    }
+
+    private async Task<IntakeResult> ProcessBytesAsync(
+        int imageId, byte[] bytes, string mediaType, string? intakeContext, CancellationToken ct)
     {
         var kinds = await inventory.GetKindsAsync(ct);
-        var identification = await ai.IdentifyItemAsync(bytes, mediaType, kinds.Select(k => k.Name).ToList(), ct);
+        var identification = await ai.IdentifyItemAsync(
+            bytes, mediaType, kinds.Select(k => k.Name).ToList(), ct, intakeContext);
 
         if (identification is null || string.IsNullOrWhiteSpace(identification.Name))
         {
@@ -123,12 +136,24 @@ public class PhotoIntakeService(
         var bytes = ms.ToArray();
         var fullPhoto = await images.SaveAsync(new MemoryStream(bytes), mediaType, "photo-intake-multi", null, ct);
 
+        return await ProcessMultiStoredAsync(fullPhoto.Id, null, ct);
+    }
+
+    /// <summary>Runs multi-item detection against a photo already persisted by the queue.</summary>
+    public async Task<List<IntakeResult>> ProcessMultiStoredAsync(
+        int imageId, string? intakeContext = null, CancellationToken ct = default)
+    {
+        var fullPhoto = await images.GetAsync(imageId, ct)
+            ?? throw new InvalidOperationException("The queued image no longer exists.");
+        var bytes = await images.ReadOriginalBytesAsync(imageId, ct)
+            ?? throw new InvalidOperationException("The queued image file could not be read.");
+
         var boxes = await ai.DetectItemsAsync(bytes, fullPhoto.ContentType, ct);
         if (boxes.Count == 0)
         {
             // Nothing detected — treat the whole photo as one item rather than losing it.
             logger.LogInformation("Multi-item detection found nothing; falling back to single-item flow");
-            return new List<IntakeResult> { await ProcessBytesAsync(fullPhoto.Id, bytes, fullPhoto.ContentType, ct) };
+            return new List<IntakeResult> { await ProcessBytesAsync(fullPhoto.Id, bytes, fullPhoto.ContentType, intakeContext, ct) };
         }
 
         var semaphore = new SemaphoreSlim(MultiConcurrency);
@@ -141,7 +166,7 @@ public class PhotoIntakeService(
                 if (crop is null) return null;
                 var cropBytes = await images.ReadOriginalBytesAsync(crop.Id, ct);
                 if (cropBytes is null) return null;
-                return await ProcessBytesAsync(crop.Id, cropBytes, crop.ContentType, ct);
+                return await ProcessBytesAsync(crop.Id, cropBytes, crop.ContentType, intakeContext, ct);
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {

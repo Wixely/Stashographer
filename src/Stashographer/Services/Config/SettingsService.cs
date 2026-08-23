@@ -12,6 +12,7 @@ namespace Stashographer.Services.Config;
 public class SettingsService(IDbConnectionFactory db)
 {
     private const string AiPrefix = "Ai.";
+    private const string IntakePrefix = "Intake.";
 
     public async Task<Dictionary<string, string>> GetAllAsync(string? prefix = null, CancellationToken ct = default)
     {
@@ -63,4 +64,39 @@ public class SettingsService(IDbConnectionFactory db)
             ["Ai.Model"] = options.Model,
             ["Ai.VisionModel"] = options.VisionModel ?? string.Empty
         }, ct);
+
+    // --- Intake options -------------------------------------------------------------
+
+    public async Task<IntakeOptions> GetIntakeOptionsAsync(CancellationToken ct = default)
+    {
+        var stored = await GetAllAsync(IntakePrefix, ct);
+        var defaults = new IntakeOptions();
+        return new IntakeOptions
+        {
+            QueueEnabled = ReadBool(stored, "Intake.QueueEnabled", defaults.QueueEnabled),
+            AutoProcessBarcodes = ReadBool(stored, "Intake.AutoProcessBarcodes", defaults.AutoProcessBarcodes),
+            AutoProcessPhotos = ReadBool(stored, "Intake.AutoProcessPhotos", defaults.AutoProcessPhotos),
+            RequireReview = ReadBool(stored, "Intake.RequireReview", defaults.RequireReview),
+            ContextItemCount = stored.TryGetValue("Intake.ContextItemCount", out var count)
+                && int.TryParse(count, out var parsed)
+                    ? Math.Clamp(parsed, 0, 25)
+                    : defaults.ContextItemCount
+        };
+    }
+
+    public Task SaveIntakeOptionsAsync(IntakeOptions options, CancellationToken ct = default) =>
+        SetManyAsync(new Dictionary<string, string>
+        {
+            ["Intake.QueueEnabled"] = options.QueueEnabled.ToString(),
+            ["Intake.AutoProcessBarcodes"] = options.AutoProcessBarcodes.ToString(),
+            ["Intake.AutoProcessPhotos"] = options.AutoProcessPhotos.ToString(),
+            ["Intake.RequireReview"] = options.RequireReview.ToString(),
+            ["Intake.ContextItemCount"] = Math.Clamp(options.ContextItemCount, 0, 25).ToString()
+        }, ct);
+
+    private static bool ReadBool(
+        IReadOnlyDictionary<string, string> values, string key, bool fallback) =>
+        values.TryGetValue(key, out var value) && bool.TryParse(value, out var parsed)
+            ? parsed
+            : fallback;
 }

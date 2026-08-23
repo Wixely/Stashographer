@@ -4,6 +4,7 @@
 @inject SettingsService SettingsSvc
 @inject QuickLinksService QuickLinks
 @inject InventoryService Inventory
+@inject IntakeQueueSignal QueueSignal
 @inject IDialogService Dialogs
 @inject ISnackbar Snackbar
 
@@ -53,6 +54,33 @@
             </RowTemplate>
         </MudTable>
     }
+</MudPaper>
+
+<MudPaper Class="pa-4 mb-3" Outlined="true">
+    <MudText Typo="Typo.h6" Class="mb-2">Intake workflow</MudText>
+    <MudText Typo="Typo.body2" Class="mud-text-secondary mb-3">
+        Queue-first capture keeps barcode scanners and phone cameras ready for the next item.
+        Processing happens in order, and earlier captures provide session context for later ones.
+    </MudText>
+
+    <MudSwitch T="bool" @bind-Value="_queueEnabled" Label="Add new captures to the queue" Color="Color.Primary" />
+    <MudText Typo="Typo.caption" Class="mud-text-secondary d-block mb-2">
+        Turn this off to use the original immediate lookup and validation screens.
+    </MudText>
+    <MudSwitch T="bool" @bind-Value="_autoProcessBarcodes" Label="Process queued barcodes automatically"
+               Color="Color.Primary" Disabled="!_queueEnabled" />
+    <MudSwitch T="bool" @bind-Value="_autoProcessPhotos" Label="Process queued photos automatically when AI is active"
+               Color="Color.Primary" Disabled="!_queueEnabled" />
+    <MudSwitch T="bool" @bind-Value="_requireReview" Label="Require item-by-item verification before changing inventory"
+               Color="Color.Primary" Disabled="!_queueEnabled" />
+    <MudNumericField T="int" @bind-Value="_contextItemCount" Label="Earlier items supplied as session context"
+                     Min="0" Max="25" Variant="Variant.Outlined" Margin="Margin.Dense" Class="mt-2"
+                     HelperText="Used as weak hints for likely kind and placement; 0 disables contextual hints." />
+
+    <MudButton Class="mt-2" Color="Color.Primary" Variant="Variant.Filled"
+               StartIcon="@Icons.Material.Filled.Save" OnClick="SaveIntakeAsync">
+        Save intake workflow
+    </MudButton>
 </MudPaper>
 
 <MudPaper Class="pa-4 mb-3" Outlined="true">
@@ -128,6 +156,12 @@
     private bool _hasStoredKey;
     private bool _aiBusy;
 
+    private bool _queueEnabled = true;
+    private bool _autoProcessBarcodes = true;
+    private bool _autoProcessPhotos = true;
+    private bool _requireReview = true;
+    private int _contextItemCount = 8;
+
     protected override async Task OnInitializedAsync()
     {
         var current = AiClients.Current;
@@ -137,8 +171,29 @@
         _aiVisionModel = current.VisionModel;
         _hasStoredKey = !string.IsNullOrWhiteSpace(current.ApiKey);
 
+        var intake = await SettingsSvc.GetIntakeOptionsAsync();
+        _queueEnabled = intake.QueueEnabled;
+        _autoProcessBarcodes = intake.AutoProcessBarcodes;
+        _autoProcessPhotos = intake.AutoProcessPhotos;
+        _requireReview = intake.RequireReview;
+        _contextItemCount = intake.ContextItemCount;
+
         _kinds = await Inventory.GetKindsAsync();
         await Reload();
+    }
+
+    private async Task SaveIntakeAsync()
+    {
+        await SettingsSvc.SaveIntakeOptionsAsync(new IntakeOptions
+        {
+            QueueEnabled = _queueEnabled,
+            AutoProcessBarcodes = _autoProcessBarcodes,
+            AutoProcessPhotos = _autoProcessPhotos,
+            RequireReview = _requireReview,
+            ContextItemCount = Math.Clamp(_contextItemCount, 0, 25)
+        });
+        QueueSignal.Pulse();
+        Snackbar.Add("Intake workflow saved.", Severity.Success);
     }
 
     private async Task SaveAiAsync()
