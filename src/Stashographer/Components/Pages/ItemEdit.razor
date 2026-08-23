@@ -17,11 +17,18 @@
 }
 else
 {
-    <div class="d-flex justify-space-between align-center mb-4">
+    <div class="d-flex justify-space-between align-center flex-wrap gap-2 mb-4">
         <MudText Typo="Typo.h4">@(_item.Id == 0 ? "New item" : "Edit item")</MudText>
         @if (_item.Id != 0)
         {
-            <div class="d-flex gap-2">
+            <div class="d-flex gap-2 flex-wrap">
+                @if (_item.Quantity > 1 && !_item.IsCheckedOut)
+                {
+                    <MudButton Color="Color.Primary" Variant="Variant.Outlined"
+                               StartIcon="@Icons.Material.Filled.CallSplit" OnClick="SplitQuantity">
+                        Split quantity
+                    </MudButton>
+                }
                 @if (_item.IsCheckedOut)
                 {
                     <MudButton Color="Color.Secondary" Variant="Variant.Outlined"
@@ -44,6 +51,29 @@ else
             @if (!string.IsNullOrWhiteSpace(_openCheckout.WhereaboutsNote)) { <text> — @_openCheckout.WhereaboutsNote</text> }
             @if (_openCheckout.DueDate is { } due) { <text> (due @due.ToString("d MMM"))</text> }
         </MudAlert>
+    }
+
+    @if (_collectionMembers.Count > 1)
+    {
+        <MudPaper Class="pa-3 mb-3" Outlined="true">
+            <div class="d-flex align-center gap-2 flex-wrap mb-2">
+                <MudIcon Icon="@Icons.Material.Filled.AccountTree" Color="Color.Primary" />
+                <MudText Typo="Typo.subtitle2">Stored in @_collectionMembers.Count places</MudText>
+                <MudChip T="string" Size="Size.Small">
+                    Total @_collectionMembers.Sum(x => x.Quantity).ToString("0.##") @_item.Unit
+                </MudChip>
+            </div>
+            <div class="d-flex gap-2 flex-wrap">
+                @foreach (var member in _collectionMembers)
+                {
+                    <MudButton Href="@($"items/{member.Id}")" Variant="@(member.Id == _item.Id ? Variant.Filled : Variant.Outlined)"
+                               Color="@(member.Id == _item.Id ? Color.Primary : Color.Default)"
+                               StartIcon="@Icons.Material.Filled.Place">
+                        @member.Quantity.ToString("0.##") @member.Unit · @PlacementLabel(member)
+                    </MudButton>
+                }
+            </div>
+        </MudPaper>
     }
 
     <MudGrid>
@@ -130,6 +160,7 @@ else
     private Item _item = new() { Name = string.Empty, ItemKindId = 7 };
     private List<ItemKind> _kinds = new();
     private List<Location> _locations = new();
+    private List<Item> _collectionMembers = new();
     private CheckoutRecord? _openCheckout;
     private DateTime? _expiry;
     private int? _locationId;
@@ -147,10 +178,12 @@ else
         {
             _item = await Inventory.GetAsync(id) ?? new Item { Name = string.Empty, ItemKindId = 7 };
             _openCheckout = _item.IsCheckedOut ? await Checkouts.GetOpenForItemAsync(id) : null;
+            _collectionMembers = await Inventory.GetCollectionMembersAsync(id);
         }
         else
         {
             _item = Draft.Take() ?? new Item { Name = string.Empty, ItemKindId = 7 };
+            _collectionMembers.Clear();
         }
 
         _expiry = _item.ExpiryDate?.ToDateTime(TimeOnly.MinValue);
@@ -217,8 +250,43 @@ else
     {
         _item = await Inventory.GetAsync(_item.Id) ?? _item;
         _openCheckout = _item.IsCheckedOut ? await Checkouts.GetOpenForItemAsync(_item.Id) : null;
+        _collectionMembers = await Inventory.GetCollectionMembersAsync(_item.Id);
         StateHasChanged();
     }
+
+    private async Task SplitQuantity()
+    {
+        var parameters = new DialogParameters
+        {
+            ["ItemName"] = _item.Name,
+            ["AvailableQuantity"] = _item.Quantity,
+            ["Unit"] = _item.Unit,
+            ["Locations"] = _locations,
+            ["CurrentLocationId"] = _item.LocationId,
+            ["CurrentContainerId"] = _item.ContainerId
+        };
+        var dialog = await Dialogs.ShowAsync<SplitItemDialog>("Split across places", parameters);
+        var result = await dialog.Result;
+        if (result is not { Canceled: false, Data: SplitItemDialog.Request request }) return;
+
+        try
+        {
+            var split = await Inventory.SplitAsync(
+                _item.Id, request.Quantity, request.LocationId, request.ContainerId);
+            _item = split.Source;
+            _collectionMembers = await Inventory.GetCollectionMembersAsync(_item.Id);
+            Snackbar.Add($"Split {split.Created.Quantity:0.##} into {PlacementLabel(split.Created)}.", Severity.Success);
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add(ex.Message, Severity.Error);
+        }
+    }
+
+    private static string PlacementLabel(Item item) =>
+        item.Container is not null
+            ? $"{item.Container.Location?.Name} › {item.Container.Name}"
+            : item.Location?.Name ?? "Unplaced";
 
     private async Task Enrich()
     {

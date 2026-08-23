@@ -93,6 +93,18 @@ public class PhotoIntakeTests
         return ms;
     }
 
+    private static async Task<MemoryStream> SplitPhotoAsync()
+    {
+        using var img = new Image<Rgba32>(200, 100, new Rgba32(220, 30, 30));
+        for (var y = 0; y < img.Height; y++)
+        for (var x = img.Width / 2; x < img.Width; x++)
+            img[x, y] = new Rgba32(30, 30, 220);
+        var ms = new MemoryStream();
+        await img.SaveAsPngAsync(ms);
+        ms.Position = 0;
+        return ms;
+    }
+
     // --- Single-item pipeline -------------------------------------------------------
 
     [Fact]
@@ -107,6 +119,24 @@ public class PhotoIntakeTests
         Assert.Equal(IntakeAction.IncrementExisting, result.Proposal.Action);
         Assert.Equal(existing.Id, result.Proposal.MatchedItemId);
         Assert.Equal(0, h.Ai.PickCalls); // model never consulted for the match
+    }
+
+    [Fact]
+    public async Task Barcode_match_to_split_collection_requires_user_to_choose_a_place()
+    {
+        await using var h = await Harness.CreateAsync();
+        var existing = await h.Inventory.SaveAsync(new Item
+        {
+            Name = "Baked Beans", Code = "5000157024671", ItemKindId = 1, Quantity = 2, LocationId = 1
+        });
+        await h.Inventory.SplitAsync(existing.Id, 1, 3, null);
+        h.Ai.Identification = new VisionIdentification { Name = "Beans tin", Barcode = existing.Code };
+
+        var result = await h.Intake.ProcessSingleAsync(await PhotoAsync(), "image/png");
+
+        Assert.Equal(IntakeAction.ChooseCandidate, result.Proposal.Action);
+        Assert.Null(result.Proposal.MatchedItemId);
+        Assert.Equal(0, h.Ai.PickCalls);
     }
 
     [Fact]
@@ -167,6 +197,22 @@ public class PhotoIntakeTests
     }
 
     [Fact]
+    public async Task Single_item_photo_is_focus_cropped_from_ai_bounds_before_identification()
+    {
+        await using var h = await Harness.CreateAsync();
+        h.Ai.Boxes = [new DetectedBox("item", 0.1, 0.2, 0.3, 0.6)];
+        h.Ai.Identification = new VisionIdentification { Name = "Focused item", Kind = "Other" };
+
+        var result = await h.Intake.ProcessSingleAsync(await SplitPhotoAsync(), "image/png");
+
+        var crop = await h.Images.GetAsync(result.ImageId);
+        Assert.NotNull(crop);
+        Assert.InRange(crop!.Width!.Value, 60, 80);
+        Assert.InRange(crop.Height!.Value, 60, 80);
+        Assert.Equal(result.ImageId, result.Proposal.Draft.ImageId);
+    }
+
+    [Fact]
     public async Task Count_drives_increment_amount_and_undo_reverses_it()
     {
         await using var h = await Harness.CreateAsync();
@@ -204,19 +250,37 @@ public class PhotoIntakeTests
         await using var h = await Harness.CreateAsync();
         h.Ai.Boxes = new List<DetectedBox>
         {
-            new("left thing", 0.0, 0.0, 0.45, 1.0),
-            new("right thing", 0.55, 0.0, 0.45, 1.0)
+            new("left thing", 0.05, 0.2, 0.3, 0.6),
+            new("right thing", 0.65, 0.2, 0.3, 0.6)
         };
         h.Ai.Identification = new VisionIdentification { Name = "Mystery Gadget", Kind = "Other" };
 
-        var results = await h.Intake.ProcessMultiAsync(await PhotoAsync(200, 100), "image/png");
+        var results = await h.Intake.ProcessMultiAsync(await SplitPhotoAsync(), "image/png");
 
         Assert.Equal(2, results.Count);
         Assert.All(results, r => Assert.Equal(IntakeAction.CreateNew, r.Proposal.Action));
-        // Each crop was stored as its own image (distinct from the full photo and each other is
-        // not guaranteed — identical pixels dedupe — but ids must exist and serve bytes).
+        Assert.Equal(2, results.Select(x => x.ImageId).Distinct().Count());
         foreach (var r in results)
-            Assert.NotNull(await h.Images.ReadOriginalBytesAsync(r.ImageId));
+        {
+            var crop = await h.Images.GetAsync(r.ImageId);
+            Assert.NotNull(crop);
+            Assert.InRange(crop!.Width!.Value, 60, 80);
+            Assert.InRange(crop.Height!.Value, 60, 80);
+        }
+    }
+
+    [Fact]
+    public void Multi_box_preparation_keeps_adjacent_objects_but_removes_detector_duplicates()
+    {
+        var boxes = PhotoIntakeService.PrepareDetectedBoxes([
+            new("right copy", 0.55, 0.1, 0.35, 0.7),
+            new("left copy duplicate", 0.101, 0.101, 0.349, 0.699),
+            new("left copy", 0.1, 0.1, 0.35, 0.7)
+        ]);
+
+        Assert.Equal(2, boxes.Count);
+        Assert.Equal("left copy", boxes[0].Label);
+        Assert.Equal("right copy", boxes[1].Label);
     }
 
     [Fact]

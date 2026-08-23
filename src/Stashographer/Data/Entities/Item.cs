@@ -10,6 +10,12 @@ public class Item
 {
     public int Id { get; set; }
 
+    /// <summary>
+    /// Shared opaque key for entries created by splitting one quantity across places.
+    /// Null means the item has never been split.
+    /// </summary>
+    public string? CollectionKey { get; set; }
+
     /// <summary>Scanned barcode / ISBN / other identifier. Nullable — not everything scans.</summary>
     public string? Code { get; set; }
 

@@ -40,14 +40,15 @@
                 <MudText Typo="Typo.subtitle2">Add from a photo</MudText>
                 @if (Ai.IsEnabled)
                 {
-                    <MudSwitch T="bool" @bind-Value="_multiMode" Label="Multiple items" Color="Color.Primary" Size="Size.Small" />
+                    <MudSwitch T="bool" @bind-Value="_multiMode" Label="Split into individual items"
+                               Color="Color.Primary" Size="Size.Small" />
                 }
             </div>
             <MudText Typo="Typo.caption" Class="mud-text-secondary d-block mb-2">
                 @(Ai.IsEnabled
                     ? _multiMode
-                        ? "One photo of several things — each is detected, cropped and added."
-                        : "Snap or upload one item — it's matched against your inventory and counted up, or created."
+                        ? "One photo can contain several things. Each object is detected, given its own focused crop, and queued separately."
+                        : "Snap or upload one item — AI focus-crops it, then matches it against your inventory or creates it."
                     : "The photo is attached to a new item for you to fill in. Enable AI in Settings to identify and count items automatically.")
             </MudText>
 
@@ -109,6 +110,7 @@
                                     }
                                     <span>@cand.Name</span>
                                     <MudChip T="string" Size="Size.Small">@cand.Quantity.ToString("0.##") @cand.Unit</MudChip>
+                                    <MudText Typo="Typo.caption" Class="mud-text-secondary">@PlacementLabel(cand)</MudText>
                                     @if (cand.Id == _pendingIntake.Proposal.MatchedItemId)
                                     {
                                         <MudChip T="string" Size="Size.Small" Color="Color.Info">likely</MudChip>
@@ -192,7 +194,7 @@
     private LookupResult? _result;
     private bool _busy;
     private string _busyText = "Working…";
-    private bool _multiMode;
+    private bool _multiMode = true;
     private IntakeResult? _pendingIntake;
     private List<IntakeResult>? _multiResults;
     private IntakeApplied? _lastApplied;
@@ -302,7 +304,9 @@
                 await using var upload = file.OpenReadStream(20 * 1024 * 1024);
                 await Queue.EnqueuePhotoAsync(upload, file.ContentType, file.Name, _multiMode);
                 await RefreshQueueCountAsync();
-                Snackbar.Add("Photo queued — ready for the next item.", Severity.Success);
+                Snackbar.Add(_multiMode
+                    ? "Photo queued — detected items will be split into individual crops."
+                    : "Photo queued — ready for the next item.", Severity.Success);
             }
             catch (Exception ex)
             {
@@ -414,6 +418,11 @@
         _multiResults = null;
         _lastApplied = null;
     }
+
+    private static string PlacementLabel(Item item) =>
+        item.Container is not null
+            ? $"{item.Container.Location?.Name} › {item.Container.Name}"
+            : item.Location?.Name ?? "Unplaced";
 
     private async Task RefreshQueueCountAsync()
     {

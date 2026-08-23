@@ -204,6 +204,7 @@ public class ImageService
     /// </summary>
     public async Task<Entities.Image?> CropAsync(
         int imageId, double x, double y, double w, double h, double padding = 0.08,
+        double? targetAspectRatio = null,
         CancellationToken ct = default)
     {
         var source = await GetAsync(imageId, ct);
@@ -212,6 +213,25 @@ public class ImageService
         if (!File.Exists(path)) return null;
 
         using var img = await SixLabors.ImageSharp.Image.LoadAsync(path, ct);
+
+        // Expand around the detected object to the requested pixel aspect ratio. Expansion
+        // preserves the whole object; the later bounds clamp tolerates objects near an edge.
+        if (targetAspectRatio is > 0)
+        {
+            var pixelAspect = w * img.Width / Math.Max(0.0001, h * img.Height);
+            if (pixelAspect < targetAspectRatio.Value)
+            {
+                var expandedWidth = h * img.Height * targetAspectRatio.Value / img.Width;
+                x -= (expandedWidth - w) / 2;
+                w = expandedWidth;
+            }
+            else if (pixelAspect > targetAspectRatio.Value)
+            {
+                var expandedHeight = w * img.Width / targetAspectRatio.Value / img.Height;
+                y -= (expandedHeight - h) / 2;
+                h = expandedHeight;
+            }
+        }
 
         // Pad the box outward, then clamp to the image.
         var px = x - w * padding;

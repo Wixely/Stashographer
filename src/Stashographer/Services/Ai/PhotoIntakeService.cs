@@ -48,6 +48,7 @@ public class PhotoIntakeService(
     private const int ThumbnailWidthForMatching = 240;
     private const int MaxCandidateThumbnails = 4;
     private const int MultiConcurrency = 3;
+    private const int MaxItemsPerPhoto = 30;
 
     // --- Single item ----------------------------------------------------------------
 
@@ -57,7 +58,7 @@ public class PhotoIntakeService(
         await content.CopyToAsync(ms, ct);
         var bytes = ms.ToArray();
         var stored = await images.SaveAsync(new MemoryStream(bytes), mediaType, "photo-intake", null, ct);
-        return await ProcessBytesAsync(stored.Id, bytes, stored.ContentType, null, ct);
+        return await ProcessSingleStoredAsync(stored.Id, bytes, stored.ContentType, null, ct);
     }
 
     /// <summary>Processes an image that was already durably stored by the intake queue.</summary>
@@ -68,7 +69,34 @@ public class PhotoIntakeService(
             ?? throw new InvalidOperationException("The queued image no longer exists.");
         var bytes = await images.ReadOriginalBytesAsync(imageId, ct)
             ?? throw new InvalidOperationException("The queued image file could not be read.");
-        return await ProcessBytesAsync(imageId, bytes, stored.ContentType, intakeContext, ct);
+        return await ProcessSingleStoredAsync(imageId, bytes, stored.ContentType, intakeContext, ct);
+    }
+
+    private async Task<IntakeResult> ProcessSingleStoredAsync(
+        int imageId, byte[] bytes, string mediaType, string? intakeContext, CancellationToken ct)
+    {
+        var boxes = PrepareDetectedBoxes(await ai.DetectItemsAsync(bytes, mediaType, ct));
+        var focus = PickSingleItemBox(boxes);
+        if (focus is not null)
+        {
+            try
+            {
+                var crop = await images.CropAsync(imageId, focus.X, focus.Y, focus.W, focus.H,
+                    padding: 0.08, targetAspectRatio: 1, ct: ct);
+                if (crop is not null)
+                {
+                    var cropBytes = await images.ReadOriginalBytesAsync(crop.Id, ct);
+                    if (cropBytes is not null)
+                        return await ProcessBytesAsync(crop.Id, cropBytes, crop.ContentType, intakeContext, ct);
+                }
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                logger.LogWarning(ex, "Could not crop the single-item photo; using the original image");
+            }
+        }
+
+        return await ProcessBytesAsync(imageId, bytes, mediaType, intakeContext, ct);
     }
 
     private async Task<IntakeResult> ProcessBytesAsync(
@@ -94,9 +122,11 @@ public class PhotoIntakeService(
         // Rule 1: exact barcode match → HIGH, no model call.
         if (identification.Barcode is { } code)
         {
-            var barcodeHit = candidates.FirstOrDefault(c => c.Code == code);
-            if (barcodeHit is not null)
-                return Result(IntakeAction.IncrementExisting, barcodeHit);
+            var barcodeHits = candidates.Where(c => c.Code == code).ToList();
+            if (barcodeHits.Count == 1)
+                return Result(IntakeAction.IncrementExisting, barcodeHits[0]);
+            if (barcodeHits.Count > 1)
+                return Result(IntakeAction.ChooseCandidate, null);
         }
 
         // Rule 2: exactly one candidate whose normalized name equals the identification → HIGH.
@@ -104,6 +134,10 @@ public class PhotoIntakeService(
         var exactNames = candidates.Where(c => InventoryService.NormalizeName(c.Name) == normName).ToList();
         if (exactNames.Count == 1)
             return Result(IntakeAction.IncrementExisting, exactNames[0]);
+        if (exactNames.Count > 1
+            && exactNames.Any(x => x.CollectionKey is not null)
+            && exactNames.Select(x => x.CollectionKey).Distinct().Count() == 1)
+            return Result(IntakeAction.ChooseCandidate, null);
 
         // Rule 3: nothing similar at all → create.
         if (candidates.Count == 0)
@@ -148,7 +182,7 @@ public class PhotoIntakeService(
         var bytes = await images.ReadOriginalBytesAsync(imageId, ct)
             ?? throw new InvalidOperationException("The queued image file could not be read.");
 
-        var boxes = await ai.DetectItemsAsync(bytes, fullPhoto.ContentType, ct);
+        var boxes = PrepareDetectedBoxes(await ai.DetectItemsAsync(bytes, fullPhoto.ContentType, ct));
         if (boxes.Count == 0)
         {
             // Nothing detected — treat the whole photo as one item rather than losing it.
@@ -162,7 +196,10 @@ public class PhotoIntakeService(
             await semaphore.WaitAsync(ct);
             try
             {
-                var crop = await images.CropAsync(fullPhoto.Id, box.X, box.Y, box.W, box.H, ct: ct);
+                // Give every detected object its own square-ish source image. The crop expands
+                // around the box rather than cutting into it, retaining a little visual context.
+                var crop = await images.CropAsync(fullPhoto.Id, box.X, box.Y, box.W, box.H,
+                    padding: 0.08, targetAspectRatio: 1, ct: ct);
                 if (crop is null) return null;
                 var cropBytes = await images.ReadOriginalBytesAsync(crop.Id, ct);
                 if (cropBytes is null) return null;
@@ -177,6 +214,56 @@ public class PhotoIntakeService(
         });
 
         return (await Task.WhenAll(tasks)).Where(r => r is not null).Select(r => r!).ToList();
+    }
+
+    /// <summary>
+    /// Clamps detector output, removes only near-identical duplicate boxes, limits runaway
+    /// model output, and gives queue review a stable top-to-bottom/left-to-right order.
+    /// Adjacent or identical products remain separate entries.
+    /// </summary>
+    internal static List<DetectedBox> PrepareDetectedBoxes(IEnumerable<DetectedBox> detected)
+    {
+        var prepared = detected
+            .Select(box =>
+            {
+                var x = Math.Clamp(box.X, 0, 1);
+                var y = Math.Clamp(box.Y, 0, 1);
+                var w = Math.Clamp(box.W, 0, 1 - x);
+                var h = Math.Clamp(box.H, 0, 1 - y);
+                return new DetectedBox(box.Label, x, y, w, h);
+            })
+            .Where(box => box.W > 0.01 && box.H > 0.01)
+            .OrderBy(box => Math.Round(box.Y / 0.1, MidpointRounding.AwayFromZero))
+            .ThenBy(box => box.X)
+            .ToList();
+
+        var unique = new List<DetectedBox>();
+        foreach (var box in prepared)
+        {
+            if (unique.Any(existing => IntersectionOverUnion(existing, box) >= 0.9)) continue;
+            unique.Add(box);
+            if (unique.Count == MaxItemsPerPhoto) break;
+        }
+        return unique;
+    }
+
+    /// <summary>Selects the dominant, then most central object when single-item mode sees several boxes.</summary>
+    internal static DetectedBox? PickSingleItemBox(IReadOnlyList<DetectedBox> boxes) =>
+        boxes
+            .OrderByDescending(box => box.W * box.H)
+            .ThenBy(box => Math.Pow(box.X + box.W / 2 - 0.5, 2)
+                           + Math.Pow(box.Y + box.H / 2 - 0.5, 2))
+            .FirstOrDefault();
+
+    private static double IntersectionOverUnion(DetectedBox a, DetectedBox b)
+    {
+        var left = Math.Max(a.X, b.X);
+        var top = Math.Max(a.Y, b.Y);
+        var right = Math.Min(a.X + a.W, b.X + b.W);
+        var bottom = Math.Min(a.Y + a.H, b.Y + b.H);
+        var intersection = Math.Max(0, right - left) * Math.Max(0, bottom - top);
+        var union = a.W * a.H + b.W * b.H - intersection;
+        return union <= 0 ? 0 : intersection / union;
     }
 
     // --- Apply / undo ----------------------------------------------------------------

@@ -122,7 +122,7 @@ else
 {
     <MudTable Items="_items" Hover="true" Breakpoint="Breakpoint.Sm" Dense="true"
               OnRowClick="OnRowClick" OnRowMouseEnter="OnRowMouseEnter" OnRowMouseLeave="OnRowMouseLeave"
-              RowClassFunc="RowClass" T="Item">
+              RowClassFunc="RowClass" RowStyleFunc="RowStyle" T="Item">
         <HeaderContent>
             <MudTh Style="width:2.5rem"></MudTh>
             <MudTh>Name</MudTh>
@@ -154,6 +154,12 @@ else
                         </MudAvatar>
                     }
                     <span>@context.Name</span>
+                    @if (context.CollectionKey is not null)
+                    {
+                        <MudTooltip Text="Part of a quantity stored across multiple places">
+                            <MudIcon Icon="@Icons.Material.Filled.CallSplit" Size="Size.Small" Color="Color.Primary" />
+                        </MudTooltip>
+                    }
                 </div>
             </MudTd>
             <MudTd DataLabel="Kind">
@@ -422,6 +428,12 @@ else
 
     private string RowClass(Item item, int _) =>
         _selectedIds.Contains(item.Id) ? "inventory-row-selected" : string.Empty;
+
+    // Row dragging owns the pointer gesture in list view. Inline style is deliberate here:
+    // MudTable renders the <tr> inside a child component, where isolated CSS alone is not
+    // reliable across browsers (especially WebKit's prefixed selection behavior).
+    private static string RowStyle(Item _, int __) =>
+        "user-select:none;-webkit-user-select:none;cursor:default";
 
     private static string LocationLabel(Item i) =>
         i.Container is not null ? $"{i.Container.Location?.Name} › {i.Container.Name}"

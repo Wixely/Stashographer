@@ -37,12 +37,20 @@ Every container gets a printable QR code — scan it to see what's meant to be i
   available (also works with USB keyboard-wedge scanners). On LAN HTTP or browsers without
   that API, a rear-camera still-photo fallback decodes locally on the server.
 - **Queue-first intake** — photos and barcodes are persisted immediately so the next item
-  can be captured without waiting. A sequential worker uses earlier session items as context,
-  and the review queue presents every suggestion for item-by-item acceptance or correction.
+  can be captured without waiting. A photo containing several objects is split by default
+  into individual, focused crops and queue entries. A sequential worker uses earlier session
+  items as context, and the review queue presents every suggestion for item-by-item acceptance
+  or correction.
+- **Automatic photo framing** — AI bounding boxes produce a focused, square-ish crop for each
+  detected object. Explicit single-item captures crop around the dominant object and fall back
+  to the original photo when no reliable bound is available.
 - **Locations & containers** — put items in a room or inside a box/shelf/drawer/bin. Each
   container gets a **printable QR code**; scan it to see what's (meant to be) inside.
 - **Fast placement** — queue review remembers recent location/container targets, while the
   inventory supports multi-selection and Quick Move from either the toolbar or context menu.
+- **Split quantities across places** — move part of an item's count into another room or
+  container. Each portion appears as its own inventory entry while remaining visibly linked
+  as one collection.
 - **Checkout / lending** — record who took an item and where, and check it back in later.
 - **Dashboard** — low stock, expiring soon, and currently checked-out at a glance.
 - **AI enrichment (optional)** — identify an item from a photo when a barcode won't do, and
@@ -140,7 +148,7 @@ dependencies only (see [THIRD-PARTY-NOTICES](THIRD-PARTY-NOTICES.md)).
 ## Development
 
 ```bash
-dotnet test                    # 85 tests, no network access required
+dotnet test                    # 95 tests, no network access required
 dotnet build -c Release
 ```
 

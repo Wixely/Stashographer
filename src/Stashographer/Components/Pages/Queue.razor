@@ -161,7 +161,8 @@ else
                                 @foreach (var candidate in _candidates)
                                 {
                                     <MudSelectItem T="int?" Value="@candidate.Id">
-                                        Add @queued.IncrementBy.ToString("0.##") to @candidate.Name (@candidate.Quantity.ToString("0.##") now)
+                                        Add @queued.IncrementBy.ToString("0.##") to @candidate.Name
+                                        (@candidate.Quantity.ToString("0.##") now · @PlacementLabel(candidate))
                                     </MudSelectItem>
                                 }
                             </MudSelect>
@@ -387,6 +388,11 @@ else
         var location = _locations.FirstOrDefault(x => x.Id == container.LocationId)?.Name;
         return string.IsNullOrWhiteSpace(location) ? container.Name : $"{location} › {container.Name}";
     }
+
+    private static string PlacementLabel(Item item) =>
+        item.Container is not null
+            ? $"{item.Container.Location?.Name} › {item.Container.Name}"
+            : item.Location?.Name ?? "Unplaced";
 
     private List<string>? SuggestionsForKind(int kindId) =>
         _kinds.FirstOrDefault(x => x.Id == kindId)?.SuggestedAttributes;

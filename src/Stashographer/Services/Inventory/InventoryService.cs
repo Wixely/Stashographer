@@ -23,6 +23,9 @@ public record ItemQuery(
 /// <summary>An item's placement (for exact move-undo).</summary>
 public record ItemPlacement(int ItemId, int? LocationId, int? ContainerId);
 
+/// <summary>The source and newly placed portion produced by a quantity split.</summary>
+public record ItemSplit(Item Source, Item Created);
+
 public record DashboardSummary(
     int TotalItems,
     decimal TotalQuantity,
@@ -40,7 +43,7 @@ public class InventoryService(
 
     // Shared projection: item columns + joined display names + open-checkout flag.
     private const string SelectItem = """
-        SELECT i.Id, i.Code, i.Name, i.Description, i.ItemKindId, i.Quantity, i.Unit,
+        SELECT i.Id, i.CollectionKey, i.Code, i.Name, i.Description, i.ItemKindId, i.Quantity, i.Unit,
                i.LowStockThreshold, i.ExpiryDate, i.LocationId, i.ContainerId, i.ThumbnailUrl,
                i.PhotoPath, i.ImageId, i.AttributesJson, i.Notes, i.CreatedAt, i.UpdatedAt,
                k.Name AS KindName, k.Icon AS KindIcon,
@@ -147,6 +150,23 @@ public class InventoryService(
         return row is null ? null : Map(row);
     }
 
+    /// <summary>Returns every independently placed entry linked to the same split collection.</summary>
+    public async Task<List<Item>> GetCollectionMembersAsync(int itemId, CancellationToken ct = default)
+    {
+        using var conn = await db.OpenAsync(ct);
+        var collectionKey = await conn.QuerySingleOrDefaultAsync<string?>(
+            "SELECT CollectionKey FROM Items WHERE Id = @itemId", new { itemId });
+        if (string.IsNullOrWhiteSpace(collectionKey))
+        {
+            var row = await conn.QuerySingleOrDefaultAsync<ItemRow>(SelectItem + " WHERE i.Id = @itemId", new { itemId });
+            return row is null ? new List<Item>() : [Map(row)];
+        }
+
+        var rows = await conn.QueryAsync<ItemRow>(
+            SelectItem + " WHERE i.CollectionKey = @collectionKey ORDER BY i.Id", new { collectionKey });
+        return rows.Select(Map).ToList();
+    }
+
     public async Task<Item> SaveAsync(Item item, CancellationToken ct = default)
     {
         await TryIngestRemoteThumbnailAsync(item, ct);
@@ -158,6 +178,7 @@ public class InventoryService(
         var now = DateTimeOffset.UtcNow;
         var p = new
         {
+            item.CollectionKey,
             item.Code,
             item.Name,
             item.Description,
@@ -181,10 +202,10 @@ public class InventoryService(
         if (item.Id == 0)
         {
             item.Id = await conn.ExecuteScalarAsync<int>("""
-                INSERT INTO Items (Code, Name, Description, ItemKindId, Quantity, Unit, LowStockThreshold,
+                INSERT INTO Items (CollectionKey, Code, Name, Description, ItemKindId, Quantity, Unit, LowStockThreshold,
                                    ExpiryDate, LocationId, ContainerId, ThumbnailUrl, PhotoPath, ImageId, AttributesJson,
                                    Notes, CreatedAt, UpdatedAt)
-                VALUES (@Code, @Name, @Description, @ItemKindId, @Quantity, @Unit, @LowStockThreshold,
+                VALUES (@CollectionKey, @Code, @Name, @Description, @ItemKindId, @Quantity, @Unit, @LowStockThreshold,
                         @ExpiryDate, @LocationId, @ContainerId, @ThumbnailUrl, @PhotoPath, @ImageId, @AttributesJson,
                         @Notes, @CreatedAt, @UpdatedAt);
                 SELECT last_insert_rowid();
@@ -193,7 +214,7 @@ public class InventoryService(
         else
         {
             await conn.ExecuteAsync("""
-                UPDATE Items SET Code=@Code, Name=@Name, Description=@Description, ItemKindId=@ItemKindId,
+                UPDATE Items SET CollectionKey=@CollectionKey, Code=@Code, Name=@Name, Description=@Description, ItemKindId=@ItemKindId,
                     Quantity=@Quantity, Unit=@Unit, LowStockThreshold=@LowStockThreshold, ExpiryDate=@ExpiryDate,
                     LocationId=@LocationId, ContainerId=@ContainerId, ThumbnailUrl=@ThumbnailUrl, PhotoPath=@PhotoPath,
                     ImageId=@ImageId, AttributesJson=@AttributesJson, Notes=@Notes, UpdatedAt=@UpdatedAt
@@ -201,6 +222,81 @@ public class InventoryService(
                 """, p);
         }
         return item;
+    }
+
+    /// <summary>
+    /// Moves part of an item's quantity into a newly linked entry at another destination.
+    /// The source reduction and new entry are committed transactionally.
+    /// </summary>
+    public async Task<ItemSplit> SplitAsync(
+        int itemId, decimal quantity, int? locationId, int? containerId,
+        CancellationToken ct = default)
+    {
+        if (quantity <= 0)
+            throw new ArgumentOutOfRangeException(nameof(quantity), "Split quantity must be greater than zero.");
+        if (locationId is null && containerId is null)
+            throw new InvalidOperationException("Choose a destination for the split quantity.");
+        if (locationId is not null && containerId is not null)
+            throw new InvalidOperationException("Choose either a location or a container, not both.");
+
+        using var conn = await db.OpenAsync(ct);
+        using var tx = conn.BeginTransaction();
+        var source = await conn.QuerySingleOrDefaultAsync<SplitSource>("""
+            SELECT i.Id, i.Quantity, i.LocationId, i.ContainerId, i.CollectionKey,
+                   EXISTS (SELECT 1 FROM Checkouts c WHERE c.ItemId = i.Id AND c.ReturnedAt IS NULL) AS IsCheckedOut
+            FROM Items i WHERE i.Id = @itemId;
+            """, new { itemId }, tx);
+        if (source is null) throw new InvalidOperationException("The item no longer exists.");
+        if (source.IsCheckedOut) throw new InvalidOperationException("Check the item in before splitting its quantity.");
+        if (quantity >= source.Quantity)
+            throw new InvalidOperationException("The split quantity must leave some quantity in the current place.");
+
+        if (containerId is { } targetContainerId)
+        {
+            var exists = await conn.ExecuteScalarAsync<int>(
+                "SELECT COUNT(*) FROM Containers WHERE Id = @targetContainerId",
+                new { targetContainerId }, tx);
+            if (exists == 0) throw new InvalidOperationException("The destination container no longer exists.");
+            locationId = null;
+        }
+        else if (locationId is { } targetLocationId)
+        {
+            var exists = await conn.ExecuteScalarAsync<int>(
+                "SELECT COUNT(*) FROM Locations WHERE Id = @targetLocationId",
+                new { targetLocationId }, tx);
+            if (exists == 0) throw new InvalidOperationException("The destination location no longer exists.");
+        }
+
+        if (source.LocationId == locationId && source.ContainerId == containerId)
+            throw new InvalidOperationException("Choose a different place for the split quantity.");
+
+        var collectionKey = source.CollectionKey ?? Guid.NewGuid().ToString("N");
+        var now = DateTimeOffset.UtcNow.ToString("O");
+        var changed = await conn.ExecuteAsync("""
+            UPDATE Items SET Quantity = Quantity - @quantity, CollectionKey = @collectionKey, UpdatedAt = @now
+            WHERE Id = @itemId AND Quantity > @quantity;
+            """, new { itemId, quantity, collectionKey, now }, tx);
+        if (changed != 1)
+            throw new InvalidOperationException("The item quantity changed before it could be split. Reload and try again.");
+
+        var createdId = await conn.ExecuteScalarAsync<int>("""
+            INSERT INTO Items
+                (CollectionKey, Code, Name, Description, ItemKindId, Quantity, Unit, LowStockThreshold,
+                 ExpiryDate, LocationId, ContainerId, ThumbnailUrl, PhotoPath, ImageId, AttributesJson,
+                 Notes, CreatedAt, UpdatedAt)
+            SELECT @collectionKey, Code, Name, Description, ItemKindId, @quantity, Unit, LowStockThreshold,
+                   ExpiryDate, @locationId, @containerId, ThumbnailUrl, PhotoPath, ImageId, AttributesJson,
+                   Notes, @now, @now
+            FROM Items WHERE Id = @itemId;
+            SELECT last_insert_rowid();
+            """, new { itemId, quantity, collectionKey, locationId, containerId, now }, tx);
+        tx.Commit();
+
+        var remaining = await GetAsync(itemId, ct)
+            ?? throw new InvalidOperationException("The source item disappeared after splitting.");
+        var created = await GetAsync(createdId, ct)
+            ?? throw new InvalidOperationException("The split item disappeared after creation.");
+        return new ItemSplit(remaining, created);
     }
 
     /// <summary>
@@ -288,7 +384,20 @@ public class InventoryService(
     public async Task DeleteAsync(int id, CancellationToken ct = default)
     {
         using var conn = await db.OpenAsync(ct);
-        await conn.ExecuteAsync("DELETE FROM Items WHERE Id = @id", new { id });
+        using var tx = conn.BeginTransaction();
+        var collectionKey = await conn.QuerySingleOrDefaultAsync<string?>(
+            "SELECT CollectionKey FROM Items WHERE Id = @id", new { id }, tx);
+        await conn.ExecuteAsync("DELETE FROM Items WHERE Id = @id", new { id }, tx);
+        if (!string.IsNullOrWhiteSpace(collectionKey))
+        {
+            // A one-entry "collection" is no longer split, so remove the stale marker.
+            await conn.ExecuteAsync("""
+                UPDATE Items SET CollectionKey = NULL
+                WHERE CollectionKey = @collectionKey
+                  AND (SELECT COUNT(*) FROM Items WHERE CollectionKey = @collectionKey) = 1;
+                """, new { collectionKey }, tx);
+        }
+        tx.Commit();
     }
 
     public async Task<List<ItemKind>> GetKindsAsync(CancellationToken ct = default)
@@ -327,6 +436,7 @@ public class InventoryService(
     private static Item Map(ItemRow r) => new()
     {
         Id = r.Id,
+        CollectionKey = r.CollectionKey,
         Code = r.Code,
         Name = r.Name,
         Description = r.Description,
@@ -364,6 +474,7 @@ public class InventoryService(
     private sealed class ItemRow
     {
         public int Id { get; set; }
+        public string? CollectionKey { get; set; }
         public string? Code { get; set; }
         public string Name { get; set; } = "";
         public string? Description { get; set; }
@@ -387,6 +498,16 @@ public class InventoryService(
         public string? ContainerName { get; set; }
         public int? ContainerLocationId { get; set; }
         public string? ContainerLocationName { get; set; }
+        public bool IsCheckedOut { get; set; }
+    }
+
+    private sealed class SplitSource
+    {
+        public int Id { get; set; }
+        public decimal Quantity { get; set; }
+        public int? LocationId { get; set; }
+        public int? ContainerId { get; set; }
+        public string? CollectionKey { get; set; }
         public bool IsCheckedOut { get; set; }
     }
 }

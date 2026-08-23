@@ -1,0 +1,72 @@
+<MudDialog>
+    <DialogContent>
+        <MudText Typo="Typo.body2" Class="mb-3">
+            Move part of <b>@ItemName</b> into another place. The two quantities remain linked as one collection.
+        </MudText>
+
+        @if (!string.IsNullOrWhiteSpace(_error))
+        {
+            <MudAlert Severity="Severity.Error" Dense="true" Class="mb-3">@_error</MudAlert>
+        }
+
+        <MudNumericField @bind-Value="_quantity" Label="Quantity to split" Variant="Variant.Outlined"
+                         Min="0" Max="AvailableQuantity" Immediate="true"
+                         HelperText="@($"Available: {AvailableQuantity:0.##} {Unit}".Trim())" />
+
+        <PlacementPicker Locations="Locations" Class="mt-2"
+                         @bind-LocationId="_locationId"
+                         @bind-ContainerId="_containerId" />
+
+        @if (_quantity > 0 && _quantity < AvailableQuantity)
+        {
+            <MudText Typo="Typo.caption" Class="mud-text-secondary d-block mt-2">
+                @(AvailableQuantity - _quantity).ToString("0.##") @Unit will remain in the current place.
+            </MudText>
+        }
+    </DialogContent>
+    <DialogActions>
+        <MudButton OnClick="@(() => Dialog.Cancel())">Cancel</MudButton>
+        <MudButton Color="Color.Primary" Variant="Variant.Filled" StartIcon="@Icons.Material.Filled.CallSplit"
+                   OnClick="Submit">Split quantity</MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    public record Request(decimal Quantity, int? LocationId, int? ContainerId);
+
+    [CascadingParameter] private IMudDialogInstance Dialog { get; set; } = default!;
+    [Parameter] public string ItemName { get; set; } = "item";
+    [Parameter] public decimal AvailableQuantity { get; set; }
+    [Parameter] public string? Unit { get; set; }
+    [Parameter] public IReadOnlyList<Location> Locations { get; set; } = Array.Empty<Location>();
+    [Parameter] public int? CurrentLocationId { get; set; }
+    [Parameter] public int? CurrentContainerId { get; set; }
+
+    private decimal _quantity = 1;
+    private int? _locationId;
+    private int? _containerId;
+    private string? _error;
+
+    private void Submit()
+    {
+        _error = null;
+        if (_quantity <= 0 || _quantity >= AvailableQuantity)
+        {
+            _error = "Choose a quantity greater than zero that leaves some in the current place.";
+            return;
+        }
+        if (_locationId is null && _containerId is null)
+        {
+            _error = "Choose a destination location or container.";
+            return;
+        }
+        var destinationLocationId = _containerId is null ? _locationId : null;
+        if (destinationLocationId == CurrentLocationId && _containerId == CurrentContainerId)
+        {
+            _error = "Choose a different place for the split quantity.";
+            return;
+        }
+
+        Dialog.Close(DialogResult.Ok(new Request(_quantity, destinationLocationId, _containerId)));
+    }
+}

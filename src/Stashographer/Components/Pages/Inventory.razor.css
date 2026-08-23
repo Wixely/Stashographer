@@ -2,10 +2,6 @@
     background-color: color-mix(in srgb, var(--mud-palette-primary) 16%, transparent) !important;
 }
 
-::deep .mud-table-row {
-    user-select: none;
-}
-
 .inventory-context-scrim {
     position: fixed;
     inset: 0;

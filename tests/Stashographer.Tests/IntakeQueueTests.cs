@@ -71,6 +71,30 @@ public class IntakeQueueTests
     }
 
     [Fact]
+    public async Task Split_barcode_requires_location_choice_instead_of_incrementing_arbitrarily()
+    {
+        await using var harness = await Harness.CreateAsync();
+        var existing = await harness.Inventory.SaveAsync(new Item
+        {
+            Name = "Storage tubs", Code = "77777777", ItemKindId = 7, Quantity = 2, LocationId = 1
+        });
+        await harness.Inventory.SplitAsync(existing.Id, 1, 3, null);
+        harness.Lookup.Result = new LookupResult
+        {
+            Found = true, Code = existing.Code, Name = existing.Name, SuggestedKind = "Other"
+        };
+
+        var queued = await harness.Queue.EnqueueBarcodeAsync(existing.Code!);
+        await harness.Queue.ProcessAsync(queued.Id, new IntakeOptions(), aiEnabled: false);
+
+        var ready = (await harness.Queue.GetAsync(queued.Id))!;
+        Assert.Equal(IntakeAction.ChooseCandidate, ready.ProposalAction);
+        Assert.Null(ready.MatchedItemId);
+        Assert.All(await harness.Inventory.FindCandidatesAsync(existing.Name, existing.Code),
+            candidate => Assert.Equal(1, candidate.Quantity));
+    }
+
+    [Fact]
     public async Task Photo_agent_receives_prior_session_kind_and_location_context()
     {
         await using var harness = await Harness.CreateAsync();
@@ -153,7 +177,20 @@ public class IntakeQueueTests
         var open = await harness.Queue.GetOpenAsync();
         Assert.Equal(2, open.Count);
         Assert.All(open, x => Assert.Equal(IntakeQueueStatus.ReadyForReview, x.Status));
+        Assert.All(open, x => Assert.False(x.IsMultiPhoto));
         Assert.All(open, x => Assert.Equal("Detected item", x.Draft.Name));
+    }
+
+    [Fact]
+    public async Task Photo_capture_defaults_to_individual_item_splitting()
+    {
+        await using var harness = await Harness.CreateAsync();
+        await using var photo = await PhotoAsync();
+
+        var queued = await harness.Queue.EnqueuePhotoAsync(photo, "image/png", "several.png");
+
+        Assert.True(queued.IsMultiPhoto);
+        Assert.True((await harness.Queue.GetAsync(queued.Id))!.IsMultiPhoto);
     }
 
     [Fact]

@@ -49,7 +49,7 @@ public class IntakeQueueService(
     }
 
     public async Task<IntakeQueueItem> EnqueuePhotoAsync(
-        Stream content, string mediaType, string? originalName, bool multipleItems = false,
+        Stream content, string mediaType, string? originalName, bool multipleItems = true,
         CancellationToken ct = default)
     {
         var stored = await images.SaveAsync(content, mediaType, originalName, null, ct);
@@ -358,10 +358,15 @@ public class IntakeQueueService(
             : new Item { Name = string.Empty, Code = code, ItemKindId = 7 };
 
         var candidates = await inventory.FindCandidatesAsync(draft.Name, code, ct: ct);
-        var exact = candidates.FirstOrDefault(x => string.Equals(x.Code, code, StringComparison.OrdinalIgnoreCase));
-        return exact is null
-            ? new ProcessedCapture(draft, IntakeAction.CreateNew, null, null, 1)
-            : new ProcessedCapture(draft, IntakeAction.IncrementExisting, exact.Id, exact.Name, 1);
+        var exact = candidates
+            .Where(x => string.Equals(x.Code, code, StringComparison.OrdinalIgnoreCase))
+            .ToList();
+        return exact.Count switch
+        {
+            0 => new ProcessedCapture(draft, IntakeAction.CreateNew, null, null, 1),
+            1 => new ProcessedCapture(draft, IntakeAction.IncrementExisting, exact[0].Id, exact[0].Name, 1),
+            _ => new ProcessedCapture(draft, IntakeAction.ChooseCandidate, null, null, 1)
+        };
     }
 
     private async Task<List<ProcessedCapture>> ProcessPhotoAsync(
@@ -449,6 +454,7 @@ public class IntakeQueueService(
         using var conn = await db.OpenAsync(ct);
         await conn.ExecuteAsync("""
             UPDATE IntakeQueueItems SET Status = @Ready, DraftJson = @Draft, ImageId = @ImageId,
+                IsMultiPhoto = 0,
                 ProposalAction = @Action, MatchedItemId = @MatchedId,
                 MatchedItemName = @MatchedName, IncrementBy = @IncrementBy,
                 ProcessedAt = @Now, Error = NULL

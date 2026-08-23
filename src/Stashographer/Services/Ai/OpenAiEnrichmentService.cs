@@ -75,8 +75,9 @@ public class OpenAiEnrichmentService(
         const string system =
             "You locate distinct physical items in a photo for a home inventory. Reply with ONLY a JSON object: " +
             "{\"items\": [ {\"label\": string, \"box\": {\"x\": number, \"y\": number, \"w\": number, \"h\": number}} ]}. " +
-            "Boxes are normalized to image dimensions (0..1), top-left origin. List each distinct item once; " +
-            "ignore surfaces, backgrounds and people. Group identical stacked/adjacent products as one item.";
+            "Boxes are normalized to image dimensions (0..1), top-left origin. Return one tight box for every " +
+            "separately countable physical object, including identical or adjacent copies; never group several " +
+            "objects into one box. Ignore surfaces, backgrounds, people, and printed pictures of products.";
 
         var messages = new List<ChatMessage>
         {
@@ -245,10 +246,11 @@ public class OpenAiEnrichmentService(
                 return boxes;
             foreach (var el in items.EnumerateArray())
             {
-                if (!el.TryGetProperty("box", out var b) || b.ValueKind != JsonValueKind.Object) continue;
-                var box = new DetectedBox(
-                    GetString(el, "label"),
-                    GetDouble(b, "x"), GetDouble(b, "y"), GetDouble(b, "w"), GetDouble(b, "h"));
+                if (!el.TryGetProperty("box", out var b) || !TryReadBox(b, out var values)) continue;
+                var max = values.Max();
+                var scale = max > 100 ? 1000d : max > 1 ? 100d : 1d;
+                var box = new DetectedBox(GetString(el, "label"),
+                    values[0] / scale, values[1] / scale, values[2] / scale, values[3] / scale);
                 // Discard degenerate/out-of-range boxes rather than crop garbage.
                 if (box.W > 0.01 && box.H > 0.01 && box.X is >= 0 and < 1 && box.Y is >= 0 and < 1)
                     boxes.Add(box);
@@ -259,6 +261,31 @@ public class OpenAiEnrichmentService(
             logger.LogWarning(ex, "Could not parse detection JSON");
         }
         return boxes;
+    }
+
+    private static bool TryReadBox(JsonElement box, out double[] values)
+    {
+        values = new double[4];
+        if (box.ValueKind == JsonValueKind.Object)
+        {
+            var names = new[] { "x", "y", "w", "h" };
+            for (var i = 0; i < names.Length; i++)
+            {
+                if (!box.TryGetProperty(names[i], out var value)
+                    || value.ValueKind != JsonValueKind.Number) return false;
+                values[i] = value.GetDouble();
+            }
+            return true;
+        }
+
+        if (box.ValueKind != JsonValueKind.Array || box.GetArrayLength() != 4) return false;
+        var index = 0;
+        foreach (var value in box.EnumerateArray())
+        {
+            if (value.ValueKind != JsonValueKind.Number) return false;
+            values[index++] = value.GetDouble();
+        }
+        return true;
     }
 
     internal MatchPick? ParsePick(string json)
@@ -330,6 +357,4 @@ public class OpenAiEnrichmentService(
     private static string? GetString(JsonElement el, string prop) =>
         el.TryGetProperty(prop, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
 
-    private static double GetDouble(JsonElement el, string prop) =>
-        el.TryGetProperty(prop, out var v) && v.ValueKind == JsonValueKind.Number ? v.GetDouble() : -1;
 }

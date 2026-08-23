@@ -65,6 +65,23 @@ public class VisionParsingTests
     }
 
     [Fact]
+    public void Boxes_accept_array_coordinates_and_common_model_scales()
+    {
+        var boxes = Service().ParseBoxes("""
+            {"items":[
+              {"label":"percent","box":[10,20,30,40]},
+              {"label":"thousand-scale","box":{"x":500,"y":100,"w":250,"h":300}}
+            ]}
+            """);
+
+        Assert.Equal(2, boxes.Count);
+        Assert.Equal(0.1, boxes[0].X, 3);
+        Assert.Equal(0.4, boxes[0].H, 3);
+        Assert.Equal(0.5, boxes[1].X, 3);
+        Assert.Equal(0.25, boxes[1].W, 3);
+    }
+
+    [Fact]
     public void Pick_parses_confidence_and_null_id_means_none()
     {
         var svc = Service();
