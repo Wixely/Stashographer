@@ -65,6 +65,43 @@ public class SplitItemTests
     }
 
     [Fact]
+    public async Task Expiry_lot_split_keeps_the_same_place_and_independent_dates()
+    {
+        await using var db = await TestDb.CreateAsync();
+        var inventory = new InventoryService(db.Factory);
+        var item = new Item
+        {
+            Name = "Chopped tomatoes",
+            Code = "5012345678900",
+            ItemKindId = 1,
+            Quantity = 6,
+            Unit = "cans",
+            LocationId = 1,
+            LowStockThreshold = 3
+        };
+        SpecialAttributeCatalog.SetExpiry(
+            item, new DateOnly(2027, 6, 30), ExpiryDateKind.BestBefore);
+        item = await inventory.SaveAsync(item);
+
+        var split = await inventory.SplitLotAsync(
+            item.Id, 2, new DateOnly(2027, 2, 28), ExpiryDateKind.BestBefore);
+
+        Assert.Equal(4, split.Source.Quantity);
+        Assert.Equal(new DateOnly(2027, 6, 30), split.Source.ExpiryDate);
+        Assert.Equal(2, split.Created.Quantity);
+        Assert.Equal(new DateOnly(2027, 2, 28), split.Created.ExpiryDate);
+        Assert.Equal(1, split.Created.LocationId);
+        Assert.Null(split.Created.ContainerId);
+        Assert.Equal(split.Source.CollectionKey, split.Created.CollectionKey);
+        var members = await inventory.GetCollectionMembersAsync(item.Id);
+        Assert.Equal(6, members.Sum(member => member.Quantity));
+        Assert.Equal(2, members.Select(member => member.ExpiryDate).Distinct().Count());
+        var dashboard = await inventory.GetDashboardAsync(new DateOnly(2027, 1, 1));
+        Assert.Equal(1, dashboard.TotalItems);
+        Assert.DoesNotContain(dashboard.LowStock, stock => stock.Name == item.Name);
+    }
+
+    [Fact]
     public async Task Invalid_split_leaves_source_unchanged()
     {
         await using var db = await TestDb.CreateAsync();

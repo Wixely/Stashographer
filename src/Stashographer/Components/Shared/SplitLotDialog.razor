@@ -1,0 +1,76 @@
+<MudDialog>
+    <DialogContent>
+        <MudText Typo="Typo.body2" Class="mb-3">
+            Separate part of <b>@ItemName</b> into another expiry lot in the same place.
+            The lots remain linked as one product collection.
+        </MudText>
+
+        @if (!string.IsNullOrWhiteSpace(_error))
+        {
+            <MudAlert Severity="Severity.Error" Dense="true" Class="mb-3">@_error</MudAlert>
+        }
+
+        <MudNumericField @bind-Value="_quantity" Label="Quantity in this expiry lot"
+                         Variant="Variant.Outlined" Min="0" Max="AvailableQuantity" Immediate="true"
+                         HelperText="@($"Available: {AvailableQuantity:0.##} {Unit}".Trim())" />
+        <MudDatePicker Date="_expiryDate" DateChanged="@(date => _expiryDate = date)"
+                       Label="Expiry date" Variant="Variant.Outlined" Class="mt-2"
+                       DateFormat="dd MMM yyyy" Required="true" />
+        <MudSelect T="ExpiryDateKind" @bind-Value="_expiryKind" Label="Date type"
+                   Variant="Variant.Outlined" Class="mt-2">
+            <MudSelectItem Value="ExpiryDateKind.Unknown">Expiry</MudSelectItem>
+            <MudSelectItem Value="ExpiryDateKind.UseBy">Use by</MudSelectItem>
+            <MudSelectItem Value="ExpiryDateKind.BestBefore">Best before</MudSelectItem>
+        </MudSelect>
+
+        @if (_quantity > 0 && _quantity < AvailableQuantity)
+        {
+            <MudText Typo="Typo.caption" Class="mud-text-secondary d-block mt-2">
+                @(AvailableQuantity - _quantity).ToString("0.##") @Unit will retain
+                @(CurrentExpiry is { } current ? current.ToString("d MMM yyyy") : "its unknown expiry").
+            </MudText>
+        }
+    </DialogContent>
+    <DialogActions>
+        <MudButton OnClick="@(() => Dialog.Cancel())">Cancel</MudButton>
+        <MudButton Color="Color.Primary" Variant="Variant.Filled" StartIcon="@Icons.Material.Filled.Event"
+                   OnClick="Submit">Create expiry lot</MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    public record Request(decimal Quantity, DateOnly ExpiryDate, ExpiryDateKind ExpiryKind);
+
+    [CascadingParameter] private IMudDialogInstance Dialog { get; set; } = default!;
+    [Parameter] public string ItemName { get; set; } = "item";
+    [Parameter] public decimal AvailableQuantity { get; set; }
+    [Parameter] public string? Unit { get; set; }
+    [Parameter] public DateOnly? CurrentExpiry { get; set; }
+
+    private decimal _quantity = 1;
+    private DateTime? _expiryDate;
+    private ExpiryDateKind _expiryKind;
+    private string? _error;
+
+    private void Submit()
+    {
+        _error = null;
+        if (_quantity <= 0 || _quantity >= AvailableQuantity)
+        {
+            _error = "Choose a quantity greater than zero that leaves some in the current stock entry.";
+            return;
+        }
+        if (_expiryDate is null)
+        {
+            _error = "Choose the expiry date for the separated lot.";
+            return;
+        }
+        var expiry = DateOnly.FromDateTime(_expiryDate.Value);
+        if (expiry == CurrentExpiry)
+        {
+            _error = "Choose an expiry date different from the current stock entry.";
+            return;
+        }
+        Dialog.Close(DialogResult.Ok(new Request(_quantity, expiry, _expiryKind)));
+    }
+}

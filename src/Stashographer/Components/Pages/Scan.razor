@@ -126,6 +126,13 @@
                 }
                 else
                 {
+                    @if (_pendingIntake.Proposal.Action == IntakeAction.CreateStockLot)
+                    {
+                        <MudAlert Severity="Severity.Info" Dense="true" Class="mb-2">
+                            The visible expiry differs from @_pendingIntake.Proposal.MatchedItemName.
+                            This will create a linked stock lot instead of changing the existing lot's date.
+                        </MudAlert>
+                    }
                     @if (SpecialAttributeCatalog.GetPrice(_pendingIntake.Proposal.Draft) is { } price)
                     {
                         <MudText Typo="Typo.body2"><b>Unit price:</b> @SpecialAttributeCatalog.FormatPrice(price)</MudText>
@@ -142,7 +149,13 @@
                     }
                     <div class="d-flex gap-2 mt-3">
                         <MudButton Color="Color.Primary" Variant="Variant.Filled" StartIcon="@Icons.Material.Filled.Add"
-                                   OnClick="ApplyCreateAsync">Add to inventory</MudButton>
+                                   OnClick="@(_pendingIntake.Proposal.Action == IntakeAction.CreateStockLot
+                                                 ? ApplyLotAsync
+                                                 : ApplyCreateAsync)">
+                            @(_pendingIntake.Proposal.Action == IntakeAction.CreateStockLot
+                                ? "Add as separate expiry lot"
+                                : "Add to inventory")
+                        </MudButton>
                         <MudButton Variant="Variant.Outlined" StartIcon="@Icons.Material.Filled.Edit"
                                    OnClick="EditIntakeDraft">Edit first</MudButton>
                     </div>
@@ -152,9 +165,12 @@
         else if (_lastApplied is not null)
         {
             <MudAlert Severity="Severity.Success" Class="mb-2">
-                @(_lastApplied.Action == IntakeAction.IncrementExisting
-                    ? $"+{_lastApplied.By:0.##} {_lastApplied.ItemName}"
-                    : $"Added \"{_lastApplied.ItemName}\"")
+                @(_lastApplied.Action switch
+                {
+                    IntakeAction.IncrementExisting => $"+{_lastApplied.By:0.##} {_lastApplied.ItemName}",
+                    IntakeAction.CreateStockLot => $"Added {_lastApplied.By:0.##} {_lastApplied.ItemName} as a separate expiry lot",
+                    _ => $"Added \"{_lastApplied.ItemName}\""
+                })
                 — <MudLink Href="@($"items/{_lastApplied.ItemId}")">view</MudLink>
             </MudAlert>
         }
@@ -403,7 +419,18 @@
         var applied = await Intake.ApplyAsync(_pendingIntake, IntakeAction.IncrementExisting, candidate.Id);
         _lastApplied = applied;
         _pendingIntake = null;
-        Snackbar.Add($"+{applied.By:0.##} {applied.ItemName}", Severity.Success);
+        Snackbar.Add(applied.Action == IntakeAction.CreateStockLot
+            ? $"Added {applied.By:0.##} {applied.ItemName} as a separate expiry lot."
+            : $"+{applied.By:0.##} {applied.ItemName}", Severity.Success);
+    }
+
+    private async Task ApplyLotAsync()
+    {
+        if (_pendingIntake is null) return;
+        var applied = await Intake.ApplyAsync(_pendingIntake);
+        _lastApplied = applied;
+        _pendingIntake = null;
+        Snackbar.Add($"Added {applied.By:0.##} {applied.ItemName} as a separate expiry lot.", Severity.Success);
     }
 
     private async Task ApplyCreateAsync()

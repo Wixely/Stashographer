@@ -17,7 +17,10 @@ public enum IntakeAction
     CreateNew,
 
     /// <summary>Another view of the same physical object: attach its image without changing quantity.</summary>
-    AttachImage
+    AttachImage,
+
+    /// <summary>Same product with a distinct observed expiry: create a linked stock lot.</summary>
+    CreateStockLot
 }
 
 /// <summary>The pipeline's verdict for one photographed item.</summary>
@@ -132,8 +135,10 @@ public class PhotoIntakeService(
         if (identification.Barcode is { } code)
         {
             var barcodeHits = candidates.Where(c => c.Code == code).ToList();
+            if (TryResolveObservedLot(barcodeHits, out var lotResult))
+                return lotResult;
             if (barcodeHits.Count == 1)
-                return Result(IntakeAction.IncrementExisting, barcodeHits[0]);
+                return Result(MatchAction(barcodeHits[0]), barcodeHits[0]);
             if (barcodeHits.Count > 1)
                 return Result(IntakeAction.ChooseCandidate, null);
         }
@@ -141,8 +146,10 @@ public class PhotoIntakeService(
         // Rule 2: exactly one candidate whose normalized name equals the identification → HIGH.
         var normName = InventoryService.NormalizeName(identification.Name);
         var exactNames = candidates.Where(c => InventoryService.NormalizeName(c.Name) == normName).ToList();
+        if (TryResolveObservedLot(exactNames, out var exactLotResult))
+            return exactLotResult;
         if (exactNames.Count == 1)
-            return Result(IntakeAction.IncrementExisting, exactNames[0]);
+            return Result(MatchAction(exactNames[0]), exactNames[0]);
         if (exactNames.Count > 1
             && exactNames.Any(x => x.CollectionKey is not null)
             && exactNames.Select(x => x.CollectionKey).Distinct().Count() == 1)
@@ -159,10 +166,38 @@ public class PhotoIntakeService(
 
         return (pick?.Confidence, picked) switch
         {
-            (MatchConfidence.High, not null) => Result(IntakeAction.IncrementExisting, picked),
+            (MatchConfidence.High, not null) => Result(MatchAction(picked), picked),
             (MatchConfidence.Medium, not null) => Result(IntakeAction.ChooseCandidate, picked),
             _ => Result(IntakeAction.CreateNew, null)
         };
+
+        IntakeAction MatchAction(Item matched) =>
+            InventoryService.RequiresSeparateStockLot(matched, draft)
+                ? IntakeAction.CreateStockLot
+                : IntakeAction.IncrementExisting;
+
+        bool TryResolveObservedLot(List<Item> matches, out IntakeResult result)
+        {
+            result = null!;
+            if (SpecialAttributeCatalog.GetExpiry(draft)?.DateValue is null || matches.Count <= 1)
+                return false;
+
+            var compatible = matches
+                .Where(match => !InventoryService.RequiresSeparateStockLot(match, draft))
+                .ToList();
+            if (compatible.Count == 1)
+            {
+                result = Result(IntakeAction.IncrementExisting, compatible[0]);
+                return true;
+            }
+            if (compatible.Count > 1) return false;
+
+            var collectionKeys = matches.Select(match => match.CollectionKey).Distinct().ToList();
+            if (collectionKeys.Count != 1 || string.IsNullOrWhiteSpace(collectionKeys[0]))
+                return false;
+            result = Result(IntakeAction.CreateStockLot, matches[0]);
+            return true;
+        }
 
         IntakeResult Result(IntakeAction action, Item? matched) => new(
             imageId, identification,
@@ -293,10 +328,21 @@ public class PhotoIntakeService(
         var action = actionOverride ?? proposal.Action;
         var matchedId = matchedItemIdOverride ?? proposal.MatchedItemId;
 
+        if (action == IntakeAction.CreateStockLot && matchedId is { } lotTargetId)
+        {
+            var lot = await inventory.CreateStockLotAsync(lotTargetId, proposal.Draft, ct);
+            return new IntakeApplied(IntakeAction.CreateStockLot, lot.Id, lot.Name, lot.Quantity);
+        }
+
         if (action != IntakeAction.CreateNew && matchedId is { } id)
         {
             var existing = await inventory.GetAsync(id, ct)
                 ?? throw new InvalidOperationException("The selected inventory item no longer exists.");
+            if (InventoryService.RequiresSeparateStockLot(existing, proposal.Draft))
+            {
+                var lot = await inventory.CreateStockLotAsync(id, proposal.Draft, ct);
+                return new IntakeApplied(IntakeAction.CreateStockLot, lot.Id, lot.Name, lot.Quantity);
+            }
             if (SpecialAttributeCatalog.MergeMissing(existing, proposal.Draft))
                 await inventory.SaveAsync(existing, ct);
             await inventory.AdjustQuantityAsync(id, proposal.IncrementBy, ct);

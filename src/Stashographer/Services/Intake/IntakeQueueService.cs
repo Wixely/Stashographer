@@ -230,7 +230,7 @@ public class IntakeQueueService(
                              && x.Capture.Action is not (IntakeAction.ChooseCandidate or IntakeAction.AttachImage)))
                 {
                     await AcceptAsync(entry.Id, entry.Capture.Draft,
-                        entry.Capture.Action == IntakeAction.IncrementExisting
+                        entry.Capture.Action is IntakeAction.IncrementExisting or IntakeAction.CreateStockLot
                             ? entry.Capture.MatchedItemId
                             : null, ct);
                 }
@@ -365,19 +365,34 @@ public class IntakeQueueService(
                 ct: ct);
             applied = new IntakeApplied(IntakeAction.AttachImage, existingId, existing.Name, 0);
         }
+        else if (reviewedAction == IntakeAction.CreateStockLot && incrementTargetId is { } lotTargetId)
+        {
+            var created = await inventory.CreateStockLotAsync(lotTargetId, draft, ct);
+            applied = new IntakeApplied(
+                IntakeAction.CreateStockLot, created.Id, created.Name, created.Quantity);
+        }
         else if (incrementTargetId is { } existingId)
         {
             var existing = await inventory.GetAsync(existingId, ct)
                 ?? throw new InvalidOperationException("The selected inventory item no longer exists.");
-            if (SpecialAttributeCatalog.MergeMissing(existing, draft))
-                await inventory.SaveAsync(existing, ct);
-            var incrementBy = actionOverride == IntakeAction.IncrementExisting && queued.IncrementBy <= 0
-                ? Math.Max(1, draft.Quantity)
-                : queued.IncrementBy;
-            await inventory.AdjustQuantityAsync(existingId, incrementBy, ct);
-            if (draft.LocationId is not null || draft.ContainerId is not null)
-                await inventory.MoveItemsAsync([existingId], draft.LocationId, draft.ContainerId, ct);
-            applied = new IntakeApplied(IntakeAction.IncrementExisting, existingId, existing.Name, incrementBy);
+            if (InventoryService.RequiresSeparateStockLot(existing, draft))
+            {
+                var created = await inventory.CreateStockLotAsync(existingId, draft, ct);
+                applied = new IntakeApplied(
+                    IntakeAction.CreateStockLot, created.Id, created.Name, created.Quantity);
+            }
+            else
+            {
+                if (SpecialAttributeCatalog.MergeMissing(existing, draft))
+                    await inventory.SaveAsync(existing, ct);
+                var incrementBy = actionOverride == IntakeAction.IncrementExisting && queued.IncrementBy <= 0
+                    ? Math.Max(1, draft.Quantity)
+                    : queued.IncrementBy;
+                await inventory.AdjustQuantityAsync(existingId, incrementBy, ct);
+                if (draft.LocationId is not null || draft.ContainerId is not null)
+                    await inventory.MoveItemsAsync([existingId], draft.LocationId, draft.ContainerId, ct);
+                applied = new IntakeApplied(IntakeAction.IncrementExisting, existingId, existing.Name, incrementBy);
+            }
         }
         else
         {

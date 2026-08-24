@@ -196,7 +196,17 @@ public class InventoryService(
         return row is null ? null : Map(row);
     }
 
-    /// <summary>Returns every independently placed entry linked to the same split collection.</summary>
+    /// <summary>
+    /// True when a newly observed expiry cannot safely be merged into an existing aggregate
+    /// quantity. An observed date on previously undated stock is also distinct: it describes
+    /// the new units, not every older unit.
+    /// </summary>
+    public static bool RequiresSeparateStockLot(Item existing, Item observed) =>
+        existing.Quantity > 0
+        && SpecialAttributeCatalog.GetExpiry(observed)?.DateValue is { } observedDate
+        && SpecialAttributeCatalog.GetExpiry(existing)?.DateValue != observedDate;
+
+    /// <summary>Returns every independently tracked lot/place entry for the same product collection.</summary>
     public async Task<List<Item>> GetCollectionMembersAsync(int itemId, CancellationToken ct = default)
     {
         using var conn = await db.OpenAsync(ct);
@@ -395,15 +405,31 @@ public class InventoryService(
 
     /// <summary>
     /// Moves part of an item's quantity into a newly linked entry at another destination.
-    /// The source reduction and new entry are committed transactionally.
+    /// Each entry remains a homogeneous stock holding; the source reduction and new entry
+    /// are committed transactionally.
     /// </summary>
-    public async Task<ItemSplit> SplitAsync(
+    public Task<ItemSplit> SplitAsync(
         int itemId, decimal quantity, int? locationId, int? containerId,
-        CancellationToken ct = default)
+        CancellationToken ct = default) =>
+        SplitCoreAsync(itemId, quantity, locationId, containerId, null, ExpiryDateKind.Unknown, ct);
+
+    /// <summary>
+    /// Separates part of an aggregate quantity into a same-product stock lot with its own
+    /// expiry. The new lot stays in the current place and the original expiry is untouched.
+    /// </summary>
+    public Task<ItemSplit> SplitLotAsync(
+        int itemId, decimal quantity, DateOnly expiryDate,
+        ExpiryDateKind expiryKind = ExpiryDateKind.Unknown,
+        CancellationToken ct = default) =>
+        SplitCoreAsync(itemId, quantity, null, null, expiryDate, expiryKind, ct);
+
+    private async Task<ItemSplit> SplitCoreAsync(
+        int itemId, decimal quantity, int? locationId, int? containerId,
+        DateOnly? lotExpiryDate, ExpiryDateKind expiryKind, CancellationToken ct)
     {
         if (quantity <= 0)
             throw new ArgumentOutOfRangeException(nameof(quantity), "Split quantity must be greater than zero.");
-        if (locationId is null && containerId is null)
+        if (lotExpiryDate is null && locationId is null && containerId is null)
             throw new InvalidOperationException("Choose a destination for the split quantity.");
         if (locationId is not null && containerId is not null)
             throw new InvalidOperationException("Choose either a location or a container, not both.");
@@ -412,6 +438,7 @@ public class InventoryService(
         using var tx = conn.BeginTransaction();
         var source = await conn.QuerySingleOrDefaultAsync<SplitSource>("""
             SELECT i.Id, i.Quantity, i.LocationId, i.ContainerId, i.CollectionKey,
+                   i.ExpiryDate, i.SpecialAttributesJson,
                    EXISTS (SELECT 1 FROM Checkouts c WHERE c.ItemId = i.Id AND c.ReturnedAt IS NULL) AS IsCheckedOut
             FROM Items i WHERE i.Id = @itemId;
             """, new { itemId }, tx);
@@ -420,7 +447,17 @@ public class InventoryService(
         if (quantity >= source.Quantity)
             throw new InvalidOperationException("The split quantity must leave some quantity in the current place.");
 
-        if (containerId is { } targetContainerId)
+        if (lotExpiryDate is { } newExpiryDate)
+        {
+            var sourceExpiry = string.IsNullOrWhiteSpace(source.ExpiryDate)
+                ? (DateOnly?)null
+                : DateOnly.Parse(source.ExpiryDate);
+            if (sourceExpiry == newExpiryDate)
+                throw new InvalidOperationException("Choose an expiry date different from the current stock entry.");
+            locationId = source.LocationId;
+            containerId = source.ContainerId;
+        }
+        else if (containerId is { } targetContainerId)
         {
             var exists = await conn.ExecuteScalarAsync<int>(
                 "SELECT COUNT(*) FROM Containers WHERE Id = @targetContainerId",
@@ -436,7 +473,7 @@ public class InventoryService(
             if (exists == 0) throw new InvalidOperationException("The destination location no longer exists.");
         }
 
-        if (source.LocationId == locationId && source.ContainerId == containerId)
+        if (lotExpiryDate is null && source.LocationId == locationId && source.ContainerId == containerId)
             throw new InvalidOperationException("Choose a different place for the split quantity.");
 
         var collectionKey = source.CollectionKey ?? Guid.NewGuid().ToString("N");
@@ -459,6 +496,22 @@ public class InventoryService(
             FROM Items WHERE Id = @itemId;
             SELECT last_insert_rowid();
             """, new { itemId, quantity, collectionKey, locationId, containerId, now }, tx);
+        if (lotExpiryDate is { } expiryDate)
+        {
+            var specialAttributes = DeserializeSpecialAttributes(source.SpecialAttributesJson);
+            var lot = new Item { SpecialAttributes = specialAttributes };
+            SpecialAttributeCatalog.SetExpiry(lot, expiryDate, expiryKind,
+                new SpecialAttributeEvidence { Source = "user" });
+            await conn.ExecuteAsync("""
+                UPDATE Items SET ExpiryDate = @expiryDate, SpecialAttributesJson = @specialAttributes
+                WHERE Id = @createdId;
+                """, new
+            {
+                createdId,
+                expiryDate = expiryDate.ToString("yyyy-MM-dd"),
+                specialAttributes = JsonSerializer.Serialize(lot.SpecialAttributes, Json)
+            }, tx);
+        }
         await conn.ExecuteAsync("""
             INSERT INTO ItemImages (ItemId, ImageId, Role, IsPrimary, SortOrder, CreatedAt)
             SELECT @createdId, ImageId, Role, IsPrimary, SortOrder, @now
@@ -471,6 +524,133 @@ public class InventoryService(
         var created = await GetAsync(createdId, ct)
             ?? throw new InvalidOperationException("The split item disappeared after creation.");
         return new ItemSplit(remaining, created);
+    }
+
+    /// <summary>
+    /// Adds newly acquired units as a linked stock lot when their observed expiry differs
+    /// from the matched product entry. Shared product metadata is copied, while lot-specific
+    /// special attributes, placement, and the new evidence image remain independent.
+    /// </summary>
+    public async Task<Item> CreateStockLotAsync(
+        int matchedItemId, Item observed, CancellationToken ct = default)
+    {
+        if (observed.Quantity <= 0)
+            throw new InvalidOperationException("Stock-lot quantity must be greater than zero.");
+        if (attributeNames is not null && observed.Attributes.Count > 0)
+            observed.Attributes = await attributeNames.CanonicalizeAsync(
+                observed.Attributes, kindId: observed.ItemKindId, ct: ct);
+        SpecialAttributeCatalog.PromoteFromOrdinaryAttributes(observed);
+        SpecialAttributeCatalog.Normalize(observed);
+
+        using var conn = await db.OpenAsync(ct);
+        using var tx = conn.BeginTransaction();
+        var row = await conn.QuerySingleOrDefaultAsync<ItemRow>(
+            SelectItem + " WHERE i.Id = @matchedItemId", new { matchedItemId }, tx);
+        if (row is null) throw new InvalidOperationException("The matched inventory item no longer exists.");
+        var source = Map(row);
+        if (!RequiresSeparateStockLot(source, observed))
+            throw new InvalidOperationException("The observed expiry does not require a separate stock lot.");
+
+        var collectionKey = source.CollectionKey ?? Guid.NewGuid().ToString("N");
+        var now = DateTimeOffset.UtcNow;
+        var lot = new Item
+        {
+            CollectionKey = collectionKey,
+            Code = source.Code ?? observed.Code,
+            Name = source.Name,
+            Description = source.Description ?? observed.Description,
+            ItemKindId = source.ItemKindId,
+            Quantity = observed.Quantity,
+            Unit = source.Unit ?? observed.Unit,
+            LowStockThreshold = source.LowStockThreshold,
+            LocationId = observed.ContainerId is null ? observed.LocationId ?? source.LocationId : null,
+            ContainerId = observed.ContainerId ?? (observed.LocationId is null ? source.ContainerId : null),
+            ThumbnailUrl = source.ThumbnailUrl ?? observed.ThumbnailUrl,
+            PhotoPath = source.PhotoPath ?? observed.PhotoPath,
+            ImageId = observed.ImageId ?? source.ImageId,
+            Attributes = new(source.Attributes),
+            SpecialAttributes = new(source.SpecialAttributes),
+            Notes = observed.Notes ?? source.Notes,
+            CreatedAt = now,
+            UpdatedAt = now
+        };
+        foreach (var (name, value) in observed.Attributes)
+            if (!lot.Attributes.Keys.Any(existing =>
+                    string.Equals(existing, name, StringComparison.OrdinalIgnoreCase)))
+                lot.Attributes[name] = value;
+        foreach (var (key, value) in observed.SpecialAttributes)
+            lot.SpecialAttributes[key] = value;
+        SpecialAttributeCatalog.Normalize(lot);
+
+        await conn.ExecuteAsync(
+            "UPDATE Items SET CollectionKey = @collectionKey, UpdatedAt = @now WHERE Id = @matchedItemId",
+            new { matchedItemId, collectionKey, now = now.ToString("O") }, tx);
+        var createdId = await conn.ExecuteScalarAsync<int>("""
+            INSERT INTO Items
+                (CollectionKey, Code, Name, Description, ItemKindId, Quantity, Unit, LowStockThreshold,
+                 ExpiryDate, LocationId, ContainerId, ThumbnailUrl, PhotoPath, ImageId, AttributesJson,
+                 SpecialAttributesJson, Notes, CreatedAt, UpdatedAt)
+            VALUES
+                (@CollectionKey, @Code, @Name, @Description, @ItemKindId, @Quantity, @Unit, @LowStockThreshold,
+                 @ExpiryDate, @LocationId, @ContainerId, @ThumbnailUrl, @PhotoPath, @ImageId, @AttributesJson,
+                 @SpecialAttributesJson, @Notes, @CreatedAt, @UpdatedAt);
+            SELECT last_insert_rowid();
+            """, new
+        {
+            lot.CollectionKey,
+            lot.Code,
+            lot.Name,
+            lot.Description,
+            lot.ItemKindId,
+            lot.Quantity,
+            lot.Unit,
+            lot.LowStockThreshold,
+            ExpiryDate = lot.ExpiryDate?.ToString("yyyy-MM-dd"),
+            lot.LocationId,
+            lot.ContainerId,
+            lot.ThumbnailUrl,
+            lot.PhotoPath,
+            lot.ImageId,
+            AttributesJson = JsonSerializer.Serialize(lot.Attributes, Json),
+            SpecialAttributesJson = JsonSerializer.Serialize(lot.SpecialAttributes, Json),
+            lot.Notes,
+            CreatedAt = now.ToString("O"),
+            UpdatedAt = now.ToString("O")
+        }, tx);
+
+        var hasNewPrimaryImage = observed.ImageId is { } observedImageId
+                                 && observedImageId != source.ImageId;
+        await conn.ExecuteAsync("""
+            INSERT INTO ItemImages (ItemId, ImageId, Role, IsPrimary, SortOrder, CreatedAt)
+            SELECT @createdId, ImageId, Role,
+                   CASE WHEN @demote = 1 THEN 0 ELSE IsPrimary END,
+                   SortOrder, @now
+            FROM ItemImages WHERE ItemId = @matchedItemId;
+            """, new
+        {
+            createdId,
+            matchedItemId,
+            demote = hasNewPrimaryImage ? 1 : 0,
+            now = now.ToString("O")
+        }, tx);
+        if (hasNewPrimaryImage)
+        {
+            await conn.ExecuteAsync("""
+                INSERT INTO ItemImages (ItemId, ImageId, Role, IsPrimary, SortOrder, CreatedAt)
+                VALUES (@createdId, @imageId, @role, 1,
+                        COALESCE((SELECT MAX(SortOrder) + 1 FROM ItemImages WHERE ItemId = @createdId), 0), @now)
+                ON CONFLICT(ItemId, ImageId) DO UPDATE SET IsPrimary = 1;
+                """, new
+            {
+                createdId,
+                imageId = observed.ImageId,
+                role = (int)ItemImageRole.Other,
+                now = now.ToString("O")
+            }, tx);
+        }
+        tx.Commit();
+        return await GetAsync(createdId, ct)
+               ?? throw new InvalidOperationException("The stock lot disappeared after creation.");
     }
 
     /// <summary>
@@ -564,7 +744,7 @@ public class InventoryService(
         await conn.ExecuteAsync("DELETE FROM Items WHERE Id = @id", new { id }, tx);
         if (!string.IsNullOrWhiteSpace(collectionKey))
         {
-            // A one-entry "collection" is no longer split, so remove the stale marker.
+            // A one-entry product no longer needs a collection marker.
             await conn.ExecuteAsync("""
                 UPDATE Items SET CollectionKey = NULL
                 WHERE CollectionKey = @collectionKey
@@ -680,12 +860,32 @@ public class InventoryService(
         var soon = today.AddDays(7).ToString("yyyy-MM-dd");
         using var conn = await db.OpenAsync(ct);
 
-        var total = await conn.QuerySingleAsync<int>("SELECT COUNT(*) FROM Items");
+        var total = await conn.QuerySingleAsync<int>("""
+            SELECT COUNT(DISTINCT COALESCE(CollectionKey, 'item:' || Id)) FROM Items;
+            """);
         var totalQty = await conn.ExecuteScalarAsync<decimal?>("SELECT SUM(Quantity) FROM Items") ?? 0m;
 
-        var lowStock = (await conn.QueryAsync<ItemRow>(
-            SelectItem + " WHERE i.LowStockThreshold > 0 AND i.Quantity <= i.LowStockThreshold ORDER BY i.Quantity LIMIT 20"))
-            .Select(Map).ToList();
+        var lowGroups = (await conn.QueryAsync<LowStockGroup>("""
+            SELECT MIN(Id) AS RepresentativeId, SUM(Quantity) AS TotalQuantity
+            FROM Items
+            GROUP BY COALESCE(CollectionKey, 'item:' || Id)
+            HAVING MAX(LowStockThreshold) > 0 AND SUM(Quantity) <= MAX(LowStockThreshold)
+            ORDER BY TotalQuantity LIMIT 20;
+            """)).ToList();
+        var lowStock = lowGroups.Count == 0
+            ? []
+            : (await conn.QueryAsync<ItemRow>(SelectItem + " " + """
+                 WHERE i.Id IN (
+                     SELECT MIN(Id) FROM Items
+                     GROUP BY COALESCE(CollectionKey, 'item:' || Id)
+                     HAVING MAX(LowStockThreshold) > 0
+                        AND SUM(Quantity) <= MAX(LowStockThreshold)
+                 )
+                 """))
+                .Select(Map)
+                .ToList();
+        foreach (var item in lowStock)
+            item.Quantity = lowGroups.Single(group => group.RepresentativeId == item.Id).TotalQuantity;
 
         var expiring = (await conn.QueryAsync<ItemRow>(
             SelectItem + " WHERE i.ExpiryDate IS NOT NULL AND i.ExpiryDate <= @soon ORDER BY i.ExpiryDate LIMIT 20",
@@ -844,6 +1044,12 @@ public class InventoryService(
         public string ImageCreatedAt { get; set; } = string.Empty;
     }
 
+    private sealed class LowStockGroup
+    {
+        public int RepresentativeId { get; set; }
+        public decimal TotalQuantity { get; set; }
+    }
+
     private sealed class SplitSource
     {
         public int Id { get; set; }
@@ -851,6 +1057,8 @@ public class InventoryService(
         public int? LocationId { get; set; }
         public int? ContainerId { get; set; }
         public string? CollectionKey { get; set; }
+        public string? ExpiryDate { get; set; }
+        public string? SpecialAttributesJson { get; set; }
         public bool IsCheckedOut { get; set; }
     }
 }

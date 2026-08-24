@@ -266,7 +266,7 @@ public class IntakeQueueTests
     }
 
     [Fact]
-    public async Task Accepting_a_match_keeps_existing_price_and_adds_missing_expiry()
+    public async Task Accepting_a_match_with_new_expiry_keeps_existing_stock_unchanged()
     {
         await using var harness = await Harness.CreateAsync();
         var existing = new Item { Name = "Coffee", ItemKindId = 1 };
@@ -277,11 +277,15 @@ public class IntakeQueueTests
         SpecialAttributeCatalog.SetPrice(draft, 6m, "GBP");
         SpecialAttributeCatalog.SetExpiry(draft, new DateOnly(2027, 1, 2), ExpiryDateKind.BestBefore);
 
-        await harness.Queue.AcceptAsync(queued.Id, draft, existing.Id);
+        var applied = await harness.Queue.AcceptAsync(queued.Id, draft, existing.Id);
         var updated = await harness.Inventory.GetAsync(existing.Id);
 
         Assert.Equal(8m, SpecialAttributeCatalog.GetPrice(updated!)!.DecimalValue);
-        Assert.Equal(new DateOnly(2027, 1, 2), updated!.ExpiryDate);
+        Assert.Null(updated!.ExpiryDate);
+        Assert.Equal(IntakeAction.CreateStockLot, applied.Action);
+        var lot = (await harness.Inventory.GetAsync(applied.ItemId))!;
+        Assert.Equal(6m, SpecialAttributeCatalog.GetPrice(lot)!.DecimalValue);
+        Assert.Equal(new DateOnly(2027, 1, 2), lot.ExpiryDate);
     }
 
     [Fact]
@@ -307,7 +311,13 @@ public class IntakeQueueTests
 
         harness.Ai.Identification = harness.Ai.Identification with
         {
-            Attributes = new() { ["Format"] = "LP", ["Catalogue number"] = "BST 84123" }
+            Attributes = new() { ["Format"] = "LP", ["Catalogue number"] = "BST 84123" },
+            Expiry = new VisionExpiry
+            {
+                Date = new DateOnly(2029, 4, 30),
+                Type = "best_before",
+                Confidence = 0.91m
+            }
         };
         harness.Ai.RelationshipPick = new CaptureRelationshipPick(
             front.Id,
@@ -338,6 +348,7 @@ public class IntakeQueueTests
         var updated = (await harness.Inventory.GetAsync(itemId))!;
         Assert.Equal(1, updated.Quantity);
         Assert.Equal("BST 84123", updated.Attributes["Catalogue number"]);
+        Assert.Equal(new DateOnly(2029, 4, 30), updated.ExpiryDate);
         var images = await harness.Inventory.GetImagesAsync(itemId);
         Assert.Equal(2, images.Count);
         Assert.Contains(images, image => image.ImageId == proposedBack.ImageId
@@ -373,6 +384,58 @@ public class IntakeQueueTests
         Assert.Equal(IntakeAction.ChooseCandidate, review.ProposalAction);
         Assert.Equal(CaptureRelationship.Uncertain, review.CaptureRelationship);
         Assert.Equal(1, (await harness.Inventory.GetAsync(itemId))!.Quantity);
+    }
+
+    [Fact]
+    public async Task Queue_review_adds_a_different_expiry_as_a_linked_stock_lot()
+    {
+        await using var harness = await Harness.CreateAsync();
+        var existing = new Item
+        {
+            Name = "Baked beans",
+            Code = "5000157024671",
+            ItemKindId = 1,
+            Quantity = 4,
+            LocationId = 1
+        };
+        SpecialAttributeCatalog.SetExpiry(
+            existing, new DateOnly(2028, 1, 31), ExpiryDateKind.BestBefore);
+        existing = await harness.Inventory.SaveAsync(existing);
+        harness.Ai.Identification = new VisionIdentification
+        {
+            Name = existing.Name,
+            Barcode = existing.Code,
+            Kind = "Grocery",
+            Count = 2,
+            Expiry = new VisionExpiry
+            {
+                Date = new DateOnly(2027, 9, 30),
+                Type = "best_before",
+                Confidence = 0.94m
+            }
+        };
+        await using var photo = await PhotoAsync(90);
+        var queued = await harness.Queue.EnqueuePhotoAsync(
+            photo, "image/png", "beans.png", multipleItems: false);
+
+        await harness.Queue.ProcessAsync(queued.Id, new IntakeOptions(), aiEnabled: true);
+        var review = (await harness.Queue.GetAsync(queued.Id))!;
+
+        Assert.Equal(IntakeAction.CreateStockLot, review.ProposalAction);
+        Assert.Equal(existing.Id, review.MatchedItemId);
+        Assert.Equal(4, (await harness.Inventory.GetAsync(existing.Id))!.Quantity);
+
+        var applied = await harness.Queue.AcceptAsync(review.Id, review.Draft, review.MatchedItemId);
+
+        Assert.Equal(IntakeAction.CreateStockLot, applied.Action);
+        Assert.Equal(4, (await harness.Inventory.GetAsync(existing.Id))!.Quantity);
+        var lot = (await harness.Inventory.GetAsync(applied.ItemId))!;
+        Assert.Equal(2, lot.Quantity);
+        Assert.Equal(new DateOnly(2027, 9, 30), lot.ExpiryDate);
+        Assert.Equal(existing.LocationId, lot.LocationId);
+        var updatedExisting = (await harness.Inventory.GetAsync(existing.Id))!;
+        Assert.NotNull(updatedExisting.CollectionKey);
+        Assert.Equal(updatedExisting.CollectionKey, lot.CollectionKey);
     }
 
     private sealed class Harness : IAsyncDisposable

@@ -11,8 +11,9 @@ public class Item
     public int Id { get; set; }
 
     /// <summary>
-    /// Shared opaque key for entries created by splitting one quantity across places.
-    /// Null means the item has never been split.
+    /// Shared opaque key for homogeneous stock entries that represent the same product.
+    /// Entries may differ by place, expiry lot, or purchase context. Null means the product
+    /// currently has only one stock entry.
     /// </summary>
     public string? CollectionKey { get; set; }
 

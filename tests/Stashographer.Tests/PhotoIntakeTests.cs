@@ -145,7 +145,7 @@ public class PhotoIntakeTests
     }
 
     [Fact]
-    public async Task Applying_match_merges_new_price_and_expiry_into_existing_item()
+    public async Task Applying_match_with_new_expiry_preserves_existing_stock_as_a_separate_lot()
     {
         await using var h = await Harness.CreateAsync();
         var existing = await h.Inventory.SaveAsync(new Item
@@ -165,14 +165,18 @@ public class PhotoIntakeTests
         };
 
         var result = await h.Intake.ProcessSingleAsync(await PhotoAsync(), "image/png");
-        await h.Intake.ApplyAsync(result);
+        var applied = await h.Intake.ApplyAsync(result);
         var updated = await h.Inventory.GetAsync(existing.Id);
 
-        Assert.Equal(2, updated!.Quantity);
-        Assert.Equal(1.75m, SpecialAttributeCatalog.GetPrice(updated)!.DecimalValue);
-        Assert.Equal("GBP", SpecialAttributeCatalog.GetPrice(updated)!.CurrencyCode);
-        Assert.Equal(new DateOnly(2026, 8, 29), updated.ExpiryDate);
-        Assert.Equal(nameof(ExpiryDateKind.UseBy), SpecialAttributeCatalog.GetExpiry(updated)!.Qualifier);
+        Assert.Equal(IntakeAction.CreateStockLot, applied.Action);
+        Assert.Equal(1, updated!.Quantity);
+        Assert.Null(updated.ExpiryDate);
+        var lot = (await h.Inventory.GetAsync(applied.ItemId))!;
+        Assert.Equal(1, lot.Quantity);
+        Assert.Equal(1.75m, SpecialAttributeCatalog.GetPrice(lot)!.DecimalValue);
+        Assert.Equal("GBP", SpecialAttributeCatalog.GetPrice(lot)!.CurrencyCode);
+        Assert.Equal(new DateOnly(2026, 8, 29), lot.ExpiryDate);
+        Assert.Equal(nameof(ExpiryDateKind.UseBy), SpecialAttributeCatalog.GetExpiry(lot)!.Qualifier);
     }
 
     [Fact]
@@ -323,6 +327,89 @@ public class PhotoIntakeTests
         Assert.Equal(5, (await h.Inventory.GetAsync(existing.Id))!.Quantity);
 
         await h.Intake.UndoAsync(applied);
+        Assert.Equal(2, (await h.Inventory.GetAsync(existing.Id))!.Quantity);
+    }
+
+    [Fact]
+    public async Task Different_visible_expiry_creates_a_linked_stock_lot_instead_of_incrementing()
+    {
+        await using var h = await Harness.CreateAsync();
+        var existing = new Item
+        {
+            Name = "Chopped tomatoes",
+            Code = "5012345678900",
+            ItemKindId = 1,
+            Quantity = 2,
+            LocationId = 1
+        };
+        SpecialAttributeCatalog.SetExpiry(
+            existing, new DateOnly(2027, 6, 30), ExpiryDateKind.BestBefore);
+        existing = await h.Inventory.SaveAsync(existing);
+        h.Ai.Identification = new VisionIdentification
+        {
+            Name = existing.Name,
+            Barcode = existing.Code,
+            Kind = "Grocery",
+            Expiry = new VisionExpiry
+            {
+                Date = new DateOnly(2027, 2, 28),
+                Type = "best_before",
+                Confidence = 0.95m
+            }
+        };
+
+        var result = await h.Intake.ProcessSingleAsync(await PhotoAsync(), "image/png");
+        Assert.Equal(IntakeAction.CreateStockLot, result.Proposal.Action);
+        Assert.Equal(existing.Id, result.Proposal.MatchedItemId);
+
+        var applied = await h.Intake.ApplyAsync(result);
+
+        Assert.Equal(IntakeAction.CreateStockLot, applied.Action);
+        Assert.Equal(2, (await h.Inventory.GetAsync(existing.Id))!.Quantity);
+        var lot = (await h.Inventory.GetAsync(applied.ItemId))!;
+        Assert.Equal(1, lot.Quantity);
+        Assert.Equal(new DateOnly(2027, 2, 28), lot.ExpiryDate);
+        Assert.Equal(1, lot.LocationId);
+        Assert.Equal(existing.Code, lot.Code);
+        Assert.Equal(3, (await h.Inventory.GetCollectionMembersAsync(existing.Id)).Sum(x => x.Quantity));
+    }
+
+    [Fact]
+    public async Task Visible_expiry_selects_the_matching_existing_lot_from_a_collection()
+    {
+        await using var h = await Harness.CreateAsync();
+        var existing = new Item
+        {
+            Name = "Chopped tomatoes",
+            Code = "5012345678900",
+            ItemKindId = 1,
+            Quantity = 4,
+            LocationId = 1
+        };
+        SpecialAttributeCatalog.SetExpiry(
+            existing, new DateOnly(2027, 6, 30), ExpiryDateKind.BestBefore);
+        existing = await h.Inventory.SaveAsync(existing);
+        var split = await h.Inventory.SplitLotAsync(
+            existing.Id, 2, new DateOnly(2027, 2, 28), ExpiryDateKind.BestBefore);
+        h.Ai.Identification = new VisionIdentification
+        {
+            Name = existing.Name,
+            Barcode = existing.Code,
+            Kind = "Grocery",
+            Expiry = new VisionExpiry
+            {
+                Date = split.Created.ExpiryDate,
+                Type = "best_before",
+                Confidence = 0.96m
+            }
+        };
+
+        var result = await h.Intake.ProcessSingleAsync(await PhotoAsync(), "image/png");
+
+        Assert.Equal(IntakeAction.IncrementExisting, result.Proposal.Action);
+        Assert.Equal(split.Created.Id, result.Proposal.MatchedItemId);
+        await h.Intake.ApplyAsync(result);
+        Assert.Equal(3, (await h.Inventory.GetAsync(split.Created.Id))!.Quantity);
         Assert.Equal(2, (await h.Inventory.GetAsync(existing.Id))!.Quantity);
     }
 

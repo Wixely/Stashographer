@@ -23,7 +23,12 @@
                     <MudImage Src="@ImageUrls.For(card.Result.ImageId, null, 360)" Width="240" Height="140"
                               ObjectFit="ObjectFit.Contain" Class="rounded d-block mx-auto" />
                     <MudText Typo="Typo.subtitle2" Class="mt-1">@DisplayName(card)</MudText>
-                    <MudText Typo="Typo.caption" Color="@(card.Action == IntakeAction.CreateNew ? Color.Primary : Color.Success)">
+                    <MudText Typo="Typo.caption" Color="@(card.Action switch
+                                                            {
+                                                                IntakeAction.CreateNew => Color.Primary,
+                                                                IntakeAction.CreateStockLot => Color.Info,
+                                                                _ => Color.Success
+                                                            })">
                         @Summary(card)
                     </MudText>
                     <div class="d-flex justify-space-between align-center mt-1">
@@ -68,7 +73,12 @@
         {
             Result = r,
             // Medium confidence is pre-selected here (the board itself is the review step).
-            Action = r.Proposal.Action == IntakeAction.CreateNew ? IntakeAction.CreateNew : IntakeAction.IncrementExisting,
+            Action = r.Proposal.Action switch
+            {
+                IntakeAction.CreateNew => IntakeAction.CreateNew,
+                IntakeAction.CreateStockLot => IntakeAction.CreateStockLot,
+                _ => IntakeAction.IncrementExisting
+            },
             MatchId = r.Proposal.MatchedItemId,
             MatchName = r.Proposal.MatchedItemName
         }).ToList();
@@ -80,13 +90,19 @@
             : c.MatchName ?? "item";
 
     private static string Summary(Card c) =>
-        c.Action == IntakeAction.CreateNew
-            ? "New item will be created"
-            : $"+{c.Result.Proposal.IncrementBy:0.##} to existing";
+        c.Action switch
+        {
+            IntakeAction.CreateNew => "New item will be created",
+            IntakeAction.CreateStockLot =>
+                $"{c.Result.Proposal.IncrementBy:0.##} in a separate expiry lot",
+            _ => $"+{c.Result.Proposal.IncrementBy:0.##} to existing"
+        };
 
     private void SetIncrement(Card card, Item candidate)
     {
-        card.Action = IntakeAction.IncrementExisting;
+        card.Action = InventoryService.RequiresSeparateStockLot(candidate, card.Result.Proposal.Draft)
+            ? IntakeAction.CreateStockLot
+            : IntakeAction.IncrementExisting;
         card.MatchId = candidate.Id;
         card.MatchName = candidate.Name;
     }
@@ -101,6 +117,7 @@
     {
         _applying = true;
         var incremented = 0;
+        var lots = 0;
         var created = 0;
         try
         {
@@ -108,9 +125,10 @@
             {
                 var applied = await Intake.ApplyAsync(card.Result, card.Action, card.MatchId);
                 if (applied.Action == IntakeAction.IncrementExisting) incremented++;
+                else if (applied.Action == IntakeAction.CreateStockLot) lots++;
                 else created++;
             }
-            Snackbar.Add($"Applied: {incremented} incremented, {created} created.", Severity.Success);
+            Snackbar.Add($"Applied: {incremented} incremented, {lots} expiry lots, {created} created.", Severity.Success);
             await OnDone.InvokeAsync();
         }
         finally { _applying = false; }

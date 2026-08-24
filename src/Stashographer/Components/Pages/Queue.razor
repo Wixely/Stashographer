@@ -158,6 +158,16 @@ else
                                 }
                             </MudAlert>
                         }
+                        else if (queued.ProposalAction == IntakeAction.CreateStockLot)
+                        {
+                            <MudAlert Severity="Severity.Info" Class="mb-3">
+                                <MudText Typo="Typo.subtitle2">A separate expiry lot was detected</MudText>
+                                <MudText Typo="Typo.body2">
+                                    This is the same product as @queued.MatchedItemName, but its visible expiry differs.
+                                    Accepting creates a linked stock entry; existing quantities and expiry dates stay unchanged.
+                                </MudText>
+                            </MudAlert>
+                        }
 
                         <MudTextField @bind-Value="queued.Draft.Name" Label="Name" Variant="Variant.Outlined"
                                       Required="true" Class="mb-2" />
@@ -217,7 +227,9 @@ else
                                 @foreach (var candidate in _candidates)
                                 {
                                     <MudSelectItem T="int?" Value="@candidate.Id">
-                                        Add @queued.IncrementBy.ToString("0.##") to @candidate.Name
+                                        @(queued.ProposalAction == IntakeAction.CreateStockLot
+                                            ? $"Create expiry lot for {candidate.Name}"
+                                            : $"Add {queued.IncrementBy:0.##} to {candidate.Name}")
                                         (@candidate.Quantity.ToString("0.##") now · @PlacementLabel(candidate))
                                     </MudSelectItem>
                                 }
@@ -231,7 +243,12 @@ else
                                                                 && _matchedItemId is null
                                                                 && string.IsNullOrWhiteSpace(queued.Draft.Name)))"
                                        OnClick="AcceptCurrentAsync">
-                                @(queued.ProposalAction == IntakeAction.AttachImage ? "Accept additional view" : "Accept item")
+                                @(queued.ProposalAction switch
+                                {
+                                    IntakeAction.AttachImage => "Accept additional view",
+                                    IntakeAction.CreateStockLot => "Accept expiry lot",
+                                    _ => "Accept item"
+                                })
                             </MudButton>
                             @if (queued.ProposalAction == IntakeAction.AttachImage)
                             {
@@ -358,6 +375,7 @@ else
         _candidates = await Inventory.FindCandidatesAsync(current.Draft.Name, current.Draft.Code);
         _matchedItemId = current.ProposalAction == IntakeAction.IncrementExisting
             || current.ProposalAction == IntakeAction.ChooseCandidate
+            || current.ProposalAction == IntakeAction.CreateStockLot
                 ? current.MatchedItemId
                 : null;
         _imageRole = current.SuggestedImageRole ?? ItemImageRole.Detail;
@@ -438,6 +456,7 @@ else
     private void ShowAccepted(IntakeApplied applied) => Snackbar.Add(applied.Action switch
     {
         IntakeAction.AttachImage => $"Attached a {ImageRoleLabel(_imageRole).ToLowerInvariant()} image to {applied.ItemName}. Quantity was not changed.",
+        IntakeAction.CreateStockLot => $"Added {applied.By:0.##} {applied.ItemName} as a separate expiry lot.",
         IntakeAction.IncrementExisting => $"Added {applied.By:0.##} to {applied.ItemName}.",
         _ => $"Added {applied.ItemName} to inventory."
     }, Severity.Success);

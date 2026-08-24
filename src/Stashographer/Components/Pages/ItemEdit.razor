@@ -27,7 +27,11 @@ else
                 {
                     <MudButton Color="Color.Primary" Variant="Variant.Outlined"
                                StartIcon="@Icons.Material.Filled.CallSplit" OnClick="SplitQuantity">
-                        Split quantity
+                        Split by place
+                    </MudButton>
+                    <MudButton Color="Color.Primary" Variant="Variant.Outlined"
+                               StartIcon="@Icons.Material.Filled.Event" OnClick="SplitExpiryLot">
+                        Split expiry lot
                     </MudButton>
                 }
                 @if (_item.IsCheckedOut)
@@ -59,7 +63,7 @@ else
         <MudPaper Class="pa-3 mb-3" Outlined="true">
             <div class="d-flex align-center gap-2 flex-wrap mb-2">
                 <MudIcon Icon="@Icons.Material.Filled.AccountTree" Color="Color.Primary" />
-                <MudText Typo="Typo.subtitle2">Stored in @_collectionMembers.Count places</MudText>
+                <MudText Typo="Typo.subtitle2">@_collectionMembers.Count stock entries for this product</MudText>
                 <MudChip T="string" Size="Size.Small">
                     Total @_collectionMembers.Sum(x => x.Quantity).ToString("0.##") @_item.Unit
                 </MudChip>
@@ -69,8 +73,8 @@ else
                 {
                     <MudButton Href="@($"items/{member.Id}")" Variant="@(member.Id == _item.Id ? Variant.Filled : Variant.Outlined)"
                                Color="@(member.Id == _item.Id ? Color.Primary : Color.Default)"
-                               StartIcon="@Icons.Material.Filled.Place">
-                        @member.Quantity.ToString("0.##") @member.Unit · @PlacementLabel(member)
+                               StartIcon="@(member.ExpiryDate is null ? Icons.Material.Filled.Place : Icons.Material.Filled.Event)">
+                        @member.Quantity.ToString("0.##") @member.Unit · @ExpiryLabel(member) · @PlacementLabel(member)
                     </MudButton>
                 }
             </div>
@@ -298,10 +302,42 @@ else
         }
     }
 
+    private async Task SplitExpiryLot()
+    {
+        var parameters = new DialogParameters
+        {
+            ["ItemName"] = _item.Name,
+            ["AvailableQuantity"] = _item.Quantity,
+            ["Unit"] = _item.Unit,
+            ["CurrentExpiry"] = _item.ExpiryDate
+        };
+        var dialog = await Dialogs.ShowAsync<SplitLotDialog>("Split expiry lot", parameters);
+        var result = await dialog.Result;
+        if (result is not { Canceled: false, Data: SplitLotDialog.Request request }) return;
+
+        try
+        {
+            var split = await Inventory.SplitLotAsync(
+                _item.Id, request.Quantity, request.ExpiryDate, request.ExpiryKind);
+            _item = split.Source;
+            _collectionMembers = await Inventory.GetCollectionMembersAsync(_item.Id);
+            Snackbar.Add(
+                $"Created a {split.Created.Quantity:0.##} lot expiring {request.ExpiryDate:d MMM yyyy}.",
+                Severity.Success);
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add(ex.Message, Severity.Error);
+        }
+    }
+
     private static string PlacementLabel(Item item) =>
         item.Container is not null
             ? $"{item.Container.Location?.Name} › {item.Container.Name}"
             : item.Location?.Name ?? "Unplaced";
+
+    private static string ExpiryLabel(Item item) =>
+        item.ExpiryDate is { } expiry ? $"expires {expiry:d MMM yyyy}" : "expiry unknown";
 
     private async Task Enrich()
     {

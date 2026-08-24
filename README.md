@@ -59,9 +59,9 @@ Every container gets a printable QR code — scan it to see what's meant to be i
   container gets a **printable QR code**; scan it to see what's (meant to be) inside.
 - **Fast placement** — queue review remembers recent location/container targets, while the
   inventory supports multi-selection and Quick Move from either the toolbar or context menu.
-- **Split quantities across places** — move part of an item's count into another room or
-  container. Each portion appears as its own inventory entry while remaining visibly linked
-  as one collection.
+- **Stock lots and split quantities** — each inventory entry is homogeneous by place and
+  expiry. Split a product across rooms/containers or keep cans with different dates as linked,
+  independently usable stock entries. Product counts and low-stock checks remain collection-aware.
 - **Checkout / lending** — record who took an item and where, and check it back in later.
 - **Dashboard** — low stock, expiring soon, and currently checked-out at a glance.
 - **Food expiry workflow** — overdue, today, next-three-day, weekly, and later views use
@@ -175,6 +175,12 @@ processing, the context window, and mandatory review. Turning queueing off resto
 original immediate lookup/validation flow. Review is on by default; disabling it allows only
 complete, unambiguous results to apply automatically.
 
+Quantities are aggregated only when their stock facts are compatible. If a captured copy has
+a visible expiry different from the matched stock, intake creates a linked expiry lot instead
+of assigning that date to older units or incrementing the wrong lot. If an aggregate quantity
+already contains several dates, **Split expiry lot** on the item page separates them while
+keeping the same product identity and place.
+
 AI-generated attribute keys are checked against a vocabulary built from existing inventory
 and item-kind suggestions. The vocabulary is included in model prompts, then safe spelling,
 case and formatting variants are normalized deterministically before review or storage;
@@ -216,7 +222,7 @@ dependencies only (see [THIRD-PARTY-NOTICES](THIRD-PARTY-NOTICES.md)).
 ## Development
 
 ```bash
-dotnet test                    # 140 tests, no network access required
+dotnet test                    # 144 tests, no network access required
 dotnet build -c Release
 ```
 
