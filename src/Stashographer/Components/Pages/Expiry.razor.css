@@ -1,0 +1,7 @@
+::deep .expiry-stat {
+    height: 100%;
+}
+
+::deep .expiry-search {
+    flex: 1 1 18rem;
+}

@@ -56,6 +56,9 @@ Every container gets a printable QR code — scan it to see what's meant to be i
   as one collection.
 - **Checkout / lending** — record who took an item and where, and check it back in later.
 - **Dashboard** — low stock, expiring soon, and currently checked-out at a glance.
+- **Food expiry workflow** — overdue, today, next-three-day, weekly, and later views use
+  the configured local date. Quickly decrement used items and find food whose expiry date
+  still needs recording; dated non-food items can be included when useful.
 - **AI enrichment (optional)** — identify an item from a photo when a barcode won't do, and
   "season" any item with extra detail, via any **OpenAI-protocol** endpoint.
 - **Light / dark themes**, mobile-friendly (MudBlazor).
@@ -165,7 +168,7 @@ dependencies only (see [THIRD-PARTY-NOTICES](THIRD-PARTY-NOTICES.md)).
 ## Development
 
 ```bash
-dotnet test                    # 111 tests, no network access required
+dotnet test                    # 114 tests, no network access required
 dotnet build -c Release
 ```
 

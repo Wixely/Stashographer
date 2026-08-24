@@ -42,6 +42,21 @@ public record DashboardSummary(
     List<Item> CheckedOut,
     List<PriceMetric> PriceMetrics);
 
+/// <summary>Active inventory grouped into non-overlapping expiry windows.</summary>
+public sealed record ExpiryOverview(
+    DateOnly Today,
+    List<Item> Expired,
+    List<Item> DueToday,
+    List<Item> NextThreeDays,
+    List<Item> DaysFourToSeven,
+    List<Item> Later,
+    List<Item> MissingFoodDate)
+{
+    public int DatedCount => Expired.Count + DueToday.Count + NextThreeDays.Count
+                             + DaysFourToSeven.Count + Later.Count;
+    public int DueWithinSevenDaysCount => DueToday.Count + NextThreeDays.Count + DaysFourToSeven.Count;
+}
+
 /// <summary>Price metrics remain separated by currency until an explicit exchange rate is supplied.</summary>
 public sealed class PriceMetric
 {
@@ -443,9 +458,12 @@ public class InventoryService(
         return kinds.ToList();
     }
 
-    public async Task<DashboardSummary> GetDashboardAsync(CancellationToken ct = default)
+    public Task<DashboardSummary> GetDashboardAsync(CancellationToken ct = default) =>
+        GetDashboardAsync(DateOnly.FromDateTime(DateTime.Today), ct);
+
+    public async Task<DashboardSummary> GetDashboardAsync(DateOnly today, CancellationToken ct = default)
     {
-        var soon = DateOnly.FromDateTime(DateTime.Today).AddDays(7).ToString("yyyy-MM-dd");
+        var soon = today.AddDays(7).ToString("yyyy-MM-dd");
         using var conn = await db.OpenAsync(ct);
 
         var total = await conn.QuerySingleAsync<int>("SELECT COUNT(*) FROM Items");
@@ -478,6 +496,36 @@ public class InventoryService(
             """)).ToList();
 
         return new DashboardSummary(total, totalQty, lowStock, expiring, checkedOut, priceMetrics);
+    }
+
+    /// <summary>
+    /// Returns positive-quantity food grouped by expiry urgency. When requested, dated
+    /// non-food items are included too; missing-date reminders always remain food-only.
+    /// </summary>
+    public async Task<ExpiryOverview> GetExpiryOverviewAsync(
+        DateOnly today, bool includeNonFood = false, CancellationToken ct = default)
+    {
+        const int groceryKindId = 1;
+        var scope = includeNonFood
+            ? "(i.ItemKindId = @groceryKindId OR i.ExpiryDate IS NOT NULL)"
+            : "i.ItemKindId = @groceryKindId";
+        using var conn = await db.OpenAsync(ct);
+        var rows = await conn.QueryAsync<ItemRow>(
+            SelectItem + $" WHERE i.Quantity > 0 AND {scope}" +
+            " ORDER BY CASE WHEN i.ExpiryDate IS NULL THEN 1 ELSE 0 END, i.ExpiryDate, i.Name COLLATE NOCASE",
+            new { groceryKindId });
+        var items = rows.Select(Map).ToList();
+        var dayThree = today.AddDays(3);
+        var daySeven = today.AddDays(7);
+
+        return new ExpiryOverview(
+            today,
+            items.Where(item => item.ExpiryDate < today).ToList(),
+            items.Where(item => item.ExpiryDate == today).ToList(),
+            items.Where(item => item.ExpiryDate > today && item.ExpiryDate <= dayThree).ToList(),
+            items.Where(item => item.ExpiryDate > dayThree && item.ExpiryDate <= daySeven).ToList(),
+            items.Where(item => item.ExpiryDate > daySeven).ToList(),
+            items.Where(item => item.ItemKindId == groceryKindId && item.ExpiryDate is null).ToList());
     }
 
     private static Item Map(ItemRow r) => new()

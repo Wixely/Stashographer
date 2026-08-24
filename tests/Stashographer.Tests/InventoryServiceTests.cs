@@ -113,6 +113,69 @@ public class InventoryServiceTests
     }
 
     [Fact]
+    public async Task Dashboard_expiry_window_can_use_configured_regional_today()
+    {
+        await using var db = await TestDb.CreateAsync();
+        var svc = new InventoryService(db.Factory);
+        var today = new DateOnly(2030, 1, 10);
+        await svc.SaveAsync(new Item { Name = "Boundary", ItemKindId = 1, ExpiryDate = today.AddDays(7) });
+        await svc.SaveAsync(new Item { Name = "Outside", ItemKindId = 1, ExpiryDate = today.AddDays(8) });
+
+        var summary = await svc.GetDashboardAsync(today);
+
+        Assert.Contains(summary.ExpiringSoon, item => item.Name == "Boundary");
+        Assert.DoesNotContain(summary.ExpiringSoon, item => item.Name == "Outside");
+    }
+
+    [Fact]
+    public async Task Expiry_overview_groups_active_food_into_non_overlapping_windows()
+    {
+        await using var db = await TestDb.CreateAsync();
+        var svc = new InventoryService(db.Factory);
+        var today = new DateOnly(2026, 8, 24);
+        await svc.SaveAsync(new Item { Name = "Expired", ItemKindId = 1, ExpiryDate = today.AddDays(-1) });
+        await svc.SaveAsync(new Item { Name = "Today", ItemKindId = 1, ExpiryDate = today });
+        await svc.SaveAsync(new Item { Name = "Soon", ItemKindId = 1, ExpiryDate = today.AddDays(3) });
+        await svc.SaveAsync(new Item { Name = "This week", ItemKindId = 1, ExpiryDate = today.AddDays(4) });
+        await svc.SaveAsync(new Item { Name = "Later", ItemKindId = 1, ExpiryDate = today.AddDays(8) });
+        await svc.SaveAsync(new Item { Name = "Missing", ItemKindId = 1 });
+        await svc.SaveAsync(new Item
+        {
+            Name = "Empty expired", ItemKindId = 1, Quantity = 0, ExpiryDate = today.AddDays(-2)
+        });
+        await svc.SaveAsync(new Item { Name = "Dated tool", ItemKindId = 3, ExpiryDate = today.AddDays(2) });
+
+        var overview = await svc.GetExpiryOverviewAsync(today);
+
+        Assert.Equal("Expired", Assert.Single(overview.Expired).Name);
+        Assert.Equal("Today", Assert.Single(overview.DueToday).Name);
+        Assert.Equal("Soon", Assert.Single(overview.NextThreeDays).Name);
+        Assert.Equal("This week", Assert.Single(overview.DaysFourToSeven).Name);
+        Assert.Equal("Later", Assert.Single(overview.Later).Name);
+        Assert.Equal("Missing", Assert.Single(overview.MissingFoodDate).Name);
+        Assert.Equal(5, overview.DatedCount);
+        Assert.Equal(3, overview.DueWithinSevenDaysCount);
+        Assert.DoesNotContain(overview.Expired, item => item.Name == "Empty expired");
+    }
+
+    [Fact]
+    public async Task Expiry_overview_can_include_dated_non_food_without_missing_non_food_noise()
+    {
+        await using var db = await TestDb.CreateAsync();
+        var svc = new InventoryService(db.Factory);
+        var today = new DateOnly(2026, 8, 24);
+        await svc.SaveAsync(new Item { Name = "Dated battery", ItemKindId = 4, ExpiryDate = today.AddDays(2) });
+        await svc.SaveAsync(new Item { Name = "Undated battery", ItemKindId = 4 });
+        await svc.SaveAsync(new Item { Name = "Undated food", ItemKindId = 1 });
+
+        var overview = await svc.GetExpiryOverviewAsync(today, includeNonFood: true);
+
+        Assert.Equal("Dated battery", Assert.Single(overview.NextThreeDays).Name);
+        Assert.Equal("Undated food", Assert.Single(overview.MissingFoodDate).Name);
+        Assert.DoesNotContain(overview.MissingFoodDate, item => item.Name == "Undated battery");
+    }
+
+    [Fact]
     public async Task Kind_icons_are_short_iconcatalog_keys_after_migrations()
     {
         await using var db = await TestDb.CreateAsync();

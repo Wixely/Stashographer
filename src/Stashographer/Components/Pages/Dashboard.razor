@@ -1,5 +1,6 @@
 @page "/dashboard"
 @inject InventoryService Inventory
+@inject SettingsService SettingsSvc
 @inject NavigationManager Nav
 
 <PageTitle>Dashboard · Stashographer</PageTitle>
@@ -68,7 +69,11 @@ else
 
         <MudItem xs="12" md="4">
             <MudPaper Class="pa-4" Outlined="true">
-                <MudText Typo="Typo.h6" Class="mb-2">Expiring soon</MudText>
+                <div class="d-flex justify-space-between align-center mb-2">
+                    <MudText Typo="Typo.h6">Expiring soon</MudText>
+                    <MudButton Href="expiry" Variant="Variant.Text" Size="Size.Small"
+                               EndIcon="@Icons.Material.Filled.ArrowForward">View all</MudButton>
+                </div>
                 @if (_summary.ExpiringSoon.Count == 0)
                 {
                     <MudText Typo="Typo.body2" Class="mud-text-secondary">Nothing expiring in the next 7 days.</MudText>
@@ -134,7 +139,11 @@ else
 @code {
     private DashboardSummary? _summary;
 
-    protected override async Task OnInitializedAsync() => _summary = await Inventory.GetDashboardAsync();
+    protected override async Task OnInitializedAsync()
+    {
+        var regional = await SettingsSvc.GetRegionalOptionsAsync();
+        _summary = await Inventory.GetDashboardAsync(regional.Today());
+    }
 
     private void Open(int id) => Nav.NavigateTo($"items/{id}");
 

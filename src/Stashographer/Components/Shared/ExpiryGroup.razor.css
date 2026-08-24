@@ -1,0 +1,24 @@
+::deep .expiry-item-card {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+}
+
+.expiry-card-main {
+    min-width: 0;
+    flex: 1;
+}
+
+::deep .expiry-name {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+::deep .expiry-thumb {
+    flex: 0 0 auto;
+}
+
+.expiry-card-actions {
+    margin-top: auto;
+}

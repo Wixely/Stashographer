@@ -1,0 +1,175 @@
+@page "/expiry"
+@inject InventoryService Inventory
+@inject SettingsService SettingsSvc
+@inject ISnackbar Snackbar
+
+<PageTitle>Food expiry · Stashographer</PageTitle>
+
+<div class="d-flex justify-space-between align-start gap-2 flex-wrap mb-4">
+    <div>
+        <MudText Typo="Typo.h4">Food expiry</MudText>
+        <MudText Typo="Typo.body2" Class="mud-text-secondary">
+            Use the most urgent food first and catch missing dates before they become waste.
+        </MudText>
+    </div>
+    <MudButton Href="scan" Color="Color.Primary" Variant="Variant.Filled"
+               StartIcon="@Icons.Material.Filled.AddAPhoto">Scan food</MudButton>
+</div>
+
+@if (_overview is null)
+{
+    <MudProgressCircular Indeterminate="true" />
+}
+else
+{
+    <MudText Typo="Typo.caption" Class="mud-text-secondary d-block mb-2">
+        Today is @_today.ToString("dddd, d MMMM yyyy", _culture) in @_timeZoneId.
+    </MudText>
+
+    <MudGrid Spacing="2" Class="mb-3">
+        <MudItem xs="6" md="3">
+            <MudPaper Class="pa-3 expiry-stat" Outlined="true">
+                <MudText Typo="Typo.overline">Overdue</MudText>
+                <MudText Typo="Typo.h4" Color="@(_overview.Expired.Count > 0 ? Color.Error : Color.Default)">
+                    @_overview.Expired.Count
+                </MudText>
+            </MudPaper>
+        </MudItem>
+        <MudItem xs="6" md="3">
+            <MudPaper Class="pa-3 expiry-stat" Outlined="true">
+                <MudText Typo="Typo.overline">Due today</MudText>
+                <MudText Typo="Typo.h4" Color="@(_overview.DueToday.Count > 0 ? Color.Warning : Color.Default)">
+                    @_overview.DueToday.Count
+                </MudText>
+            </MudPaper>
+        </MudItem>
+        <MudItem xs="6" md="3">
+            <MudPaper Class="pa-3 expiry-stat" Outlined="true">
+                <MudText Typo="Typo.overline">Next 7 days</MudText>
+                <MudText Typo="Typo.h4" Color="@(_overview.DueWithinSevenDaysCount > 0 ? Color.Info : Color.Default)">
+                    @_overview.DueWithinSevenDaysCount
+                </MudText>
+            </MudPaper>
+        </MudItem>
+        <MudItem xs="6" md="3">
+            <MudPaper Class="pa-3 expiry-stat" Outlined="true">
+                <MudText Typo="Typo.overline">Food missing dates</MudText>
+                <MudText Typo="Typo.h4" Color="@(_overview.MissingFoodDate.Count > 0 ? Color.Warning : Color.Default)">
+                    @_overview.MissingFoodDate.Count
+                </MudText>
+            </MudPaper>
+        </MudItem>
+    </MudGrid>
+
+    <MudPaper Class="pa-3 mb-4" Outlined="true">
+        <div class="d-flex gap-2 align-center flex-wrap">
+            <MudTextField T="string" @bind-Value="_search" Immediate="true"
+                          Label="Filter expiry list" Placeholder="Name, kind, or place"
+                          Adornment="Adornment.Start" AdornmentIcon="@Icons.Material.Filled.Search"
+                          Variant="Variant.Outlined" Margin="Margin.Dense" Class="expiry-search" />
+            <MudSwitch T="bool" Value="_includeNonFood" ValueChanged="ToggleNonFoodAsync"
+                       Label="Include dated non-food items" Color="Color.Primary" />
+        </div>
+        <MudText Typo="Typo.caption" Class="mud-text-secondary">
+            Food with no date is listed as a reminder. Undated non-food inventory is intentionally omitted.
+        </MudText>
+    </MudPaper>
+
+    @if (FilteredCount == 0)
+    {
+        <MudAlert Severity="Severity.Success">
+            @(string.IsNullOrWhiteSpace(_search)
+                ? "Nothing needs attention in this expiry view."
+                : "No expiry items match that filter.")
+        </MudAlert>
+    }
+    else
+    {
+        <ExpiryGroup Title="Overdue" Description="Check safety before using these items."
+                     Items="Filter(_overview.Expired)" Today="_today" Culture="_culture" Color="Color.Error"
+                     Icon="@Icons.Material.Filled.Error" BusyItemId="_busyItemId" OnUsedOne="UsedOneAsync" />
+        <ExpiryGroup Title="Use today" Description="The most useful starting point for today's meals."
+                     Items="Filter(_overview.DueToday)" Today="_today" Culture="_culture" Color="Color.Warning"
+                     Icon="@Icons.Material.Filled.Today" BusyItemId="_busyItemId" OnUsedOne="UsedOneAsync" />
+        <ExpiryGroup Title="Next 3 days" Items="Filter(_overview.NextThreeDays)" Today="_today" Culture="_culture"
+                     Color="Color.Info" Icon="@Icons.Material.Filled.Schedule" BusyItemId="_busyItemId"
+                     OnUsedOne="UsedOneAsync" />
+        <ExpiryGroup Title="Days 4–7" Items="Filter(_overview.DaysFourToSeven)" Today="_today" Culture="_culture"
+                     Color="Color.Default" Icon="@Icons.Material.Filled.DateRange" BusyItemId="_busyItemId"
+                     OnUsedOne="UsedOneAsync" />
+        <ExpiryGroup Title="Later" Items="Filter(_overview.Later)" Today="_today" Culture="_culture"
+                     Color="Color.Default" Icon="@Icons.Material.Filled.EventAvailable" BusyItemId="_busyItemId"
+                     OnUsedOne="UsedOneAsync" />
+        <ExpiryGroup Title="Food with no expiry date"
+                     Description="Add a date when one is printed, or leave it blank for genuinely non-expiring food."
+                     Items="Filter(_overview.MissingFoodDate)" Today="_today" Culture="_culture" Color="Color.Warning"
+                     Icon="@Icons.Material.Filled.EventBusy" MissingDates="true" />
+    }
+}
+
+@code {
+    private ExpiryOverview? _overview;
+    private DateOnly _today;
+    private string _timeZoneId = string.Empty;
+    private System.Globalization.CultureInfo _culture =
+        System.Globalization.CultureInfo.GetCultureInfo("en-GB");
+    private string? _search;
+    private bool _includeNonFood;
+    private int? _busyItemId;
+
+    protected override async Task OnInitializedAsync()
+    {
+        var regional = await SettingsSvc.GetRegionalOptionsAsync();
+        _today = regional.Today();
+        _timeZoneId = regional.TimeZoneId;
+        _culture = System.Globalization.CultureInfo.GetCultureInfo(regional.CultureName);
+        await ReloadAsync();
+    }
+
+    private async Task ReloadAsync() =>
+        _overview = await Inventory.GetExpiryOverviewAsync(_today, _includeNonFood);
+
+    private async Task ToggleNonFoodAsync(bool value)
+    {
+        _includeNonFood = value;
+        _overview = null;
+        await ReloadAsync();
+    }
+
+    private IReadOnlyList<Item> Filter(IEnumerable<Item> items) =>
+        items.Where(MatchesSearch).ToList();
+
+    private bool MatchesSearch(Item item)
+    {
+        if (string.IsNullOrWhiteSpace(_search)) return true;
+        var placement = item.Container is not null
+            ? $"{item.Container.Location?.Name} {item.Container.Name}"
+            : item.Location?.Name;
+        return new[] { item.Name, item.Code, item.Kind?.Name, placement }
+            .Any(value => value?.Contains(_search, StringComparison.OrdinalIgnoreCase) == true);
+    }
+
+    private int FilteredCount => _overview is null ? 0
+        : Filter(_overview.Expired).Count + Filter(_overview.DueToday).Count
+          + Filter(_overview.NextThreeDays).Count + Filter(_overview.DaysFourToSeven).Count
+          + Filter(_overview.Later).Count + Filter(_overview.MissingFoodDate).Count;
+
+    private async Task UsedOneAsync(int itemId)
+    {
+        _busyItemId = itemId;
+        try
+        {
+            await Inventory.AdjustQuantityAsync(itemId, -1);
+            await ReloadAsync();
+            Snackbar.Add("Inventory quantity updated.", Severity.Success);
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Could not update quantity: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            _busyItemId = null;
+        }
+    }
+}

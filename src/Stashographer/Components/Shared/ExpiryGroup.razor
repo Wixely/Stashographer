@@ -1,0 +1,150 @@
+@if (Items.Count > 0)
+{
+    <section class="expiry-group mb-5">
+        <div class="d-flex align-center gap-2 mb-2">
+            <MudIcon Icon="@Icon" Color="@Color" />
+            <MudText Typo="Typo.h6">@Title</MudText>
+            <MudChip T="string" Size="Size.Small" Color="@Color">@Items.Count</MudChip>
+        </div>
+        @if (!string.IsNullOrWhiteSpace(Description))
+        {
+            <MudText Typo="Typo.body2" Class="mud-text-secondary d-block mb-2">@Description</MudText>
+        }
+
+        <MudGrid Spacing="2">
+            @foreach (var item in Items)
+            {
+                <MudItem xs="12" sm="6" lg="4">
+                    <MudPaper Class="expiry-item-card pa-3" Outlined="true">
+                        <div class="d-flex gap-3 align-start">
+                            @{ var image = ImageUrls.For(item.ImageId, item.ThumbnailUrl, 128); }
+                            <MudAvatar Size="Size.Large" Rounded="true" Class="expiry-thumb">
+                                @if (image is not null)
+                                {
+                                    <MudImage Src="@image" Alt="@item.Name" />
+                                }
+                                else
+                                {
+                                    <MudIcon Icon="@IconCatalog.Resolve(item.Kind?.Icon)" />
+                                }
+                            </MudAvatar>
+
+                            <div class="expiry-card-main">
+                                <div class="d-flex align-start justify-space-between gap-1">
+                                    <MudLink Href="@($"items/{item.Id}")" Typo="Typo.subtitle1"
+                                             Underline="Underline.Hover" Class="expiry-name">
+                                        @item.Name
+                                    </MudLink>
+                                    @if (Evidence(item) is { Source: "ai-vision" or "user-corrected" } evidence)
+                                    {
+                                        <MudTooltip Text="@EvidenceText(evidence)">
+                                            <MudIcon Icon="@Icons.Material.Filled.AutoAwesome" Size="Size.Small"
+                                                     Color="Color.Secondary" />
+                                        </MudTooltip>
+                                    }
+                                </div>
+
+                                <div class="d-flex gap-1 flex-wrap mt-1">
+                                    @if (item.ExpiryDate is { } expiry)
+                                    {
+                                        <MudChip T="string" Size="Size.Small" Color="@Color">
+                                            @RelativeDate(expiry)
+                                        </MudChip>
+                                        <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined">
+                                            @ExpiryType(item)
+                                        </MudChip>
+                                    }
+                                    else
+                                    {
+                                        <MudChip T="string" Size="Size.Small" Color="Color.Warning">Date needed</MudChip>
+                                    }
+                                </div>
+
+                                <MudText Typo="Typo.caption" Class="mud-text-secondary d-block mt-2">
+                                    @QuantityLabel(item) · @PlacementLabel(item)
+                                </MudText>
+                            </div>
+                        </div>
+
+                        <div class="expiry-card-actions d-flex justify-end gap-1 mt-3">
+                            @if (MissingDates)
+                            {
+                                <MudButton Href="@($"items/{item.Id}")" Size="Size.Small" Variant="Variant.Outlined"
+                                           StartIcon="@Icons.Material.Filled.Event">
+                                    Set expiry
+                                </MudButton>
+                            }
+                            else
+                            {
+                                <MudButton Size="Size.Small" Variant="Variant.Outlined" Color="Color.Primary"
+                                           StartIcon="@Icons.Material.Filled.Check" Disabled="@(BusyItemId == item.Id)"
+                                           OnClick="@(async () => await OnUsedOne.InvokeAsync(item.Id))">
+                                    @(BusyItemId == item.Id ? "Updating…" : "Used one")
+                                </MudButton>
+                                <MudButton Href="@($"items/{item.Id}")" Size="Size.Small" Variant="Variant.Text"
+                                           StartIcon="@Icons.Material.Filled.Edit">
+                                    Edit
+                                </MudButton>
+                            }
+                        </div>
+                    </MudPaper>
+                </MudItem>
+            }
+        </MudGrid>
+    </section>
+}
+
+@code {
+    [Parameter, EditorRequired] public string Title { get; set; } = string.Empty;
+    [Parameter] public string? Description { get; set; }
+    [Parameter, EditorRequired] public IReadOnlyList<Item> Items { get; set; } = [];
+    [Parameter, EditorRequired] public DateOnly Today { get; set; }
+    [Parameter, EditorRequired] public System.Globalization.CultureInfo Culture { get; set; } =
+        System.Globalization.CultureInfo.GetCultureInfo("en-GB");
+    [Parameter] public string Icon { get; set; } = Icons.Material.Filled.Schedule;
+    [Parameter] public Color Color { get; set; } = Color.Default;
+    [Parameter] public bool MissingDates { get; set; }
+    [Parameter] public int? BusyItemId { get; set; }
+    [Parameter] public EventCallback<int> OnUsedOne { get; set; }
+
+    private string RelativeDate(DateOnly date)
+    {
+        var days = date.DayNumber - Today.DayNumber;
+        return days switch
+        {
+            < -1 => $"{Math.Abs(days)} days overdue · {date.ToString("d MMM", Culture)}",
+            -1 => $"Yesterday · {date.ToString("d MMM", Culture)}",
+            0 => $"Today · {date.ToString("d MMM", Culture)}",
+            1 => $"Tomorrow · {date.ToString("d MMM", Culture)}",
+            _ => $"In {days} days · {date.ToString("d MMM", Culture)}"
+        };
+    }
+
+    private static string ExpiryType(Item item) =>
+        Enum.TryParse<ExpiryDateKind>(SpecialAttributeCatalog.GetExpiry(item)?.Qualifier, out var kind)
+            ? kind switch
+            {
+                ExpiryDateKind.UseBy => "Use by",
+                ExpiryDateKind.BestBefore => "Best before",
+                _ => "Expiry"
+            }
+            : "Expiry";
+
+    private static SpecialAttributeEvidence? Evidence(Item item) =>
+        SpecialAttributeCatalog.GetExpiry(item)?.Evidence;
+
+    private static string EvidenceText(SpecialAttributeEvidence evidence)
+    {
+        var source = evidence.Source == "user-corrected" ? "AI result corrected by user" : "Read from item photo by AI";
+        return evidence.Confidence is { } confidence
+            ? $"{source} ({confidence * 100m:0}% confidence)"
+            : source;
+    }
+
+    private static string QuantityLabel(Item item) =>
+        $"{item.Quantity:0.##} {item.Unit}".Trim();
+
+    private static string PlacementLabel(Item item) => item.Container is not null
+        ? $"{item.Container.Location?.Name} › {item.Container.Name}"
+        : item.Location?.Name ?? "Unplaced";
+}
