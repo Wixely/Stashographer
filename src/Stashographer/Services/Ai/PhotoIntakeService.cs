@@ -80,6 +80,36 @@ public class PhotoIntakeService(
         return await ProcessSingleStoredAsync(imageId, bytes, stored.ContentType, intakeContext, ct);
     }
 
+    /// <summary>Extracts a stored receipt against items already captured in its intake session.</summary>
+    public async Task<ReceiptExtraction?> ExtractReceiptStoredAsync(
+        int imageId,
+        IReadOnlyList<ReceiptMatchCandidate> candidates,
+        CancellationToken ct = default)
+    {
+        var stored = await images.GetAsync(imageId, ct)
+            ?? throw new InvalidOperationException("The queued receipt image no longer exists.");
+        var bytes = await images.ReadOriginalBytesAsync(imageId, ct)
+            ?? throw new InvalidOperationException("The queued receipt image file could not be read.");
+        var regional = await GetRegionalOptionsAsync(ct);
+        var extraction = await ai.ExtractReceiptAsync(
+            bytes,
+            stored.ContentType,
+            candidates,
+            new AiRegionalContext(
+                regional.DefaultCurrency,
+                regional.DateOrder.ToString(),
+                regional.CultureName,
+                regional.TimeZoneId,
+                regional.Today()),
+            ct);
+        if (extraction is not null
+            && string.IsNullOrWhiteSpace(extraction.Currency)
+            && (extraction.Total is not null
+                || extraction.Lines.Any(line => line.UnitPrice is not null || line.LineTotal is not null)))
+            extraction.Currency = regional.DefaultCurrency;
+        return extraction;
+    }
+
     private async Task<IntakeResult> ProcessSingleStoredAsync(
         int imageId, byte[] bytes, string mediaType, string? intakeContext, CancellationToken ct)
     {

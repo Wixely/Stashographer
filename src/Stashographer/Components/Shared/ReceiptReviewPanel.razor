@@ -1,0 +1,183 @@
+@inject IntakeQueueService IntakeQueue
+@inject ISnackbar Snackbar
+
+@if (QueueItem.Receipt is not { } receipt)
+{
+    <MudAlert Severity="Severity.Info">
+        Process the receipt before reviewing its lines.
+    </MudAlert>
+}
+else
+{
+    <MudAlert Severity="Severity.Info" Class="mb-3">
+        Review every match. Accepting attaches this receipt to the selected stock entries and
+        records purchase evidence; it never changes inventory quantities.
+    </MudAlert>
+
+    <MudGrid>
+        <MudItem xs="12" sm="6">
+            <MudTextField @bind-Value="receipt.Merchant" Label="Merchant" Variant="Variant.Outlined" />
+        </MudItem>
+        <MudItem xs="12" sm="6">
+            <MudTextField @bind-Value="_purchaseDate" Label="Purchase date"
+                          Placeholder="YYYY-MM-DD" Variant="Variant.Outlined" />
+        </MudItem>
+        <MudItem xs="6">
+            <MudTextField @bind-Value="receipt.Currency" Label="Currency" Placeholder="GBP"
+                          Variant="Variant.Outlined" />
+        </MudItem>
+        <MudItem xs="6">
+            <MudNumericField @bind-Value="receipt.Total" Label="Receipt total"
+                             Min="0" Variant="Variant.Outlined" />
+        </MudItem>
+    </MudGrid>
+
+    <MudText Typo="Typo.subtitle2" Class="mt-4 mb-2">Receipt lines</MudText>
+    @foreach (var line in receipt.Lines.OrderBy(line => line.LineIndex))
+    {
+        <MudPaper Outlined="true" Class="pa-3 mb-2">
+            <div class="d-flex gap-2 align-start">
+                <MudCheckBox T="bool" @bind-Value="line.Selected"
+                             Color="Color.Primary" Class="mt-1"
+                             AriaLabel="@($"Apply {line.Description}")" />
+                <div class="flex-grow-1">
+                    <MudTextField @bind-Value="line.Description" Label="Receipt description"
+                                  Variant="Variant.Outlined" Margin="Margin.Dense" />
+                    <MudGrid Class="mt-0">
+                        <MudItem xs="4">
+                            <MudNumericField @bind-Value="line.Quantity" Label="Qty" Min="0.01M"
+                                             Variant="Variant.Outlined" Margin="Margin.Dense" />
+                        </MudItem>
+                        <MudItem xs="4">
+                            <MudNumericField @bind-Value="line.UnitPrice" Label="Unit price" Min="0"
+                                             Variant="Variant.Outlined" Margin="Margin.Dense" />
+                        </MudItem>
+                        <MudItem xs="4">
+                            <MudNumericField @bind-Value="line.LineTotal" Label="Line total" Min="0"
+                                             Variant="Variant.Outlined" Margin="Margin.Dense" />
+                        </MudItem>
+                    </MudGrid>
+                    <MudSelect T="int?" @bind-Value="line.MatchedQueueItemId"
+                               Label="Match to captured item" Variant="Variant.Outlined"
+                               Margin="Margin.Dense" Clearable="true" Class="mt-2">
+                        @foreach (var candidate in _candidates)
+                        {
+                            <MudSelectItem T="int?" Value="@candidate.QueueItemId">
+                                @candidate.Name
+                                @(candidate.InventoryItemId is null ? " · accept this item first" : string.Empty)
+                            </MudSelectItem>
+                        }
+                    </MudSelect>
+                    <MudText Typo="Typo.caption" Class="mud-text-secondary">
+                        Agent match: @ConfidenceLabel(line.Confidence)
+                    </MudText>
+                </div>
+            </div>
+        </MudPaper>
+    }
+
+    @if (_candidates.Count == 0)
+    {
+        <MudAlert Severity="Severity.Warning" Dense="true" Class="mt-2">
+            There are no earlier items in this intake session. Add and accept the items first,
+            or reject this receipt and capture it in the correct session.
+        </MudAlert>
+    }
+
+    <div class="d-flex gap-2 flex-wrap mt-4">
+        <MudButton Color="Color.Success" Variant="Variant.Filled"
+                   StartIcon="@Icons.Material.Filled.ReceiptLong"
+                   Disabled="@(_working || !CanAccept(receipt))"
+                   OnClick="AcceptAsync">Accept receipt links</MudButton>
+        <MudButton Color="Color.Error" Variant="Variant.Outlined"
+                   StartIcon="@Icons.Material.Filled.Close"
+                   Disabled="_working" OnClick="RejectAsync">Reject</MudButton>
+    </div>
+}
+
+@code {
+    [Parameter, EditorRequired] public IntakeQueueItem QueueItem { get; set; } = null!;
+    [Parameter] public EventCallback<ReceiptApplied> OnAccepted { get; set; }
+    [Parameter] public EventCallback OnRejected { get; set; }
+
+    private List<ReceiptMatchCandidate> _candidates = [];
+    private int _loadedId;
+    private string? _purchaseDate;
+    private bool _working;
+
+    protected override async Task OnParametersSetAsync()
+    {
+        if (_loadedId == QueueItem.Id) return;
+        _loadedId = QueueItem.Id;
+        _purchaseDate = QueueItem.Receipt?.PurchaseDate?.ToString("yyyy-MM-dd");
+        _candidates = await IntakeQueue.GetReceiptCandidatesAsync(QueueItem.Id);
+    }
+
+    private bool CanAccept(ReceiptExtraction receipt)
+    {
+        var selected = receipt.Lines.Where(line => line.Selected).ToList();
+        return selected.Count > 0
+               && selected.All(line => line.MatchedQueueItemId is { } queueId
+                                       && _candidates.Any(candidate =>
+                                           candidate.QueueItemId == queueId
+                                           && candidate.InventoryItemId is not null));
+    }
+
+    private async Task AcceptAsync()
+    {
+        if (QueueItem.Receipt is not { } receipt) return;
+        _working = true;
+        try
+        {
+            if (string.IsNullOrWhiteSpace(_purchaseDate))
+            {
+                receipt.PurchaseDate = null;
+            }
+            else if (DateOnly.TryParseExact(
+                         _purchaseDate.Trim(),
+                         "yyyy-MM-dd",
+                         System.Globalization.CultureInfo.InvariantCulture,
+                         System.Globalization.DateTimeStyles.None,
+                         out var parsed))
+            {
+                receipt.PurchaseDate = parsed;
+            }
+            else
+            {
+                throw new InvalidOperationException("Enter the purchase date as YYYY-MM-DD.");
+            }
+            var applied = await IntakeQueue.AcceptReceiptAsync(QueueItem.Id, receipt);
+            await OnAccepted.InvokeAsync(applied);
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add(ex.Message, Severity.Error);
+        }
+        finally
+        {
+            _working = false;
+        }
+    }
+
+    private async Task RejectAsync()
+    {
+        _working = true;
+        try
+        {
+            await IntakeQueue.RejectAsync(QueueItem.Id);
+            await OnRejected.InvokeAsync();
+        }
+        finally
+        {
+            _working = false;
+        }
+    }
+
+    private static string ConfidenceLabel(MatchConfidence confidence) => confidence switch
+    {
+        MatchConfidence.High => "high",
+        MatchConfidence.Medium => "medium — verify",
+        MatchConfidence.Low => "low — verify",
+        _ => "none"
+    };
+}

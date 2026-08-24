@@ -81,6 +81,14 @@ public sealed class AutomationOperations(
         ToAutomationQueueItem(await intake.EnqueuePhotoAsync(
             content, mediaType, originalName, multipleItems, ct));
 
+    public async Task<AutomationQueueItem> QueueReceiptAsync(
+        Stream content,
+        string mediaType,
+        string? originalName,
+        CancellationToken ct = default) =>
+        ToAutomationQueueItem(await intake.EnqueueReceiptAsync(
+            content, mediaType, originalName, ct));
+
     public async Task<AutomationQueueItem> QueueItemDraftAsync(
         ItemDraftRequest request,
         CancellationToken ct = default)
@@ -180,6 +188,7 @@ public sealed class AutomationOperations(
         item.IsMultiPhoto,
         item.Status,
         ToAutomationItem(item.Draft),
+        item.Receipt,
         item.ProposalAction?.ToString(),
         item.MatchedItemId,
         item.MatchedItemName,

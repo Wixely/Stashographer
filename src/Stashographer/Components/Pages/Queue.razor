@@ -115,12 +115,13 @@ else
                         {
                             <MudButton FullWidth="true" Class="mt-2" Variant="Variant.Outlined"
                                        StartIcon="@Icons.Material.Filled.AutoAwesome"
-                                       Disabled="@(_working || (queued.SourceType == IntakeSourceType.Photo && !Ai.IsEnabled))"
+                                       Disabled="@(_working || (queued.SourceType is IntakeSourceType.Photo or IntakeSourceType.Receipt
+                                                                && !Ai.IsEnabled))"
                                        OnClick="ProcessCurrentAsync">
                                 @(_working ? "Processing…" : queued.Status == IntakeQueueStatus.Failed ? "Retry processing" : "Process now")
                             </MudButton>
                         }
-                        @if (queued.SourceType == IntakeSourceType.Photo && !Ai.IsEnabled)
+                        @if (queued.SourceType is IntakeSourceType.Photo or IntakeSourceType.Receipt && !Ai.IsEnabled)
                         {
                             <MudText Typo="Typo.caption" Color="Color.Warning" Class="d-block mt-1">
                                 AI vision is not active; fill the item in manually or configure it in Settings.
@@ -129,6 +130,14 @@ else
                     </MudItem>
 
                     <MudItem xs="12" md="8">
+                        @if (queued.SourceType == IntakeSourceType.Receipt)
+                        {
+                            <ReceiptReviewPanel QueueItem="queued"
+                                                OnAccepted="ReceiptAcceptedAsync"
+                                                OnRejected="ReceiptRejectedAsync" />
+                        }
+                        else
+                        {
                         @if (queued.ProposalAction == IntakeAction.AttachImage)
                         {
                             <MudAlert Severity="Severity.Success" Class="mb-3">
@@ -298,6 +307,7 @@ else
                                 }
                             </div>
                         }
+                        }
                     </MudItem>
                 </MudGrid>
             }
@@ -310,6 +320,7 @@ else
     {
         IntakeSourceType.Barcode => item.SourceCode ?? "Barcode",
         IntakeSourceType.Photo => item.IsMultiPhoto ? "Multi-item photo" : "Photo",
+        IntakeSourceType.Receipt => "Receipt enrichment",
         _ => "Automation draft"
     };
 
@@ -451,6 +462,20 @@ else
             Snackbar.Add(ex.Message, Severity.Error);
         }
         finally { _working = false; }
+    }
+
+    private async Task ReceiptAcceptedAsync(ReceiptApplied applied)
+    {
+        Snackbar.Add(
+            $"Receipt linked to {applied.MatchedItems} item{(applied.MatchedItems == 1 ? string.Empty : "s")}. Quantities were not changed.",
+            Severity.Success);
+        await LoadAsync(false);
+    }
+
+    private async Task ReceiptRejectedAsync()
+    {
+        Snackbar.Add("Receipt rejected.", Severity.Info);
+        await LoadAsync(false);
     }
 
     private void ShowAccepted(IntakeApplied applied) => Snackbar.Add(applied.Action switch

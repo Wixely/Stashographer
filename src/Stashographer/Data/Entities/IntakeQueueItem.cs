@@ -6,7 +6,8 @@ public enum IntakeSourceType
 {
     Barcode,
     Photo,
-    Manual
+    Manual,
+    Receipt
 }
 
 public enum IntakeQueueStatus
@@ -30,6 +31,7 @@ public class IntakeQueueItem
     public bool IsMultiPhoto { get; set; }
     public IntakeQueueStatus Status { get; set; }
     public Item Draft { get; set; } = new() { Name = string.Empty, ItemKindId = 7 };
+    public ReceiptExtraction? Receipt { get; set; }
     public IntakeAction? ProposalAction { get; set; }
     public int? MatchedItemId { get; set; }
     public string? MatchedItemName { get; set; }

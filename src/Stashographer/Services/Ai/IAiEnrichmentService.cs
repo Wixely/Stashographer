@@ -48,6 +48,14 @@ public interface IAiEnrichmentService
         IReadOnlyList<CaptureMatchCandidate> recentCaptures,
         CancellationToken ct = default);
 
+    /// <summary>Extracts a receipt and proposes matches only among the supplied session items.</summary>
+    Task<ReceiptExtraction?> ExtractReceiptAsync(
+        byte[] image,
+        string mediaType,
+        IReadOnlyList<ReceiptMatchCandidate> candidates,
+        AiRegionalContext regionalContext,
+        CancellationToken ct = default);
+
     /// <summary>"Season" an existing item with a richer description and suggested attributes.</summary>
     Task<AiSuggestion?> EnrichAsync(
         string name, string? kind, IReadOnlyDictionary<string, string> known, CancellationToken ct = default);

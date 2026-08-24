@@ -188,6 +188,64 @@ public class OpenAiEnrichmentService(
         return json is null ? null : ParseCaptureRelationship(json);
     }
 
+    // --- Receipt extraction -------------------------------------------------------
+
+    public async Task<ReceiptExtraction?> ExtractReceiptAsync(
+        byte[] image,
+        string mediaType,
+        IReadOnlyList<ReceiptMatchCandidate> candidates,
+        AiRegionalContext regionalContext,
+        CancellationToken ct = default)
+    {
+        const string system =
+            "You extract purchase evidence from a receipt for a household inventory. " +
+            "Reply ONLY as JSON: {\"merchant\": string or null, \"purchaseDate\": \"YYYY-MM-DD\" or null, " +
+            "\"currency\": three-letter ISO code or null, \"total\": number or null, " +
+            "\"lines\": [{\"lineIndex\": integer, \"description\": string, \"quantity\": number, " +
+            "\"unitPrice\": number or null, \"lineTotal\": number or null, " +
+            "\"matchedQueueItemId\": integer or null, \"confidence\": \"high\"|\"medium\"|\"low\"}]}. " +
+            "Extract only visible receipt data; never estimate prices, dates, merchant, or currency. " +
+            "Keep one stable zero-based lineIndex per purchasable receipt line and exclude tax, payment, " +
+            "subtotal, total, discount-summary, and loyalty lines. Match only to the supplied candidates. " +
+            "A product name resemblance is insufficient for high confidence when several candidates are plausible. " +
+            "Use null and low confidence when uncertain.";
+        var compact = candidates.Select(candidate => new
+        {
+            queueItemId = candidate.QueueItemId,
+            inventoryItemId = candidate.InventoryItemId,
+            candidate.Name,
+            candidate.Code,
+            candidate.Attributes
+        });
+        var messages = new List<ChatMessage>
+        {
+            new(ChatRole.System, system + RegionalRule(regionalContext)),
+            new(ChatRole.User, new List<AIContent>
+            {
+                new TextContent(
+                    "Extract this receipt and propose conservative matches to these items captured in the " +
+                    "same intake session: " + JsonSerializer.Serialize(compact)),
+                new DataContent(image, mediaType)
+            })
+        };
+        var json = await CompleteJsonAsync(useVision: true, messages, ct);
+        var extraction = json is null ? null : ParseReceipt(json);
+        if (extraction is null) return null;
+
+        var allowed = candidates.Select(candidate => candidate.QueueItemId).ToHashSet();
+        foreach (var line in extraction.Lines)
+        {
+            if (line.MatchedQueueItemId is not { } queueId || !allowed.Contains(queueId))
+            {
+                line.MatchedQueueItemId = null;
+                line.Confidence = MatchConfidence.None;
+            }
+            line.Selected = line.MatchedQueueItemId is not null
+                            && line.Confidence == MatchConfidence.High;
+        }
+        return extraction;
+    }
+
     // --- Enrich (text) ------------------------------------------------------------
 
     public async Task<AiSuggestion?> EnrichAsync(
@@ -494,6 +552,73 @@ public class OpenAiEnrichmentService(
         }
     }
 
+    internal ReceiptExtraction? ParseReceipt(string json)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(json);
+            var root = doc.RootElement;
+            DateOnly? purchaseDate = null;
+            if (DateOnly.TryParseExact(GetString(root, "purchaseDate"), "yyyy-MM-dd", out var parsedDate))
+                purchaseDate = parsedDate;
+            var currency = GetString(root, "currency")?.Trim().ToUpperInvariant();
+            if (currency is not { Length: 3 } || currency.Any(c => c is < 'A' or > 'Z'))
+                currency = null;
+            var extraction = new ReceiptExtraction
+            {
+                Merchant = GetString(root, "merchant")?.Trim(),
+                PurchaseDate = purchaseDate,
+                Currency = currency,
+                Total = GetNonNegativeDecimal(root, "total")
+            };
+            if (!root.TryGetProperty("lines", out var lines) || lines.ValueKind != JsonValueKind.Array)
+                return extraction;
+
+            var fallbackIndex = 0;
+            var usedIndexes = new HashSet<int>();
+            foreach (var element in lines.EnumerateArray())
+            {
+                var description = GetString(element, "description")?.Trim();
+                if (string.IsNullOrWhiteSpace(description))
+                {
+                    fallbackIndex++;
+                    continue;
+                }
+                var lineIndex = element.TryGetProperty("lineIndex", out var indexElement)
+                                && indexElement.ValueKind == JsonValueKind.Number
+                                && indexElement.TryGetInt32(out var parsedIndex)
+                                && parsedIndex >= 0
+                    ? parsedIndex
+                    : fallbackIndex;
+                while (!usedIndexes.Add(lineIndex)) lineIndex++;
+                int? matchedQueueItemId = element.TryGetProperty("matchedQueueItemId", out var matchElement)
+                                               && matchElement.ValueKind == JsonValueKind.Number
+                                               && matchElement.TryGetInt32(out var matchId)
+                                               && matchId > 0
+                    ? matchId
+                    : null;
+                var confidence = ParseConfidence(GetString(element, "confidence"));
+                extraction.Lines.Add(new ReceiptLineSuggestion
+                {
+                    LineIndex = lineIndex,
+                    Description = description,
+                    Quantity = GetPositiveDecimal(element, "quantity") ?? 1,
+                    UnitPrice = GetNonNegativeDecimal(element, "unitPrice"),
+                    LineTotal = GetNonNegativeDecimal(element, "lineTotal"),
+                    MatchedQueueItemId = matchedQueueItemId,
+                    Confidence = matchedQueueItemId is null ? MatchConfidence.None : confidence
+                });
+                fallbackIndex++;
+            }
+            return extraction;
+        }
+        catch (JsonException ex)
+        {
+            logger.LogWarning(ex, "Could not parse receipt JSON");
+            return null;
+        }
+    }
+
     internal AiBomSuggestion? ParseBomSuggestion(string json, BomKind kind)
     {
         try
@@ -563,6 +688,22 @@ public class OpenAiEnrichmentService(
         && parsed > 0
             ? parsed
             : null;
+
+    private static decimal? GetNonNegativeDecimal(JsonElement element, string property) =>
+        element.TryGetProperty(property, out var value)
+        && value.ValueKind == JsonValueKind.Number
+        && value.TryGetDecimal(out var parsed)
+        && parsed >= 0
+            ? parsed
+            : null;
+
+    private static MatchConfidence ParseConfidence(string? value) => value?.Trim().ToLowerInvariant() switch
+    {
+        "high" => MatchConfidence.High,
+        "medium" => MatchConfidence.Medium,
+        "low" => MatchConfidence.Low,
+        _ => MatchConfidence.None
+    };
 
     private static (decimal? Amount, string? Currency) GetPrice(JsonElement root)
     {

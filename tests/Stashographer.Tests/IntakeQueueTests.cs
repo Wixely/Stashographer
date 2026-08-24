@@ -438,6 +438,114 @@ public class IntakeQueueTests
         Assert.Equal(updatedExisting.CollectionKey, lot.CollectionKey);
     }
 
+    [Fact]
+    public async Task Receipt_links_shared_purchase_evidence_without_changing_item_counts()
+    {
+        await using var harness = await Harness.CreateAsync();
+        var firstQueue = await harness.Queue.EnqueueDraftAsync(new Item
+        {
+            Name = "Tomato soup", ItemKindId = 1, Quantity = 3
+        });
+        var firstApplied = await harness.Queue.AcceptAsync(firstQueue.Id, firstQueue.Draft, null);
+        var secondQueue = await harness.Queue.EnqueueDraftAsync(new Item
+        {
+            Name = "Baked beans", ItemKindId = 1, Quantity = 5
+        });
+        var secondApplied = await harness.Queue.AcceptAsync(secondQueue.Id, secondQueue.Draft, null);
+        harness.Ai.Receipt = new ReceiptExtraction
+        {
+            Merchant = "Example Market",
+            PurchaseDate = new DateOnly(2026, 8, 23),
+            Total = 3.50m,
+            Lines =
+            [
+                new ReceiptLineSuggestion
+                {
+                    LineIndex = 0,
+                    Description = "TOM SOUP",
+                    Quantity = 2,
+                    LineTotal = 2,
+                    MatchedQueueItemId = firstQueue.Id,
+                    Confidence = MatchConfidence.High,
+                    Selected = true
+                },
+                new ReceiptLineSuggestion
+                {
+                    LineIndex = 1,
+                    Description = "BEANS",
+                    Quantity = 1,
+                    UnitPrice = 1.50m,
+                    LineTotal = 1.50m,
+                    MatchedQueueItemId = secondQueue.Id,
+                    Confidence = MatchConfidence.None,
+                    Selected = true
+                }
+            ]
+        };
+
+        await using var photo = await PhotoAsync(90);
+        var receiptQueue = await harness.Queue.EnqueueReceiptAsync(
+            photo, "image/png", "receipt.png");
+        await harness.Queue.ProcessAsync(receiptQueue.Id, new IntakeOptions(), aiEnabled: true);
+
+        var review = (await harness.Queue.GetAsync(receiptQueue.Id))!;
+        Assert.Equal(IntakeSourceType.Receipt, review.SourceType);
+        Assert.Equal(IntakeQueueStatus.ReadyForReview, review.Status);
+        Assert.Equal("GBP", review.Receipt!.Currency);
+        Assert.Equal(2, review.Receipt.Lines.Count);
+
+        var applied = await harness.Queue.AcceptReceiptAsync(review.Id, review.Receipt);
+
+        Assert.Equal(new ReceiptApplied(2, 2), applied);
+        Assert.Equal(3, (await harness.Inventory.GetAsync(firstApplied.ItemId))!.Quantity);
+        Assert.Equal(5, (await harness.Inventory.GetAsync(secondApplied.ItemId))!.Quantity);
+        var firstPurchase = Assert.Single(await harness.Queue.GetPurchasesAsync(firstApplied.ItemId));
+        var secondPurchase = Assert.Single(await harness.Queue.GetPurchasesAsync(secondApplied.ItemId));
+        Assert.Equal(receiptQueue.ImageId, firstPurchase.ImageId);
+        Assert.Equal(receiptQueue.ImageId, secondPurchase.ImageId);
+        Assert.Equal("GBP", firstPurchase.Currency);
+        Assert.Equal(new DateOnly(2026, 8, 23), firstPurchase.PurchasedOn);
+        Assert.Equal(ItemImageRole.Receipt,
+            Assert.Single(await harness.Inventory.GetImagesAsync(firstApplied.ItemId)).Role);
+        Assert.Equal(ItemImageRole.Receipt,
+            Assert.Single(await harness.Inventory.GetImagesAsync(secondApplied.ItemId)).Role);
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => harness.Queue.AcceptReceiptAsync(review.Id, review.Receipt));
+    }
+
+    [Fact]
+    public async Task Receipt_match_requires_the_earlier_capture_to_be_accepted_first()
+    {
+        await using var harness = await Harness.CreateAsync();
+        var itemQueue = await harness.Queue.EnqueueDraftAsync(new Item
+        {
+            Name = "Unreviewed milk", ItemKindId = 1
+        });
+        await using var photo = await PhotoAsync(91);
+        var receiptQueue = await harness.Queue.EnqueueReceiptAsync(photo, "image/png", "receipt.png");
+        var receipt = new ReceiptExtraction
+        {
+            Lines =
+            [
+                new ReceiptLineSuggestion
+                {
+                    LineIndex = 0,
+                    Description = "MILK",
+                    MatchedQueueItemId = itemQueue.Id,
+                    Selected = true
+                }
+            ]
+        };
+        harness.Ai.Receipt = receipt;
+        await harness.Queue.ProcessAsync(
+            receiptQueue.Id, new IntakeOptions(), aiEnabled: true);
+
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => harness.Queue.AcceptReceiptAsync(receiptQueue.Id, receipt));
+
+        Assert.Contains("Choose an inventory item", error.Message);
+    }
+
     private sealed class Harness : IAsyncDisposable
     {
         public required TestDb Db { get; init; }
@@ -491,8 +599,11 @@ public class IntakeQueueTests
         public VisionIdentification? Identification { get; set; }
         public List<DetectedBox> Boxes { get; set; } = new();
         public CaptureRelationshipPick? RelationshipPick { get; set; }
+        public ReceiptExtraction? Receipt { get; set; }
         public IReadOnlyList<CaptureMatchCandidate> LastCaptureCandidates { get; private set; }
             = Array.Empty<CaptureMatchCandidate>();
+        public IReadOnlyList<ReceiptMatchCandidate> LastReceiptCandidates { get; private set; }
+            = Array.Empty<ReceiptMatchCandidate>();
         public string? LastIntakeContext { get; private set; }
 
         public Task<VisionIdentification?> IdentifyItemAsync(
@@ -519,6 +630,14 @@ public class IntakeQueueTests
         {
             LastCaptureCandidates = recentCaptures;
             return Task.FromResult(RelationshipPick);
+        }
+
+        public Task<ReceiptExtraction?> ExtractReceiptAsync(
+            byte[] image, string mediaType, IReadOnlyList<ReceiptMatchCandidate> candidates,
+            AiRegionalContext regionalContext, CancellationToken ct = default)
+        {
+            LastReceiptCandidates = candidates;
+            return Task.FromResult(Receipt);
         }
 
         public Task<AiSuggestion?> EnrichAsync(

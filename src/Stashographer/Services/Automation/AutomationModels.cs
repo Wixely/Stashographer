@@ -1,4 +1,5 @@
 using Stashographer.Data.Entities;
+using Stashographer.Services.Ai;
 
 namespace Stashographer.Services.Automation;
 
@@ -47,6 +48,7 @@ public sealed record AutomationQueueItem(
     bool IsMultiPhoto,
     IntakeQueueStatus Status,
     AutomationItem Draft,
+    ReceiptExtraction? Receipt,
     string? ProposalAction,
     int? MatchedItemId,
     string? MatchedItemName,

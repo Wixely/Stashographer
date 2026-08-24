@@ -54,6 +54,7 @@
 
             <InputFile id="scan-photo-camera" OnChange="OnIntakePhotoChange" hidden accept="image/*" capture="environment" />
             <InputFile id="scan-photo-upload" OnChange="OnIntakePhotoChange" hidden accept="image/*" />
+            <InputFile id="scan-receipt-upload" OnChange="OnReceiptPhotoChange" hidden accept="image/*" capture="environment" />
             <InputFile @key="_clipboardInputKey" id="scan-photo-clipboard"
                        OnChange="OnClipboardPhotoChange" hidden accept="image/*" />
             <div class="d-flex gap-2 flex-wrap">
@@ -61,6 +62,8 @@
                            StartIcon="@Icons.Material.Filled.PhotoCamera" Disabled="_busy">Take photo</MudButton>
                 <MudButton HtmlTag="label" for="scan-photo-upload" Variant="Variant.Outlined" Color="Color.Primary"
                            StartIcon="@Icons.Material.Filled.Upload" Disabled="_busy">Upload image</MudButton>
+                <MudButton HtmlTag="label" for="scan-receipt-upload" Variant="Variant.Outlined" Color="Color.Secondary"
+                           StartIcon="@Icons.Material.Filled.ReceiptLong" Disabled="_busy">Add receipt</MudButton>
             </div>
             <MudText Typo="Typo.caption" Class="mud-text-secondary d-block mt-2">
                 You can also paste an image from the clipboard anywhere on this page (Ctrl+V).
@@ -298,6 +301,34 @@
     // --- Photo intake path -----------------------------------------------------------
 
     private async Task OnIntakePhotoChange(InputFileChangeEventArgs e) => await OnIntakePhoto(e.File);
+
+    private async Task OnReceiptPhotoChange(InputFileChangeEventArgs e)
+    {
+        var file = e.File;
+        ClearIntake();
+        _result = null;
+        _busy = true;
+        _busyText = "Saving receipt…";
+        StateHasChanged();
+        try
+        {
+            await using var upload = file.OpenReadStream(20 * 1024 * 1024);
+            await Queue.EnqueueReceiptAsync(upload, file.ContentType, file.Name);
+            await RefreshQueueCountAsync();
+            if (_intakeOptions.QueueEnabled)
+                Snackbar.Add("Receipt queued for matching to this session's items.", Severity.Success);
+            else
+                Nav.NavigateTo("queue");
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Couldn't queue receipt: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
 
     private async Task OnClipboardPhotoChange(InputFileChangeEventArgs e)
     {

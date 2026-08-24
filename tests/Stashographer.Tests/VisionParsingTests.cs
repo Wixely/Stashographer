@@ -137,6 +137,38 @@ public class VisionParsingTests
     }
 
     [Fact]
+    public void Receipt_parsing_keeps_visible_values_and_conservative_matches()
+    {
+        var receipt = Service().ParseReceipt("""
+            {
+              "merchant":"Example Market",
+              "purchaseDate":"2026-08-23",
+              "currency":"gbp",
+              "total":4.25,
+              "lines":[
+                {"lineIndex":0,"description":"TOMATOES","quantity":2,
+                 "unitPrice":1.25,"lineTotal":2.50,"matchedQueueItemId":12,"confidence":"high"},
+                {"lineIndex":0,"description":"BREAD","quantity":0,
+                 "lineTotal":1.75,"matchedQueueItemId":null,"confidence":"high"},
+                {"description":" ","lineTotal":10}
+              ]
+            }
+            """);
+
+        Assert.NotNull(receipt);
+        Assert.Equal("Example Market", receipt!.Merchant);
+        Assert.Equal(new DateOnly(2026, 8, 23), receipt.PurchaseDate);
+        Assert.Equal("GBP", receipt.Currency);
+        Assert.Equal(4.25m, receipt.Total);
+        Assert.Equal(2, receipt.Lines.Count);
+        Assert.Equal(0, receipt.Lines[0].LineIndex);
+        Assert.Equal(1, receipt.Lines[1].LineIndex);
+        Assert.Equal(2, receipt.Lines[0].Quantity);
+        Assert.Equal(1, receipt.Lines[1].Quantity);
+        Assert.Equal(MatchConfidence.None, receipt.Lines[1].Confidence);
+    }
+
+    [Fact]
     public void Bom_suggestion_parses_reviewable_requirements_and_safe_defaults()
     {
         var suggestion = Service().ParseBomSuggestion("""

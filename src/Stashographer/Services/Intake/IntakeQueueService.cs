@@ -14,6 +14,8 @@ public record RememberedDestinations(int? LocationId, int? ContainerId);
 
 public record IntakeQueueCounts(int Waiting, int Processing, int Ready, int Failed, int Completed);
 
+public record ReceiptApplied(int MatchedLines, int MatchedItems);
+
 /// <summary>
 /// Durable capture queue. Enqueue operations only persist input; lookup/model work happens
 /// later, preserving the fast capture loop used by phones and keyboard-wedge scanners.
@@ -61,6 +63,28 @@ public class IntakeQueueService(
             IsMultiPhoto = multipleItems,
             Status = IntakeQueueStatus.Pending,
             Draft = new Item { Name = string.Empty, ItemKindId = 7, ImageId = stored.Id },
+            CreatedAt = DateTimeOffset.UtcNow
+        };
+        item.Id = await InsertAsync(item, ct);
+        signal.Pulse();
+        return item;
+    }
+
+    /// <summary>
+    /// Queues a receipt as enrichment evidence for earlier items in the active session.
+    /// Receipt processing and acceptance never change inventory quantities.
+    /// </summary>
+    public async Task<IntakeQueueItem> EnqueueReceiptAsync(
+        Stream content, string mediaType, string? originalName, CancellationToken ct = default)
+    {
+        var stored = await images.SaveAsync(content, mediaType, originalName, null, ct);
+        var item = new IntakeQueueItem
+        {
+            SessionId = await GetOrCreateActiveSessionIdAsync(ct),
+            SourceType = IntakeSourceType.Receipt,
+            ImageId = stored.Id,
+            Status = IntakeQueueStatus.Pending,
+            Draft = new Item { Name = string.Empty, ItemKindId = 7 },
             CreatedAt = DateTimeOffset.UtcNow
         };
         item.Id = await InsertAsync(item, ct);
@@ -197,6 +221,13 @@ public class IntakeQueueService(
         try
         {
             var queued = await GetAsync(id) ?? throw new InvalidOperationException("Queue item disappeared.");
+            if (queued.SourceType == IntakeSourceType.Receipt)
+            {
+                if (!aiEnabled)
+                    throw new InvalidOperationException("Configure an AI vision model to extract this receipt.");
+                await ProcessReceiptAsync(queued, options.ContextItemCount, ct);
+                return true;
+            }
             List<ProcessedCapture> processed;
             if (queued.SourceType == IntakeSourceType.Barcode)
             {
@@ -259,13 +290,14 @@ public class IntakeQueueService(
             SELECT Id FROM IntakeQueueItems
             WHERE Status = @pending
               AND ((SourceType = @barcode AND @barcodes = 1)
-                OR (SourceType = @photo AND @photos = 1 AND @ai = 1))
+                OR (SourceType IN (@photo, @receipt) AND @photos = 1 AND @ai = 1))
             ORDER BY Id LIMIT 1;
             """, new
         {
             pending = (int)IntakeQueueStatus.Pending,
             barcode = (int)IntakeSourceType.Barcode,
             photo = (int)IntakeSourceType.Photo,
+            receipt = (int)IntakeSourceType.Receipt,
             barcodes = options.AutoProcessBarcodes ? 1 : 0,
             photos = options.AutoProcessPhotos ? 1 : 0,
             ai = aiEnabled ? 1 : 0
@@ -292,7 +324,7 @@ public class IntakeQueueService(
     {
         using var conn = await db.OpenAsync(ct);
         await conn.ExecuteAsync("""
-            UPDATE IntakeQueueItems SET Status = @pending, Error = NULL,
+            UPDATE IntakeQueueItems SET Status = @pending, Error = NULL, ReceiptJson = NULL,
                 ProcessingStartedAt = NULL, ProcessedAt = NULL
             WHERE Id = @id AND Status = @failed;
             """, new { id, pending = (int)IntakeQueueStatus.Pending, failed = (int)IntakeQueueStatus.Failed });
@@ -311,6 +343,162 @@ public class IntakeQueueService(
                 accepted = (int)IntakeQueueStatus.Accepted,
                 rejected = (int)IntakeQueueStatus.Rejected
             });
+    }
+
+    /// <summary>Lists same-session captures that a receipt line may be linked to.</summary>
+    public async Task<List<ReceiptMatchCandidate>> GetReceiptCandidatesAsync(
+        int receiptQueueItemId, int limit = 100, CancellationToken ct = default)
+    {
+        limit = Math.Clamp(limit, 0, 100);
+        if (limit == 0) return [];
+        using var conn = await db.OpenAsync(ct);
+        var rows = await conn.QueryAsync<ReceiptCandidateRow>("""
+            SELECT candidate.Id AS QueueItemId, candidate.AppliedItemId AS InventoryItemId,
+                   candidate.DraftJson
+            FROM IntakeQueueItems receipt
+            JOIN IntakeQueueItems candidate
+              ON candidate.SessionId = receipt.SessionId AND candidate.Id < receipt.Id
+            WHERE receipt.Id = @receiptQueueItemId
+              AND candidate.SourceType != @receipt
+              AND candidate.DraftJson IS NOT NULL
+              AND candidate.Status IN (@ready, @accepted)
+            ORDER BY candidate.Id DESC LIMIT @limit;
+            """, new
+        {
+            receiptQueueItemId,
+            receipt = (int)IntakeSourceType.Receipt,
+            ready = (int)IntakeQueueStatus.ReadyForReview,
+            accepted = (int)IntakeQueueStatus.Accepted,
+            limit
+        });
+        return rows.Select(row =>
+        {
+            var draft = DeserializeDraft(row.DraftJson);
+            return new ReceiptMatchCandidate(
+                row.QueueItemId,
+                row.InventoryItemId,
+                draft.Name,
+                draft.Code,
+                draft.Attributes);
+        }).Where(candidate => !string.IsNullOrWhiteSpace(candidate.Name)).ToList();
+    }
+
+    /// <summary>
+    /// Accepts reviewed receipt matches as provenance and shared images. This deliberately
+    /// contains no inventory quantity update.
+    /// </summary>
+    public async Task<ReceiptApplied> AcceptReceiptAsync(
+        int id, ReceiptExtraction receipt, CancellationToken ct = default)
+    {
+        var queued = await GetAsync(id, ct) ?? throw new InvalidOperationException("Queue item was not found.");
+        if (queued.SourceType != IntakeSourceType.Receipt)
+            throw new InvalidOperationException("This queue item is not a receipt.");
+        if (queued.Status == IntakeQueueStatus.Accepted)
+            throw new InvalidOperationException("This receipt was already accepted.");
+        if (queued.Status == IntakeQueueStatus.Rejected)
+            throw new InvalidOperationException("This receipt was rejected.");
+        if (queued.Status != IntakeQueueStatus.ReadyForReview)
+            throw new InvalidOperationException("Process this receipt before accepting it.");
+        var imageId = queued.ImageId
+            ?? throw new InvalidOperationException("This receipt has no stored image.");
+        var selected = receipt.Lines.Where(line => line.Selected).ToList();
+        if (selected.Count == 0)
+            throw new InvalidOperationException("Select at least one receipt line and inventory item.");
+
+        receipt.Currency = string.IsNullOrWhiteSpace(receipt.Currency)
+            ? null
+            : SpecialAttributeCatalog.NormalizeCurrencyCode(receipt.Currency);
+        var resolved = new List<(ReceiptLineSuggestion Line, int ItemId)>();
+        foreach (var line in selected)
+        {
+            line.Description = line.Description.Trim();
+            if (line.Description.Length == 0)
+                throw new InvalidOperationException("Every selected receipt line needs a description.");
+            if (line.Quantity <= 0 || line.UnitPrice < 0 || line.LineTotal < 0)
+                throw new InvalidOperationException("Receipt quantities and prices cannot be negative.");
+            var itemId = line.MatchedItemId;
+            if (itemId is null && line.MatchedQueueItemId is { } matchedQueueId)
+                itemId = await ResolveReceiptItemAsync(queued, matchedQueueId, ct);
+            if (itemId is null)
+                throw new InvalidOperationException(
+                    $"Choose an inventory item for receipt line '{line.Description}'.");
+            if (await inventory.GetAsync(itemId.Value, ct) is null)
+                throw new InvalidOperationException("A selected inventory item no longer exists.");
+            line.MatchedItemId = itemId;
+            resolved.Add((line, itemId.Value));
+        }
+
+        using var conn = await db.OpenAsync(ct);
+        using var tx = conn.BeginTransaction();
+        var now = DateTimeOffset.UtcNow.ToString("O");
+        foreach (var (line, itemId) in resolved)
+        {
+            await conn.ExecuteAsync("""
+                INSERT INTO ItemImages (ItemId, ImageId, Role, IsPrimary, SortOrder, CreatedAt)
+                SELECT @itemId, @imageId, @role, 0,
+                       COALESCE((SELECT MAX(SortOrder) + 1 FROM ItemImages WHERE ItemId = @itemId), 0),
+                       @now
+                ON CONFLICT(ItemId, ImageId) DO NOTHING;
+                """, new
+            {
+                itemId,
+                imageId,
+                role = (int)ItemImageRole.Receipt,
+                now
+            }, tx);
+            var purchaseParameters = new DynamicParameters();
+            purchaseParameters.Add("queueItemId", id);
+            purchaseParameters.Add("lineIndex", line.LineIndex);
+            purchaseParameters.Add("itemId", itemId);
+            purchaseParameters.Add("imageId", imageId);
+            purchaseParameters.Add("merchant", Clean(receipt.Merchant));
+            purchaseParameters.Add("purchasedOn", receipt.PurchaseDate?.ToString("yyyy-MM-dd"));
+            purchaseParameters.Add("description", line.Description);
+            purchaseParameters.Add("quantity", line.Quantity);
+            purchaseParameters.Add("unitPrice", line.UnitPrice);
+            purchaseParameters.Add("currency", receipt.Currency);
+            purchaseParameters.Add("lineTotal", line.LineTotal);
+            purchaseParameters.Add(
+                "confidence",
+                line.Confidence == MatchConfidence.None ? null : (int)line.Confidence);
+            purchaseParameters.Add("now", now);
+            await conn.ExecuteAsync("""
+                INSERT INTO ItemPurchases
+                    (QueueItemId, ReceiptLineIndex, ItemId, ImageId, Merchant, PurchasedOn,
+                     Description, Quantity, UnitPrice, Currency, LineTotal, Confidence, CreatedAt)
+                VALUES
+                    (@queueItemId, @lineIndex, @itemId, @imageId, @merchant, @purchasedOn,
+                     @description, @quantity, @unitPrice, @currency, @lineTotal, @confidence, @now);
+                """, purchaseParameters, tx);
+        }
+        var changed = await conn.ExecuteAsync("""
+            UPDATE IntakeQueueItems
+            SET Status = @accepted, ReceiptJson = @receiptJson, ReviewedAt = @now
+            WHERE Id = @id AND Status NOT IN (@accepted, @rejected);
+            """, new
+        {
+            id,
+            accepted = (int)IntakeQueueStatus.Accepted,
+            rejected = (int)IntakeQueueStatus.Rejected,
+            receiptJson = JsonSerializer.Serialize(receipt, Json),
+            now
+        }, tx);
+        if (changed != 1)
+            throw new InvalidOperationException("This receipt was already reviewed.");
+        tx.Commit();
+        return new ReceiptApplied(resolved.Count, resolved.Select(entry => entry.ItemId).Distinct().Count());
+    }
+
+    public async Task<List<ItemPurchase>> GetPurchasesAsync(int itemId, CancellationToken ct = default)
+    {
+        using var conn = await db.OpenAsync(ct);
+        var rows = await conn.QueryAsync<ItemPurchase>("""
+            SELECT Id, QueueItemId, ReceiptLineIndex, ItemId, ImageId, Merchant, PurchasedOn,
+                   Description, Quantity, UnitPrice, Currency, LineTotal, Confidence, CreatedAt
+            FROM ItemPurchases WHERE ItemId = @itemId
+            ORDER BY PurchasedOn DESC, CreatedAt DESC, Id DESC;
+            """, new { itemId });
+        return rows.ToList();
     }
 
     public Task<IntakeApplied> AcceptAsync(
@@ -460,6 +648,32 @@ public class IntakeQueueService(
             1 => new ProcessedCapture(draft, IntakeAction.IncrementExisting, exact[0].Id, exact[0].Name, 1),
             _ => new ProcessedCapture(draft, IntakeAction.ChooseCandidate, null, null, 1)
         };
+    }
+
+    private async Task ProcessReceiptAsync(
+        IntakeQueueItem queued, int contextCount, CancellationToken ct)
+    {
+        if (queued.ImageId is not { } imageId)
+            throw new InvalidOperationException("Queued receipt has no stored image.");
+        var candidates = await GetReceiptCandidatesAsync(
+            queued.Id, Math.Clamp(contextCount, 0, 25), ct);
+        var receipt = await photoIntake.ExtractReceiptStoredAsync(imageId, candidates, ct)
+            ?? throw new InvalidOperationException("The vision model could not read this receipt.");
+        if (receipt.Lines.Count == 0)
+            throw new InvalidOperationException("No purchasable lines were found on this receipt.");
+
+        using var conn = await db.OpenAsync(ct);
+        await conn.ExecuteAsync("""
+            UPDATE IntakeQueueItems
+            SET Status = @ready, ReceiptJson = @receiptJson, ProcessedAt = @now, Error = NULL
+            WHERE Id = @id;
+            """, new
+        {
+            id = queued.Id,
+            ready = (int)IntakeQueueStatus.ReadyForReview,
+            receiptJson = JsonSerializer.Serialize(receipt, Json),
+            now = DateTimeOffset.UtcNow.ToString("O")
+        });
     }
 
     private async Task<List<ProcessedCapture>> ProcessPhotoAsync(
@@ -750,6 +964,27 @@ public class IntakeQueueService(
             new { queueItemId });
     }
 
+    private async Task<int?> ResolveReceiptItemAsync(
+        IntakeQueueItem receipt, int matchedQueueItemId, CancellationToken ct)
+    {
+        using var conn = await db.OpenAsync(ct);
+        return await conn.QuerySingleOrDefaultAsync<int?>("""
+            SELECT AppliedItemId FROM IntakeQueueItems
+            WHERE Id = @matchedQueueItemId
+              AND SessionId = @sessionId
+              AND Id < @receiptId
+              AND SourceType != @receipt
+              AND Status = @accepted;
+            """, new
+        {
+            matchedQueueItemId,
+            sessionId = receipt.SessionId,
+            receiptId = receipt.Id,
+            receipt = (int)IntakeSourceType.Receipt,
+            accepted = (int)IntakeQueueStatus.Accepted
+        });
+    }
+
     private static bool MergeMissingMetadata(Item target, Item observed)
     {
         var changed = SpecialAttributeCatalog.MergeMissing(target, observed);
@@ -859,6 +1094,22 @@ public class IntakeQueueService(
         }
     }
 
+    private static ReceiptExtraction? DeserializeReceipt(string? json)
+    {
+        if (string.IsNullOrWhiteSpace(json)) return null;
+        try
+        {
+            return JsonSerializer.Deserialize<ReceiptExtraction>(json, Json);
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
+
+    private static string? Clean(string? value) =>
+        string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+
     private static IntakeQueueItem Map(QueueRow row) => new()
     {
         Id = row.Id,
@@ -869,6 +1120,7 @@ public class IntakeQueueService(
         IsMultiPhoto = row.IsMultiPhoto,
         Status = (IntakeQueueStatus)row.Status,
         Draft = DeserializeDraft(row.DraftJson),
+        Receipt = DeserializeReceipt(row.ReceiptJson),
         ProposalAction = row.ProposalAction is { } action ? (IntakeAction)action : null,
         MatchedItemId = row.MatchedItemId,
         MatchedItemName = row.MatchedItemName,
@@ -898,7 +1150,7 @@ public class IntakeQueueService(
 
     private const string QueueSelect = """
         SELECT q.Id, q.SessionId, q.SourceType, q.SourceCode, q.ImageId, q.IsMultiPhoto, q.Status,
-               q.DraftJson, q.ProposalAction, q.MatchedItemId, q.MatchedItemName,
+               q.DraftJson, q.ReceiptJson, q.ProposalAction, q.MatchedItemId, q.MatchedItemName,
                q.MatchedQueueItemId, q.CaptureRelationship, q.RelationshipConfidence,
                q.RelationshipReason, q.SuggestedImageRole,
                q.IncrementBy, q.AppliedItemId, q.Error, q.CreatedAt,
@@ -916,6 +1168,7 @@ public class IntakeQueueService(
         public bool IsMultiPhoto { get; set; }
         public int Status { get; set; }
         public string? DraftJson { get; set; }
+        public string? ReceiptJson { get; set; }
         public int? ProposalAction { get; set; }
         public int? MatchedItemId { get; set; }
         public string? MatchedItemName { get; set; }
@@ -945,6 +1198,13 @@ public class IntakeQueueService(
         public int QueueItemId { get; set; }
         public int? InventoryItemId { get; set; }
         public int ImageId { get; set; }
+        public string DraftJson { get; set; } = string.Empty;
+    }
+
+    private sealed class ReceiptCandidateRow
+    {
+        public int QueueItemId { get; set; }
+        public int? InventoryItemId { get; set; }
         public string DraftJson { get; set; } = string.Empty;
     }
 

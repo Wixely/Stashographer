@@ -9,6 +9,7 @@
 @inject ISnackbar Snackbar
 @inject IDialogService Dialogs
 @inject SettingsService SettingsSvc
+@inject IntakeQueueService IntakeQueue
 
 <PageTitle>@(_item.Id == 0 ? "New item" : _item.Name) · Stashographer</PageTitle>
 
@@ -125,6 +126,36 @@ else
                 <ItemImageGallery ItemId="_item.Id" PrimaryImageChanged="SetPrimaryImage" />
             }
 
+            @if (_purchases.Count > 0)
+            {
+                <MudPaper Class="pa-4 mb-3" Outlined="true">
+                    <MudText Typo="Typo.subtitle2" Class="mb-2">Purchase evidence</MudText>
+                    @foreach (var purchase in _purchases)
+                    {
+                        <div class="d-flex align-start gap-2 mb-2">
+                            <MudIcon Icon="@Icons.Material.Filled.ReceiptLong" Color="Color.Secondary" />
+                            <div>
+                                <MudText Typo="Typo.body2">
+                                    <b>@purchase.Description</b>
+                                    @if (purchase.LineTotal is { } lineTotal)
+                                    {
+                                        <text> · @lineTotal.ToString("0.00") @purchase.Currency</text>
+                                    }
+                                </MudText>
+                                <MudText Typo="Typo.caption" Class="mud-text-secondary">
+                                    @(purchase.Merchant ?? "Merchant unknown")
+                                    @if (purchase.PurchasedOn is { } purchasedOn)
+                                    {
+                                        <text> · @purchasedOn.ToString("d MMM yyyy")</text>
+                                    }
+                                    · qty @purchase.Quantity.ToString("0.##")
+                                </MudText>
+                            </div>
+                        </div>
+                    }
+                </MudPaper>
+            }
+
             <MudPaper Class="pa-4 mb-3" Outlined="true">
                 <MudText Typo="Typo.subtitle2" Class="mb-2">Where is it?</MudText>
                 <MudSelect Value="_locationId" Label="Location" Variant="Variant.Outlined" Clearable="true"
@@ -172,6 +203,7 @@ else
     private List<ItemKind> _kinds = new();
     private List<Location> _locations = new();
     private List<Item> _collectionMembers = new();
+    private List<ItemPurchase> _purchases = new();
     private CheckoutRecord? _openCheckout;
     private int? _locationId;
     private int? _containerId;
@@ -191,11 +223,13 @@ else
             _item = await Inventory.GetAsync(id) ?? new Item { Name = string.Empty, ItemKindId = 7 };
             _openCheckout = _item.IsCheckedOut ? await Checkouts.GetOpenForItemAsync(id) : null;
             _collectionMembers = await Inventory.GetCollectionMembersAsync(id);
+            _purchases = await IntakeQueue.GetPurchasesAsync(id);
         }
         else
         {
             _item = Draft.Take() ?? new Item { Name = string.Empty, ItemKindId = 7 };
             _collectionMembers.Clear();
+            _purchases.Clear();
         }
 
         _locationId = _item.LocationId ?? _item.Container?.LocationId;
@@ -270,6 +304,7 @@ else
         _item = await Inventory.GetAsync(_item.Id) ?? _item;
         _openCheckout = _item.IsCheckedOut ? await Checkouts.GetOpenForItemAsync(_item.Id) : null;
         _collectionMembers = await Inventory.GetCollectionMembersAsync(_item.Id);
+        _purchases = await IntakeQueue.GetPurchasesAsync(_item.Id);
         StateHasChanged();
     }
 

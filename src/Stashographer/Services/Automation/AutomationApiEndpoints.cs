@@ -38,6 +38,7 @@ public static class AutomationApiEndpoints
         api.MapPost("/intake/session", (AutomationOperations operations, CancellationToken ct) =>
             operations.StartIntakeSessionAsync(ct));
         api.MapPost("/intake/photos", QueuePhotoAsync).DisableAntiforgery();
+        api.MapPost("/intake/receipts", QueueReceiptAsync).DisableAntiforgery();
         return api;
     }
 
@@ -62,6 +63,34 @@ public static class AutomationApiEndpoints
                 file.ContentType,
                 file.FileName,
                 multipleItems ?? true,
+                ct);
+            return Results.Created($"/api/v1/intake/{queued.Id}", queued);
+        }
+        catch (Exception ex) when (ex is ArgumentException or InvalidOperationException)
+        {
+            return Results.BadRequest(new { error = ex.Message });
+        }
+    }
+
+    private static async Task<IResult> QueueReceiptAsync(
+        HttpRequest request,
+        AutomationOperations operations,
+        CancellationToken ct)
+    {
+        if (!request.HasFormContentType)
+            return Results.BadRequest(new { error = "Send multipart/form-data with a receipt field." });
+        var form = await request.ReadFormAsync(ct);
+        var file = form.Files.GetFile("receipt") ?? form.Files.FirstOrDefault();
+        if (file is null || file.Length == 0)
+            return Results.BadRequest(new { error = "A non-empty receipt image is required." });
+
+        try
+        {
+            await using var content = file.OpenReadStream();
+            var queued = await operations.QueueReceiptAsync(
+                content,
+                file.ContentType,
+                file.FileName,
                 ct);
             return Results.Created($"/api/v1/intake/{queued.Id}", queued);
         }

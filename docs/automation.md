@@ -58,6 +58,7 @@ The API base is `/api/v1`. JSON enums are represented by names such as `Manual` 
 | `POST` | `/api/v1/intake/items` | Queue a complete proposed item for human review |
 | `PUT` | `/api/v1/intake/{id}/draft` | Replace a pending draft while retaining its source photo |
 | `POST` | `/api/v1/intake/photos` | Queue multipart field `photo`; optional `multipleItems=false` query |
+| `POST` | `/api/v1/intake/receipts` | Queue multipart field `receipt` for reviewable session enrichment |
 | `POST` | `/api/v1/intake/session` | End the context window and start a new intake session |
 
 Discover identifiers with `item-kinds` and `places` before creating a draft. A minimal request
