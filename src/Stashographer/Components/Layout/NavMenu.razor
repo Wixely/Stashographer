@@ -1,3 +1,7 @@
+@implements IAsyncDisposable
+@inject IntakeQueueService IntakeQueue
+@inject ILogger<NavMenu> Logger
+
 <MudNavMenu>
     <MudNavLink Href="" Match="NavLinkMatch.All" Icon="@Icons.Material.Filled.Home">Home</MudNavLink>
     <MudNavLink Href="dashboard" Icon="@Icons.Material.Filled.Dashboard">Dashboard</MudNavLink>
@@ -7,8 +11,63 @@
     <MudNavLink Href="meal-plans" Icon="@Icons.Material.Filled.CalendarMonth">Meal Plans</MudNavLink>
     <MudNavLink Href="boms" Icon="@Icons.Material.Filled.RestaurantMenu">Recipes &amp; Builds</MudNavLink>
     <MudNavLink Href="scan" Icon="@Icons.Material.Filled.QrCodeScanner">Scan &amp; Add</MudNavLink>
-    <MudNavLink Href="queue" Icon="@Icons.Material.Filled.PlaylistAddCheck">Intake Queue</MudNavLink>
+    <MudNavLink Href="queue" Icon="@Icons.Material.Filled.PlaylistAddCheck">
+        <span>Intake Queue</span>
+        <span class="queue-count" aria-label="@($"{_queueCount} items in intake queue")">@_queueCount</span>
+    </MudNavLink>
     <MudNavLink Href="places" Match="NavLinkMatch.Prefix" Icon="@Icons.Material.Filled.Room">Places</MudNavLink>
     <MudNavLink Href="checkouts" Icon="@Icons.Material.Filled.AssignmentReturn">Checkouts</MudNavLink>
     <MudNavLink Href="settings" Icon="@Icons.Material.Filled.Settings">Settings</MudNavLink>
 </MudNavMenu>
+
+@code {
+    private readonly CancellationTokenSource _dispose = new();
+    private int _queueCount;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await RefreshQueueCountAsync();
+        _ = RefreshQueueCountLoopAsync();
+    }
+
+    private async Task RefreshQueueCountAsync()
+    {
+        var counts = await IntakeQueue.GetCountsAsync(_dispose.Token);
+        _queueCount = counts.Waiting + counts.Processing + counts.Ready + counts.Failed;
+    }
+
+    private async Task RefreshQueueCountLoopAsync()
+    {
+        var ct = _dispose.Token;
+        using var timer = new PeriodicTimer(TimeSpan.FromSeconds(2));
+        try
+        {
+            while (await timer.WaitForNextTickAsync(ct))
+            {
+                try
+                {
+                    await InvokeAsync(async () =>
+                    {
+                        await RefreshQueueCountAsync();
+                        StateHasChanged();
+                    });
+                }
+                catch (Exception ex) when (!ct.IsCancellationRequested)
+                {
+                    Logger.LogWarning(ex, "Could not refresh the intake queue navigation count");
+                }
+            }
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            // Normal component disposal.
+        }
+    }
+
+    public ValueTask DisposeAsync()
+    {
+        _dispose.Cancel();
+        _dispose.Dispose();
+        return ValueTask.CompletedTask;
+    }
+}

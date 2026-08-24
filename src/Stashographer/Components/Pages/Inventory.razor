@@ -95,7 +95,8 @@
     @if (CurrentView == InventoryView.List)
     {
         <MudText Typo="Typo.caption" Class="mud-text-secondary d-block mt-1">
-            Click to select, Ctrl+click to toggle, drag across rows to select several, or double-click to open an item.
+            Click an item name to open it. Click elsewhere to select, Ctrl+click to toggle,
+            drag across rows to select several, or double-click a row to open it.
         </MudText>
     }
 </MudPaper>
@@ -199,7 +200,9 @@ else
                             <MudIcon Icon="@IconCatalog.Resolve(context.Kind?.Icon)" Size="Size.Small" />
                         </MudAvatar>
                     }
-                    <span>@context.Name</span>
+                    <MudLink Href="@($"items/{context.Id}")" @onclick:stopPropagation="true">
+                        @context.Name
+                    </MudLink>
                     @if (context.CollectionKey is not null)
                     {
                         <MudTooltip Text="Part of a product collection split by expiry lot or place">
