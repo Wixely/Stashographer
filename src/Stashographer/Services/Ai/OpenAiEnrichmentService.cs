@@ -31,7 +31,8 @@ public class OpenAiEnrichmentService(
 
     public async Task<VisionIdentification?> IdentifyItemAsync(
         byte[] image, string mediaType, IReadOnlyList<string> knownKinds,
-        CancellationToken ct = default, string? intakeContext = null)
+        CancellationToken ct = default, string? intakeContext = null,
+        AiRegionalContext? regionalContext = null)
     {
         var kinds = knownKinds.Count > 0 ? string.Join(", ", knownKinds) : "Other";
         var canonicalNames = attributeNames is null
@@ -41,13 +42,17 @@ public class OpenAiEnrichmentService(
         var system =
             "You catalogue household inventory from photos. Reply with ONLY a JSON object shaped as: " +
             $"{{\"name\": string, \"kind\": one of [{kinds}], \"description\": string, " +
-            "\"attributes\": { key: value, ... }, \"price\": {\"amount\": number, \"currency\": three-letter ISO code} or null, " +
+            "\"attributes\": { key: value, ... }, \"price\": {\"amount\": number, \"currency\": three-letter ISO code or null} or null, " +
+            "\"expiry\": {\"rawText\": string, \"date\": \"YYYY-MM-DD\" or null, " +
+            "\"type\": \"use_by\"|\"best_before\"|\"unknown\", \"confidence\": number 0..1} or null, " +
             "\"barcode\": string or null, \"count\": integer}. " +
             "name = short product/item name. barcode = digits only, and ONLY when a barcode is clearly readable, else null. " +
             "count = how many of this same item are visible (default 1). " +
             "Only return price when it is visibly printed; never estimate it. Price is the unit price and must not also appear in attributes. " +
+            "Only return expiry when a use-by, best-before, or otherwise clearly expiring date is visibly printed. " +
+            "Preserve its exact visible text in rawText. If the date is ambiguous, return date as null rather than guessing. " +
             "Use concise ordinary attribute keys (Brand, Model, Colour, Size). Omit fields you cannot determine. " +
-            attributeRule;
+            attributeRule + RegionalRule(regionalContext);
 
         var messages = new List<ChatMessage>
         {
@@ -205,6 +210,13 @@ public class OpenAiEnrichmentService(
               "When one has the same meaning as an attribute you identify, use that exact name. " +
               "Create a new attribute name only when none is semantically equivalent.";
 
+    private static string RegionalRule(AiRegionalContext? context) => context is null
+        ? string.Empty
+        : $" Regional context: current local date {context.CurrentDate:yyyy-MM-dd}; " +
+          $"date order {context.DateOrder}; culture {context.CultureName}; time zone {context.TimeZoneId}; " +
+          $"default currency {context.DefaultCurrency}. The default currency may be used by the application " +
+          "when the amount is visible but the currency is not; return currency as null in that case.";
+
     /// <summary>Pulls the outermost JSON object out of a response, tolerating stray prose.</summary>
     internal static string? ExtractJson(string? text)
     {
@@ -231,7 +243,8 @@ public class OpenAiEnrichmentService(
                         && c.ValueKind == JsonValueKind.Number && c.TryGetInt32(out var n) && n > 0 ? n : 1,
                 Attributes = GetAttributes(root),
                 PriceAmount = priceAmount,
-                PriceCurrency = priceCurrency
+                PriceCurrency = priceCurrency,
+                Expiry = GetExpiry(root)
             };
         }
         catch (JsonException ex)
@@ -362,9 +375,35 @@ public class OpenAiEnrichmentService(
             || amount < 0)
             return (null, null);
         var currency = GetString(price, "currency")?.Trim().ToUpperInvariant();
-        return currency is { Length: 3 } && currency.All(c => c is >= 'A' and <= 'Z')
-            ? (amount, currency)
-            : (null, null);
+        return currency is null or { Length: 0 }
+            ? (amount, null)
+            : currency is { Length: 3 } && currency.All(c => c is >= 'A' and <= 'Z')
+                ? (amount, currency)
+                : (amount, null);
+    }
+
+    private static VisionExpiry? GetExpiry(JsonElement root)
+    {
+        if (!root.TryGetProperty("expiry", out var expiry) || expiry.ValueKind != JsonValueKind.Object)
+            return null;
+        DateOnly? date = null;
+        var dateText = GetString(expiry, "date");
+        if (DateOnly.TryParseExact(dateText, "yyyy-MM-dd", out var parsed)) date = parsed;
+        decimal? confidence = expiry.TryGetProperty("confidence", out var confidenceElement)
+                              && confidenceElement.ValueKind == JsonValueKind.Number
+                              && confidenceElement.TryGetDecimal(out var value)
+            ? Math.Clamp(value, 0, 1)
+            : null;
+        var raw = GetString(expiry, "rawText");
+        return date is null && string.IsNullOrWhiteSpace(raw)
+            ? null
+            : new VisionExpiry
+            {
+                RawText = raw,
+                Date = date,
+                Type = GetString(expiry, "type"),
+                Confidence = confidence
+            };
     }
 
     private static string? NormalizeBarcode(string? barcode)

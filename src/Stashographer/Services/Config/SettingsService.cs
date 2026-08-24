@@ -1,4 +1,5 @@
 using Dapper;
+using System.Globalization;
 using Stashographer.Data;
 using Stashographer.Data.Entities;
 using Stashographer.Services.Ai;
@@ -98,25 +99,62 @@ public class SettingsService(IDbConnectionFactory db)
 
     // --- Inventory options ----------------------------------------------------------
 
-    public async Task<string> GetDefaultCurrencyAsync(CancellationToken ct = default)
+    public async Task<InventoryRegionalOptions> GetRegionalOptionsAsync(CancellationToken ct = default)
     {
         var stored = await GetAllAsync(InventoryPrefix, ct);
+        var defaults = new InventoryRegionalOptions();
+        var options = new InventoryRegionalOptions
+        {
+            DefaultCurrency = stored.GetValueOrDefault("Inventory.DefaultCurrency") ?? defaults.DefaultCurrency,
+            DateOrder = stored.TryGetValue("Inventory.DateOrder", out var order)
+                        && Enum.TryParse<RegionalDateOrder>(order, out var parsedOrder)
+                ? parsedOrder
+                : defaults.DateOrder,
+            CultureName = stored.GetValueOrDefault("Inventory.CultureName") ?? defaults.CultureName,
+            TimeZoneId = stored.GetValueOrDefault("Inventory.TimeZoneId") ?? defaults.TimeZoneId
+        };
         try
         {
-            return SpecialAttributeCatalog.NormalizeCurrencyCode(
-                stored.GetValueOrDefault("Inventory.DefaultCurrency") ?? "GBP");
+            ValidateRegionalOptions(options);
+            options.DefaultCurrency = SpecialAttributeCatalog.NormalizeCurrencyCode(options.DefaultCurrency);
+            return options;
         }
-        catch (InvalidOperationException)
+        catch (Exception ex) when (ex is InvalidOperationException or CultureNotFoundException
+                                       or TimeZoneNotFoundException or InvalidTimeZoneException)
         {
-            return "GBP";
+            return defaults;
         }
     }
 
-    public Task SaveDefaultCurrencyAsync(string currencyCode, CancellationToken ct = default) =>
-        SetManyAsync(new Dictionary<string, string>
+    public async Task<string> GetDefaultCurrencyAsync(CancellationToken ct = default) =>
+        (await GetRegionalOptionsAsync(ct)).DefaultCurrency;
+
+    public Task SaveRegionalOptionsAsync(InventoryRegionalOptions options, CancellationToken ct = default)
+    {
+        ValidateRegionalOptions(options);
+        options.DefaultCurrency = SpecialAttributeCatalog.NormalizeCurrencyCode(options.DefaultCurrency);
+        return SetManyAsync(new Dictionary<string, string>
         {
-            ["Inventory.DefaultCurrency"] = SpecialAttributeCatalog.NormalizeCurrencyCode(currencyCode)
+            ["Inventory.DefaultCurrency"] = options.DefaultCurrency,
+            ["Inventory.DateOrder"] = options.DateOrder.ToString(),
+            ["Inventory.CultureName"] = options.CultureName.Trim(),
+            ["Inventory.TimeZoneId"] = options.TimeZoneId.Trim()
         }, ct);
+    }
+
+    public async Task SaveDefaultCurrencyAsync(string currencyCode, CancellationToken ct = default)
+    {
+        var options = await GetRegionalOptionsAsync(ct);
+        options.DefaultCurrency = currencyCode;
+        await SaveRegionalOptionsAsync(options, ct);
+    }
+
+    private static void ValidateRegionalOptions(InventoryRegionalOptions options)
+    {
+        _ = SpecialAttributeCatalog.NormalizeCurrencyCode(options.DefaultCurrency);
+        _ = CultureInfo.GetCultureInfo(options.CultureName.Trim());
+        _ = TimeZoneInfo.FindSystemTimeZoneById(options.TimeZoneId.Trim());
+    }
 
     private static bool ReadBool(
         IReadOnlyDictionary<string, string> values, string key, bool fallback) =>

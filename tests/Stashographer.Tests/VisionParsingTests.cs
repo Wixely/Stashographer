@@ -52,6 +52,24 @@ public class VisionParsingTests
     }
 
     [Fact]
+    public void Identification_preserves_visible_price_without_currency_and_expiry_evidence()
+    {
+        var ident = Service().ParseIdentification("""
+            {"name":"Yoghurt","price":{"amount":1.5,"currency":null},
+             "expiry":{"rawText":"BEST BEFORE 03/04/26","date":"2026-04-03",
+                       "type":"best_before","confidence":0.91}}
+            """);
+
+        Assert.NotNull(ident);
+        Assert.Equal(1.5m, ident!.PriceAmount);
+        Assert.Null(ident.PriceCurrency);
+        Assert.Equal("BEST BEFORE 03/04/26", ident.Expiry!.RawText);
+        Assert.Equal(new DateOnly(2026, 4, 3), ident.Expiry.Date);
+        Assert.Equal("best_before", ident.Expiry.Type);
+        Assert.Equal(0.91m, ident.Expiry.Confidence);
+    }
+
+    [Fact]
     public void Boxes_parse_and_degenerate_ones_are_discarded()
     {
         var boxes = Service().ParseBoxes("""

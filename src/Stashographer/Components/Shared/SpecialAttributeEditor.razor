@@ -17,6 +17,46 @@
                       MaxLength="3" HelperText="ISO code" />
     </MudItem>
 </MudGrid>
+@if (_priceEvidence?.Assumptions.Contains("currency:default") == true)
+{
+    <MudText Typo="Typo.caption" Class="mud-text-secondary d-block mt-1">
+        AI found the amount but not its currency, so @_priceCurrency was taken from regional settings.
+    </MudText>
+}
+
+<MudDivider Class="my-3" />
+
+<MudGrid Spacing="2">
+    <MudItem xs="8">
+        <MudDatePicker Date="_expiryDate" DateChanged="SetExpiryDate"
+                       Label="Expiry" Variant="Variant.Outlined" Margin="Margin.Dense"
+                       Clearable="true" />
+    </MudItem>
+    <MudItem xs="4">
+        <MudSelect T="ExpiryDateKind" Value="_expiryKind" ValueChanged="SetExpiryKind"
+                   Label="Date type" Variant="Variant.Outlined" Margin="Margin.Dense"
+                   Disabled="_expiryDate is null">
+            <MudSelectItem Value="ExpiryDateKind.Unknown">Expiry</MudSelectItem>
+            <MudSelectItem Value="ExpiryDateKind.UseBy">Use by</MudSelectItem>
+            <MudSelectItem Value="ExpiryDateKind.BestBefore">Best before</MudSelectItem>
+        </MudSelect>
+    </MudItem>
+</MudGrid>
+
+@if (_expiryEvidence is { Source: "ai-vision" or "user-corrected" } evidence)
+{
+    <MudText Typo="Typo.caption" Class="mud-text-secondary d-block mt-1">
+        AI read @(string.IsNullOrWhiteSpace(evidence.RawText) ? "a visible date" : $"“{evidence.RawText}”")
+        @if (evidence.Confidence is { } confidence)
+        {
+            <text> · confidence @(confidence * 100m).ToString("0")%</text>
+        }
+        @if (evidence.Assumptions.Count > 0)
+        {
+            <text> · interpreted using @evidence.Convention</text>
+        }
+    </MudText>
+}
 
 @code {
     [Parameter, EditorRequired] public Item Item { get; set; } = default!;
@@ -24,6 +64,10 @@
 
     private decimal? _priceAmount;
     private string _priceCurrency = "GBP";
+    private SpecialAttributeEvidence? _priceEvidence;
+    private DateTime? _expiryDate;
+    private ExpiryDateKind _expiryKind;
+    private SpecialAttributeEvidence? _expiryEvidence;
     private Item? _loadedItem;
 
     protected override void OnParametersSet()
@@ -33,17 +77,26 @@
         var price = SpecialAttributeCatalog.GetPrice(Item);
         _priceAmount = price?.DecimalValue;
         _priceCurrency = price?.CurrencyCode ?? DefaultCurrency;
+        _priceEvidence = price?.Evidence;
+        var expiry = SpecialAttributeCatalog.GetExpiry(Item);
+        _expiryDate = expiry?.DateValue?.ToDateTime(TimeOnly.MinValue);
+        _expiryKind = Enum.TryParse<ExpiryDateKind>(expiry?.Qualifier, out var parsedKind)
+            ? parsedKind
+            : ExpiryDateKind.Unknown;
+        _expiryEvidence = expiry?.Evidence;
     }
 
     private void SetPriceAmount(decimal? value)
     {
         _priceAmount = value;
+        MarkPriceEdited(currencyChanged: false);
         SyncPrice();
     }
 
     private void SetPriceCurrency(string value)
     {
         _priceCurrency = value.ToUpperInvariant();
+        MarkPriceEdited(currencyChanged: true);
         SyncPrice();
     }
 
@@ -58,7 +111,39 @@
         Item.SpecialAttributes[SpecialAttributeCatalog.PriceKey] = new SpecialAttributeValue
         {
             DecimalValue = _priceAmount,
-            CurrencyCode = _priceCurrency
+            CurrencyCode = _priceCurrency,
+            Evidence = _priceEvidence
         };
+    }
+
+    private void MarkPriceEdited(bool currencyChanged)
+    {
+        if (_priceEvidence is null) return;
+        _priceEvidence.Source = "user-corrected";
+        if (currencyChanged) _priceEvidence.Assumptions.Remove("currency:default");
+    }
+
+    private void SetExpiryDate(DateTime? value)
+    {
+        _expiryDate = value;
+        MarkExpiryEdited();
+        SyncExpiry();
+    }
+
+    private void SetExpiryKind(ExpiryDateKind value)
+    {
+        _expiryKind = value;
+        MarkExpiryEdited();
+        SyncExpiry();
+    }
+
+    private void SyncExpiry() => SpecialAttributeCatalog.SetExpiry(Item,
+        _expiryDate is { } date ? DateOnly.FromDateTime(date) : null,
+        _expiryKind, _expiryEvidence);
+
+    private void MarkExpiryEdited()
+    {
+        if (_expiryEvidence is not null && _expiryEvidence.Source == "ai-vision")
+            _expiryEvidence.Source = "user-corrected";
     }
 }

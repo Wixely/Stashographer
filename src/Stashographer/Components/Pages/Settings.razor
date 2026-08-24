@@ -57,16 +57,41 @@
 </MudPaper>
 
 <MudPaper Class="pa-4 mb-3" Outlined="true">
-    <MudText Typo="Typo.h6" Class="mb-2">Inventory values</MudText>
+    <MudText Typo="Typo.h6" Class="mb-2">Inventory region</MudText>
     <MudText Typo="Typo.body2" Class="mud-text-secondary mb-3">
-        The currency pre-filled when you add a unit price. Existing prices keep their own currency.
+        Used for manual prices, AI currency fallback, printed date interpretation, and deciding what “today” means.
     </MudText>
-    <div class="d-flex gap-2 align-start flex-wrap">
-        <MudTextField T="string" @bind-Value="_defaultCurrency" Label="Default currency"
-                      Variant="Variant.Outlined" Margin="Margin.Dense" MaxLength="3"
-                      HelperText="Three-letter ISO code, e.g. GBP, EUR, USD" />
+    <MudGrid>
+        <MudItem xs="12" sm="6">
+            <MudTextField T="string" @bind-Value="_defaultCurrency" Label="Default currency"
+                          Variant="Variant.Outlined" Margin="Margin.Dense" MaxLength="3"
+                          HelperText="Three-letter ISO code, e.g. GBP, EUR, USD" />
+        </MudItem>
+        <MudItem xs="12" sm="6">
+            <MudSelect T="RegionalDateOrder" @bind-Value="_dateOrder" Label="Printed date order"
+                       Variant="Variant.Outlined" Margin="Margin.Dense">
+                <MudSelectItem Value="RegionalDateOrder.DayMonthYear">Day / month / year</MudSelectItem>
+                <MudSelectItem Value="RegionalDateOrder.MonthDayYear">Month / day / year</MudSelectItem>
+                <MudSelectItem Value="RegionalDateOrder.YearMonthDay">Year / month / day</MudSelectItem>
+            </MudSelect>
+        </MudItem>
+        <MudItem xs="12" sm="6">
+            <MudTextField T="string" @bind-Value="_cultureName" Label="Language / region"
+                          Variant="Variant.Outlined" Margin="Margin.Dense"
+                          HelperText="BCP-47 culture, e.g. en-GB or en-US" />
+        </MudItem>
+        <MudItem xs="12" sm="6">
+            <MudTextField T="string" @bind-Value="_timeZoneId" Label="Time zone"
+                          Variant="Variant.Outlined" Margin="Margin.Dense"
+                          HelperText="IANA or system time zone, e.g. Europe/London" />
+        </MudItem>
+    </MudGrid>
+    <MudText Typo="Typo.caption" Class="mud-text-secondary d-block mt-1 mb-2">
+        Example: @DateExample
+    </MudText>
+    <div>
         <MudButton Color="Color.Primary" Variant="Variant.Filled" StartIcon="@Icons.Material.Filled.Save"
-                   OnClick="SaveInventoryAsync">Save currency</MudButton>
+                   OnClick="SaveInventoryAsync">Save regional settings</MudButton>
     </div>
 </MudPaper>
 
@@ -176,6 +201,15 @@
     private bool _requireReview = true;
     private int _contextItemCount = 8;
     private string _defaultCurrency = "GBP";
+    private RegionalDateOrder _dateOrder = RegionalDateOrder.DayMonthYear;
+    private string _cultureName = "en-GB";
+    private string _timeZoneId = "Europe/London";
+    private string DateExample => _dateOrder switch
+    {
+        RegionalDateOrder.MonthDayYear => "03/04/2026 → 4 March 2026",
+        RegionalDateOrder.YearMonthDay => "2026/04/03 → 3 April 2026",
+        _ => "03/04/2026 → 3 April 2026"
+    };
 
     protected override async Task OnInitializedAsync()
     {
@@ -192,7 +226,11 @@
         _autoProcessPhotos = intake.AutoProcessPhotos;
         _requireReview = intake.RequireReview;
         _contextItemCount = intake.ContextItemCount;
-        _defaultCurrency = await SettingsSvc.GetDefaultCurrencyAsync();
+        var regional = await SettingsSvc.GetRegionalOptionsAsync();
+        _defaultCurrency = regional.DefaultCurrency;
+        _dateOrder = regional.DateOrder;
+        _cultureName = regional.CultureName;
+        _timeZoneId = regional.TimeZoneId;
 
         _kinds = await Inventory.GetKindsAsync();
         await Reload();
@@ -202,11 +240,23 @@
     {
         try
         {
-            await SettingsSvc.SaveDefaultCurrencyAsync(_defaultCurrency);
-            _defaultCurrency = await SettingsSvc.GetDefaultCurrencyAsync();
-            Snackbar.Add("Default currency saved.", Severity.Success);
+            var options = new InventoryRegionalOptions
+            {
+                DefaultCurrency = _defaultCurrency,
+                DateOrder = _dateOrder,
+                CultureName = _cultureName,
+                TimeZoneId = _timeZoneId
+            };
+            await SettingsSvc.SaveRegionalOptionsAsync(options);
+            var saved = await SettingsSvc.GetRegionalOptionsAsync();
+            _defaultCurrency = saved.DefaultCurrency;
+            _dateOrder = saved.DateOrder;
+            _cultureName = saved.CultureName;
+            _timeZoneId = saved.TimeZoneId;
+            Snackbar.Add("Regional settings saved.", Severity.Success);
         }
-        catch (InvalidOperationException ex)
+        catch (Exception ex) when (ex is InvalidOperationException or System.Globalization.CultureNotFoundException
+                                       or TimeZoneNotFoundException or InvalidTimeZoneException)
         {
             Snackbar.Add(ex.Message, Severity.Error);
         }

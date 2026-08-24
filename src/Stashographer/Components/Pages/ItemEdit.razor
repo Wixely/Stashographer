@@ -99,9 +99,6 @@ else
                     <MudItem xs="6">
                         <MudNumericField @bind-Value="_item.LowStockThreshold" Label="Low-stock at" Variant="Variant.Outlined" Min="0" />
                     </MudItem>
-                    <MudItem xs="6">
-                        <MudDatePicker @bind-Date="_expiry" Label="Expiry (optional)" Variant="Variant.Outlined" />
-                    </MudItem>
                 </MudGrid>
 
                 <MudTextField @bind-Value="_item.Code" Label="Barcode / ISBN" Variant="Variant.Outlined" Class="mt-3" />
@@ -165,7 +162,6 @@ else
     private List<Location> _locations = new();
     private List<Item> _collectionMembers = new();
     private CheckoutRecord? _openCheckout;
-    private DateTime? _expiry;
     private int? _locationId;
     private int? _containerId;
     private bool _loading = true;
@@ -191,7 +187,6 @@ else
             _collectionMembers.Clear();
         }
 
-        _expiry = _item.ExpiryDate?.ToDateTime(TimeOnly.MinValue);
         _locationId = _item.LocationId ?? _item.Container?.LocationId;
         _containerId = _item.ContainerId;
         _loading = false;
@@ -215,7 +210,6 @@ else
     {
         try
         {
-            _item.ExpiryDate = _expiry is { } d ? DateOnly.FromDateTime(d) : null;
             // A container implies its location; otherwise use the chosen location directly.
             _item.ContainerId = _containerId;
             _item.LocationId = _containerId is null ? _locationId : null;

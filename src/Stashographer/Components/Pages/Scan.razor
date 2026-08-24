@@ -130,6 +130,12 @@
                     {
                         <MudText Typo="Typo.body2"><b>Unit price:</b> @SpecialAttributeCatalog.FormatPrice(price)</MudText>
                     }
+                    @if (SpecialAttributeCatalog.GetExpiry(_pendingIntake.Proposal.Draft) is { } expiry)
+                    {
+                        <MudText Typo="Typo.body2">
+                            <b>@ExpiryLabel(expiry):</b> @expiry.DateValue?.ToString("d MMM yyyy")
+                        </MudText>
+                    }
                     @foreach (var kv in _pendingIntake.Proposal.Draft.Attributes)
                     {
                         <MudText Typo="Typo.body2"><b>@kv.Key:</b> @kv.Value</MudText>
@@ -427,6 +433,14 @@
         item.Container is not null
             ? $"{item.Container.Location?.Name} › {item.Container.Name}"
             : item.Location?.Name ?? "Unplaced";
+
+    private static string ExpiryLabel(SpecialAttributeValue expiry) =>
+        Enum.TryParse<ExpiryDateKind>(expiry.Qualifier, out var kind) ? kind switch
+        {
+            ExpiryDateKind.UseBy => "Use by",
+            ExpiryDateKind.BestBefore => "Best before",
+            _ => "Expiry"
+        } : "Expiry";
 
     private async Task RefreshQueueCountAsync()
     {

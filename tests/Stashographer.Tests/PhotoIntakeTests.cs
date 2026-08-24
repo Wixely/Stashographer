@@ -4,6 +4,7 @@ using SixLabors.ImageSharp;
 using SixLabors.ImageSharp.PixelFormats;
 using Stashographer.Data.Entities;
 using Stashographer.Services.Ai;
+using Stashographer.Services.Config;
 using Stashographer.Services.Images;
 using Stashographer.Services.Inventory;
 
@@ -20,11 +21,16 @@ public class PhotoIntakeTests
         public List<DetectedBox> Boxes { get; set; } = new();
         public MatchPick? Pick { get; set; }
         public int PickCalls { get; private set; }
+        public AiRegionalContext? LastRegionalContext { get; private set; }
 
         public Task<VisionIdentification?> IdentifyItemAsync(
             byte[] i, string m, IReadOnlyList<string> k,
-            CancellationToken ct = default, string? intakeContext = null)
-            => Task.FromResult(Identification);
+            CancellationToken ct = default, string? intakeContext = null,
+            AiRegionalContext? regionalContext = null)
+        {
+            LastRegionalContext = regionalContext;
+            return Task.FromResult(Identification);
+        }
 
         public Task<List<DetectedBox>> DetectItemsAsync(byte[] i, string m, CancellationToken ct = default)
             => Task.FromResult(Boxes);
@@ -63,6 +69,7 @@ public class PhotoIntakeTests
         public required FakeAi Ai { get; init; }
         public required InventoryService Inventory { get; init; }
         public required ImageService Images { get; init; }
+        public required SettingsService Settings { get; init; }
         public required PhotoIntakeService Intake { get; init; }
 
         public static async Task<Harness> CreateAsync()
@@ -71,10 +78,16 @@ public class PhotoIntakeTests
             var root = Path.Combine(Path.GetTempPath(), $"stash_intake_{Guid.NewGuid():N}");
             var ai = new FakeAi();
             var inventory = new InventoryService(db.Factory);
+            var settings = new SettingsService(db.Factory);
             var images = new ImageService(db.Factory, new ImageOptions { RootPath = root },
                 new StubHostEnv(), new StubHttpFactory(), NullLogger<ImageService>.Instance);
-            var intake = new PhotoIntakeService(ai, inventory, images, NullLogger<PhotoIntakeService>.Instance);
-            return new Harness { Db = db, ImageRoot = root, Ai = ai, Inventory = inventory, Images = images, Intake = intake };
+            var intake = new PhotoIntakeService(ai, inventory, images,
+                NullLogger<PhotoIntakeService>.Instance, settings);
+            return new Harness
+            {
+                Db = db, ImageRoot = root, Ai = ai, Inventory = inventory,
+                Images = images, Settings = settings, Intake = intake
+            };
         }
 
         public async ValueTask DisposeAsync()
@@ -119,6 +132,37 @@ public class PhotoIntakeTests
         Assert.Equal(IntakeAction.IncrementExisting, result.Proposal.Action);
         Assert.Equal(existing.Id, result.Proposal.MatchedItemId);
         Assert.Equal(0, h.Ai.PickCalls); // model never consulted for the match
+    }
+
+    [Fact]
+    public async Task Applying_match_merges_new_price_and_expiry_into_existing_item()
+    {
+        await using var h = await Harness.CreateAsync();
+        var existing = await h.Inventory.SaveAsync(new Item
+        {
+            Name = "Fresh Milk", ItemKindId = 1, Quantity = 1
+        });
+        h.Ai.Identification = new VisionIdentification
+        {
+            Name = existing.Name,
+            PriceAmount = 1.75m,
+            Expiry = new VisionExpiry
+            {
+                RawText = "USE BY 29/08/26",
+                Type = "use_by",
+                Confidence = 0.95m
+            }
+        };
+
+        var result = await h.Intake.ProcessSingleAsync(await PhotoAsync(), "image/png");
+        await h.Intake.ApplyAsync(result);
+        var updated = await h.Inventory.GetAsync(existing.Id);
+
+        Assert.Equal(2, updated!.Quantity);
+        Assert.Equal(1.75m, SpecialAttributeCatalog.GetPrice(updated)!.DecimalValue);
+        Assert.Equal("GBP", SpecialAttributeCatalog.GetPrice(updated)!.CurrencyCode);
+        Assert.Equal(new DateOnly(2026, 8, 29), updated.ExpiryDate);
+        Assert.Equal(nameof(ExpiryDateKind.UseBy), SpecialAttributeCatalog.GetExpiry(updated)!.Qualifier);
     }
 
     [Fact]
@@ -197,6 +241,46 @@ public class PhotoIntakeTests
         Assert.Equal("Bosch", created.Attributes["Brand"]);
         Assert.Equal(24.99m, SpecialAttributeCatalog.GetPrice(created)!.DecimalValue);
         Assert.Equal(result.ImageId, created.ImageId); // photo attached
+    }
+
+    [Fact]
+    public async Task Regional_context_defaults_missing_currency_and_parses_visible_expiry()
+    {
+        await using var h = await Harness.CreateAsync();
+        await h.Settings.SaveRegionalOptionsAsync(new InventoryRegionalOptions
+        {
+            DefaultCurrency = "EUR",
+            DateOrder = RegionalDateOrder.DayMonthYear,
+            CultureName = "en-GB",
+            TimeZoneId = "UTC"
+        });
+        h.Ai.Identification = new VisionIdentification
+        {
+            Name = "Yoghurt",
+            Kind = "Grocery",
+            PriceAmount = 1.5m,
+            Expiry = new VisionExpiry
+            {
+                RawText = "BEST BEFORE 03/04/26",
+                Date = new DateOnly(2026, 3, 4),
+                Type = "best_before",
+                Confidence = 0.9m
+            }
+        };
+
+        var result = await h.Intake.ProcessSingleAsync(await PhotoAsync(), "image/png");
+        var price = SpecialAttributeCatalog.GetPrice(result.Proposal.Draft);
+        var expiry = SpecialAttributeCatalog.GetExpiry(result.Proposal.Draft);
+
+        Assert.Equal("EUR", h.Ai.LastRegionalContext!.DefaultCurrency);
+        Assert.Equal(nameof(RegionalDateOrder.DayMonthYear), h.Ai.LastRegionalContext.DateOrder);
+        Assert.Equal(1.5m, price!.DecimalValue);
+        Assert.Equal("EUR", price.CurrencyCode);
+        Assert.Contains("currency:default", price.Evidence!.Assumptions);
+        Assert.Equal(new DateOnly(2026, 4, 3), expiry!.DateValue);
+        Assert.Equal(nameof(ExpiryDateKind.BestBefore), expiry.Qualifier);
+        Assert.Equal("BEST BEFORE 03/04/26", expiry.Evidence!.RawText);
+        Assert.Equal(result.ImageId, expiry.Evidence.SourceImageId);
     }
 
     [Fact]

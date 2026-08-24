@@ -12,13 +12,34 @@ public sealed class SpecialAttributeValue
     public decimal? DecimalValue { get; set; }
     public string? TextValue { get; set; }
     public string? CurrencyCode { get; set; }
+    public DateOnly? DateValue { get; set; }
+    public string? Qualifier { get; set; }
+    public SpecialAttributeEvidence? Evidence { get; set; }
+}
+
+public sealed class SpecialAttributeEvidence
+{
+    public string Source { get; set; } = "user";
+    public int? SourceImageId { get; set; }
+    public string? RawText { get; set; }
+    public decimal? Confidence { get; set; }
+    public string? Convention { get; set; }
+    public List<string> Assumptions { get; set; } = new();
+}
+
+public enum ExpiryDateKind
+{
+    Unknown,
+    UseBy,
+    BestBefore
 }
 
 public enum SpecialAttributeValueKind
 {
     Money,
     Number,
-    Text
+    Text,
+    Date
 }
 
 /// <summary>Metadata for a special attribute whose stable key is used by application features.</summary>
@@ -35,6 +56,7 @@ public sealed record SpecialAttributeDefinition(
 public static class SpecialAttributeCatalog
 {
     public const string PriceKey = "price";
+    public const string ExpiryKey = "expiry";
 
     public static readonly SpecialAttributeDefinition Price = new(
         PriceKey,
@@ -42,10 +64,18 @@ public static class SpecialAttributeCatalog
         SpecialAttributeValueKind.Money,
         "Price for one unit of the item, stored with its ISO currency code.");
 
-    public static IReadOnlyList<SpecialAttributeDefinition> All { get; } = [Price];
+    public static readonly SpecialAttributeDefinition Expiry = new(
+        ExpiryKey,
+        "Expiry",
+        SpecialAttributeValueKind.Date,
+        "Operational use-by or best-before date, backed by the indexed item expiry column.");
+
+    public static IReadOnlyList<SpecialAttributeDefinition> All { get; } = [Price, Expiry];
 
     private static readonly HashSet<string> PriceAliases =
         ["price", "unitprice", "cost", "unitcost", "purchaseprice"];
+    private static readonly HashSet<string> ExpiryAliases =
+        ["expiry", "expirydate", "expiration", "expirationdate", "useby", "bestbefore", "bbe"];
 
     private static readonly Regex MoneyPattern = new(
         @"^\s*(?:(?<symbol>[£€$¥])|(?<prefix>[A-Za-z]{3})\s*)?" +
@@ -58,7 +88,15 @@ public static class SpecialAttributeCatalog
             ? value
             : null;
 
-    public static void SetPrice(Item item, decimal? amount, string? currencyCode)
+    public static SpecialAttributeValue? GetExpiry(Item item) =>
+        item.SpecialAttributes.GetValueOrDefault(ExpiryKey) is { DateValue: not null } value
+            ? value
+            : item.ExpiryDate is { } date
+                ? new SpecialAttributeValue { DateValue = date, Qualifier = ExpiryDateKind.Unknown.ToString() }
+                : null;
+
+    public static void SetPrice(
+        Item item, decimal? amount, string? currencyCode, SpecialAttributeEvidence? evidence = null)
     {
         if (amount is null)
         {
@@ -70,8 +108,52 @@ public static class SpecialAttributeCatalog
         item.SpecialAttributes[PriceKey] = new SpecialAttributeValue
         {
             DecimalValue = amount,
-            CurrencyCode = NormalizeCurrencyCode(currencyCode)
+            CurrencyCode = NormalizeCurrencyCode(currencyCode),
+            Evidence = evidence
         };
+    }
+
+    public static void SetExpiry(
+        Item item, DateOnly? date, ExpiryDateKind kind = ExpiryDateKind.Unknown,
+        SpecialAttributeEvidence? evidence = null)
+    {
+        item.ExpiryDate = date;
+        if (date is null)
+        {
+            item.SpecialAttributes.Remove(ExpiryKey);
+            return;
+        }
+        item.SpecialAttributes[ExpiryKey] = new SpecialAttributeValue
+        {
+            DateValue = date,
+            Qualifier = kind.ToString(),
+            Evidence = evidence
+        };
+    }
+
+    /// <summary>
+    /// Adds newly observed special values without replacing reviewed data already on the item.
+    /// Returns true when the target changed.
+    /// </summary>
+    public static bool MergeMissing(Item target, Item observed)
+    {
+        var changed = false;
+        if (GetPrice(target) is null && GetPrice(observed) is { } price)
+        {
+            SetPrice(target, price.DecimalValue, price.CurrencyCode, price.Evidence);
+            changed = true;
+        }
+
+        if (GetExpiry(target) is null && GetExpiry(observed) is { DateValue: { } date } expiry)
+        {
+            var kind = Enum.TryParse<ExpiryDateKind>(expiry.Qualifier, out var parsed)
+                ? parsed
+                : ExpiryDateKind.Unknown;
+            SetExpiry(target, date, kind, expiry.Evidence);
+            changed = true;
+        }
+
+        return changed;
     }
 
     /// <summary>
@@ -111,14 +193,33 @@ public static class SpecialAttributeCatalog
 
     public static void Normalize(Item item)
     {
-        if (!item.SpecialAttributes.TryGetValue(PriceKey, out var price)) return;
-        if (price.DecimalValue is null)
+        if (item.SpecialAttributes.TryGetValue(PriceKey, out var price))
         {
-            item.SpecialAttributes.Remove(PriceKey);
-            return;
+            if (price.DecimalValue is null)
+                item.SpecialAttributes.Remove(PriceKey);
+            else
+            {
+                if (price.DecimalValue < 0) throw new InvalidOperationException("Price cannot be negative.");
+                price.CurrencyCode = NormalizeCurrencyCode(price.CurrencyCode);
+            }
         }
-        if (price.DecimalValue < 0) throw new InvalidOperationException("Price cannot be negative.");
-        price.CurrencyCode = NormalizeCurrencyCode(price.CurrencyCode);
+
+        if (item.ExpiryDate is { } date)
+        {
+            if (!item.SpecialAttributes.TryGetValue(ExpiryKey, out var expiry))
+                item.SpecialAttributes[ExpiryKey] = new SpecialAttributeValue
+                {
+                    DateValue = date,
+                    Qualifier = ExpiryDateKind.Unknown.ToString()
+                };
+            else
+                expiry.DateValue = date;
+        }
+        else if (item.SpecialAttributes.TryGetValue(ExpiryKey, out var expiry))
+        {
+            if (expiry.DateValue is { } specialDate) item.ExpiryDate = specialDate;
+            else item.SpecialAttributes.Remove(ExpiryKey);
+        }
     }
 
     /// <summary>
@@ -141,7 +242,7 @@ public static class SpecialAttributeCatalog
     {
         var key = new string((name ?? string.Empty).Where(char.IsLetterOrDigit)
             .Select(char.ToLowerInvariant).ToArray());
-        return PriceAliases.Contains(key);
+        return PriceAliases.Contains(key) || ExpiryAliases.Contains(key);
     }
 
     public static bool TryParsePrice(string? text, out decimal amount, out string currencyCode)

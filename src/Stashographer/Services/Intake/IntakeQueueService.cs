@@ -296,6 +296,8 @@ public class IntakeQueueService(
         {
             var existing = await inventory.GetAsync(existingId)
                 ?? throw new InvalidOperationException("The selected inventory item no longer exists.");
+            if (SpecialAttributeCatalog.MergeMissing(existing, draft))
+                await inventory.SaveAsync(existing, ct);
             await inventory.AdjustQuantityAsync(existingId, queued.IncrementBy, ct);
             if (draft.LocationId is not null || draft.ContainerId is not null)
                 await inventory.MoveItemsAsync([existingId], draft.LocationId, draft.ContainerId, ct);

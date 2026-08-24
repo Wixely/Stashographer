@@ -1,5 +1,20 @@
 namespace Stashographer.Services.Ai;
 
+public sealed record AiRegionalContext(
+    string DefaultCurrency,
+    string DateOrder,
+    string CultureName,
+    string TimeZoneId,
+    DateOnly CurrentDate);
+
+public sealed record VisionExpiry
+{
+    public string? RawText { get; init; }
+    public DateOnly? Date { get; init; }
+    public string? Type { get; init; }
+    public decimal? Confidence { get; init; }
+}
+
 /// <summary>What the vision model determined about a photographed item.</summary>
 public record VisionIdentification
 {
@@ -17,6 +32,9 @@ public record VisionIdentification
 
     /// <summary>Three-letter ISO currency code for <see cref="PriceAmount"/>.</summary>
     public string? PriceCurrency { get; init; }
+
+    /// <summary>A visibly printed use-by/best-before date and its source interpretation.</summary>
+    public VisionExpiry? Expiry { get; init; }
 
     /// <summary>Barcode digits, only when clearly readable in the photo.</summary>
     public string? Barcode { get; init; }

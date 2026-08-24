@@ -100,4 +100,30 @@ public class AiSettingsTests
         Assert.False(loaded.RequireReview);
         Assert.Equal(25, loaded.ContextItemCount);
     }
+
+    [Fact]
+    public async Task Regional_options_have_local_defaults_and_roundtrip()
+    {
+        await using var db = await TestDb.CreateAsync();
+        var service = new SettingsService(db.Factory);
+
+        var defaults = await service.GetRegionalOptionsAsync();
+        Assert.Equal("GBP", defaults.DefaultCurrency);
+        Assert.Equal(RegionalDateOrder.DayMonthYear, defaults.DateOrder);
+        Assert.Equal("en-GB", defaults.CultureName);
+
+        await service.SaveRegionalOptionsAsync(new InventoryRegionalOptions
+        {
+            DefaultCurrency = "eur",
+            DateOrder = RegionalDateOrder.MonthDayYear,
+            CultureName = "en-US",
+            TimeZoneId = "UTC"
+        });
+
+        var loaded = await service.GetRegionalOptionsAsync();
+        Assert.Equal("EUR", loaded.DefaultCurrency);
+        Assert.Equal(RegionalDateOrder.MonthDayYear, loaded.DateOrder);
+        Assert.Equal("en-US", loaded.CultureName);
+        Assert.Equal("UTC", loaded.TimeZoneId);
+    }
 }

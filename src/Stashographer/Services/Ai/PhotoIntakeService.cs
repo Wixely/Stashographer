@@ -1,4 +1,5 @@
 using Stashographer.Data.Entities;
+using Stashographer.Services.Config;
 using Stashographer.Services.Images;
 using Stashographer.Services.Inventory;
 
@@ -43,7 +44,8 @@ public class PhotoIntakeService(
     IAiEnrichmentService ai,
     InventoryService inventory,
     ImageService images,
-    ILogger<PhotoIntakeService> logger)
+    ILogger<PhotoIntakeService> logger,
+    SettingsService? settings = null)
 {
     private const int ThumbnailWidthForMatching = 240;
     private const int MaxCandidateThumbnails = 4;
@@ -75,6 +77,7 @@ public class PhotoIntakeService(
     private async Task<IntakeResult> ProcessSingleStoredAsync(
         int imageId, byte[] bytes, string mediaType, string? intakeContext, CancellationToken ct)
     {
+        var regional = await GetRegionalOptionsAsync(ct);
         var boxes = PrepareDetectedBoxes(await ai.DetectItemsAsync(bytes, mediaType, ct));
         var focus = PickSingleItemBox(boxes);
         if (focus is not null)
@@ -87,7 +90,7 @@ public class PhotoIntakeService(
                 {
                     var cropBytes = await images.ReadOriginalBytesAsync(crop.Id, ct);
                     if (cropBytes is not null)
-                        return await ProcessBytesAsync(crop.Id, cropBytes, crop.ContentType, intakeContext, ct);
+                        return await ProcessBytesAsync(crop.Id, cropBytes, crop.ContentType, intakeContext, regional, ct);
                 }
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
@@ -96,27 +99,30 @@ public class PhotoIntakeService(
             }
         }
 
-        return await ProcessBytesAsync(imageId, bytes, mediaType, intakeContext, ct);
+        return await ProcessBytesAsync(imageId, bytes, mediaType, intakeContext, regional, ct);
     }
 
     private async Task<IntakeResult> ProcessBytesAsync(
-        int imageId, byte[] bytes, string mediaType, string? intakeContext, CancellationToken ct)
+        int imageId, byte[] bytes, string mediaType, string? intakeContext,
+        InventoryRegionalOptions regional, CancellationToken ct)
     {
         var kinds = await inventory.GetKindsAsync(ct);
         var identification = await ai.IdentifyItemAsync(
-            bytes, mediaType, kinds.Select(k => k.Name).ToList(), ct, intakeContext);
+            bytes, mediaType, kinds.Select(k => k.Name).ToList(), ct, intakeContext,
+            new AiRegionalContext(regional.DefaultCurrency, regional.DateOrder.ToString(),
+                regional.CultureName, regional.TimeZoneId, regional.Today()));
 
         if (identification is null || string.IsNullOrWhiteSpace(identification.Name))
         {
             // Model couldn't tell — fall back to a blank create card so nothing is lost.
             return new IntakeResult(imageId, identification,
                 new IntakeProposal(IntakeAction.CreateNew, null, null, 1,
-                    BuildDraft(imageId, identification, kinds)),
+                    BuildDraft(imageId, identification, kinds, regional)),
                 new List<Item>());
         }
 
         var candidates = await inventory.FindCandidatesAsync(identification.Name, identification.Barcode, ct: ct);
-        var draft = BuildDraft(imageId, identification, kinds);
+        var draft = BuildDraft(imageId, identification, kinds, regional);
         var by = Math.Max(1, identification.Count);
 
         // Rule 1: exact barcode match → HIGH, no model call.
@@ -182,12 +188,16 @@ public class PhotoIntakeService(
         var bytes = await images.ReadOriginalBytesAsync(imageId, ct)
             ?? throw new InvalidOperationException("The queued image file could not be read.");
 
+        var regional = await GetRegionalOptionsAsync(ct);
         var boxes = PrepareDetectedBoxes(await ai.DetectItemsAsync(bytes, fullPhoto.ContentType, ct));
         if (boxes.Count == 0)
         {
             // Nothing detected — treat the whole photo as one item rather than losing it.
             logger.LogInformation("Multi-item detection found nothing; falling back to single-item flow");
-            return new List<IntakeResult> { await ProcessBytesAsync(fullPhoto.Id, bytes, fullPhoto.ContentType, intakeContext, ct) };
+            return new List<IntakeResult>
+            {
+                await ProcessBytesAsync(fullPhoto.Id, bytes, fullPhoto.ContentType, intakeContext, regional, ct)
+            };
         }
 
         var semaphore = new SemaphoreSlim(MultiConcurrency);
@@ -203,7 +213,7 @@ public class PhotoIntakeService(
                 if (crop is null) return null;
                 var cropBytes = await images.ReadOriginalBytesAsync(crop.Id, ct);
                 if (cropBytes is null) return null;
-                return await ProcessBytesAsync(crop.Id, cropBytes, crop.ContentType, intakeContext, ct);
+                return await ProcessBytesAsync(crop.Id, cropBytes, crop.ContentType, intakeContext, regional, ct);
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
@@ -282,8 +292,12 @@ public class PhotoIntakeService(
 
         if (action != IntakeAction.CreateNew && matchedId is { } id)
         {
+            var existing = await inventory.GetAsync(id, ct)
+                ?? throw new InvalidOperationException("The selected inventory item no longer exists.");
+            if (SpecialAttributeCatalog.MergeMissing(existing, proposal.Draft))
+                await inventory.SaveAsync(existing, ct);
             await inventory.AdjustQuantityAsync(id, proposal.IncrementBy, ct);
-            var name = result.Candidates.FirstOrDefault(c => c.Id == id)?.Name ?? proposal.MatchedItemName ?? "item";
+            var name = existing.Name;
             return new IntakeApplied(IntakeAction.IncrementExisting, id, name, proposal.IncrementBy);
         }
 
@@ -302,7 +316,8 @@ public class PhotoIntakeService(
 
     // --- Helpers ----------------------------------------------------------------------
 
-    private static Item BuildDraft(int imageId, VisionIdentification? ident, List<ItemKind> kinds)
+    private static Item BuildDraft(
+        int imageId, VisionIdentification? ident, List<ItemKind> kinds, InventoryRegionalOptions regional)
     {
         var kindId = kinds.FirstOrDefault(k =>
                 k.Name.Equals(ident?.Kind, StringComparison.OrdinalIgnoreCase))?.Id
@@ -320,10 +335,47 @@ public class PhotoIntakeService(
             ImageId = imageId,
             Attributes = ident is null ? new() : new(ident.Attributes)
         };
-        if (ident?.PriceAmount is { } price && ident.PriceCurrency is { } currency)
-            SpecialAttributeCatalog.SetPrice(draft, price, currency);
+        if (ident?.PriceAmount is { } price)
+        {
+            var defaulted = string.IsNullOrWhiteSpace(ident.PriceCurrency);
+            SpecialAttributeCatalog.SetPrice(draft, price,
+                defaulted ? regional.DefaultCurrency : ident.PriceCurrency,
+                new SpecialAttributeEvidence
+                {
+                    Source = "ai-vision",
+                    SourceImageId = imageId,
+                    Assumptions = defaulted ? ["currency:default"] : []
+                });
+        }
+        if (ident?.Expiry is { } expiry)
+        {
+            var usedRegionalParser = RegionalDateParser.TryParseVisibleDate(
+                expiry.RawText, regional.DateOrder, regional.Today(), out var parsedDate);
+            var date = usedRegionalParser ? parsedDate : expiry.Date;
+            if (date is not null)
+                SpecialAttributeCatalog.SetExpiry(draft, date, ExpiryKind(expiry.Type),
+                    new SpecialAttributeEvidence
+                    {
+                        Source = "ai-vision",
+                        SourceImageId = imageId,
+                        RawText = expiry.RawText,
+                        Confidence = expiry.Confidence,
+                        Convention = regional.DateOrder.ToString(),
+                        Assumptions = usedRegionalParser ? [$"date-order:{regional.DateOrder}"] : []
+                    });
+        }
         return draft;
     }
+
+    private static ExpiryDateKind ExpiryKind(string? value) => value?.Trim().ToLowerInvariant() switch
+    {
+        "use_by" or "useby" => ExpiryDateKind.UseBy,
+        "best_before" or "bestbefore" => ExpiryDateKind.BestBefore,
+        _ => ExpiryDateKind.Unknown
+    };
+
+    private async Task<InventoryRegionalOptions> GetRegionalOptionsAsync(CancellationToken ct) =>
+        settings is null ? new InventoryRegionalOptions() : await settings.GetRegionalOptionsAsync(ct);
 
     private async Task<List<MatchCandidate>> ToMatchCandidatesAsync(List<Item> candidates, CancellationToken ct)
     {

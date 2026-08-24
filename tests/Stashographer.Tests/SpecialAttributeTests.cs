@@ -23,6 +23,51 @@ public class SpecialAttributeTests
     }
 
     [Fact]
+    public async Task Expiry_roundtrips_with_operational_date_and_ai_evidence()
+    {
+        await using var db = await TestDb.CreateAsync();
+        var inventory = new InventoryService(db.Factory);
+        var item = new Item { Name = "Yoghurt", ItemKindId = 1 };
+        SpecialAttributeCatalog.SetExpiry(item, new DateOnly(2026, 9, 3),
+            ExpiryDateKind.BestBefore, new SpecialAttributeEvidence
+            {
+                Source = "ai-vision",
+                SourceImageId = 42,
+                RawText = "BB 03/09/26",
+                Confidence = 0.88m,
+                Convention = "DayMonthYear",
+                Assumptions = ["date-order:DayMonthYear"]
+            });
+
+        await inventory.SaveAsync(item);
+        var stored = await inventory.GetAsync(item.Id);
+        var expiry = SpecialAttributeCatalog.GetExpiry(stored!);
+
+        Assert.Equal(new DateOnly(2026, 9, 3), stored!.ExpiryDate);
+        Assert.Equal(new DateOnly(2026, 9, 3), expiry!.DateValue);
+        Assert.Equal(nameof(ExpiryDateKind.BestBefore), expiry.Qualifier);
+        Assert.Equal("BB 03/09/26", expiry.Evidence!.RawText);
+        Assert.Equal(42, expiry.Evidence.SourceImageId);
+        Assert.Contains("date-order:DayMonthYear", expiry.Evidence.Assumptions);
+    }
+
+    [Fact]
+    public void Merge_missing_adds_observations_without_overwriting_reviewed_values()
+    {
+        var target = new Item { Name = "Coffee" };
+        SpecialAttributeCatalog.SetPrice(target, 8m, "GBP");
+        var observed = new Item { Name = "Coffee" };
+        SpecialAttributeCatalog.SetPrice(observed, 6m, "GBP");
+        SpecialAttributeCatalog.SetExpiry(observed, new DateOnly(2027, 1, 2), ExpiryDateKind.UseBy);
+
+        var changed = SpecialAttributeCatalog.MergeMissing(target, observed);
+
+        Assert.True(changed);
+        Assert.Equal(8m, SpecialAttributeCatalog.GetPrice(target)!.DecimalValue);
+        Assert.Equal(new DateOnly(2027, 1, 2), SpecialAttributeCatalog.GetExpiry(target)!.DateValue);
+    }
+
+    [Fact]
     public async Task Recognized_price_string_is_promoted_out_of_ordinary_attributes()
     {
         await using var db = await TestDb.CreateAsync();

@@ -242,6 +242,25 @@ public class IntakeQueueTests
         Assert.Equal(2, moved.Quantity);
     }
 
+    [Fact]
+    public async Task Accepting_a_match_keeps_existing_price_and_adds_missing_expiry()
+    {
+        await using var harness = await Harness.CreateAsync();
+        var existing = new Item { Name = "Coffee", ItemKindId = 1 };
+        SpecialAttributeCatalog.SetPrice(existing, 8m, "GBP");
+        await harness.Inventory.SaveAsync(existing);
+        var queued = await harness.Queue.EnqueueBarcodeAsync("88888888");
+        var draft = new Item { Name = existing.Name, ItemKindId = 1 };
+        SpecialAttributeCatalog.SetPrice(draft, 6m, "GBP");
+        SpecialAttributeCatalog.SetExpiry(draft, new DateOnly(2027, 1, 2), ExpiryDateKind.BestBefore);
+
+        await harness.Queue.AcceptAsync(queued.Id, draft, existing.Id);
+        var updated = await harness.Inventory.GetAsync(existing.Id);
+
+        Assert.Equal(8m, SpecialAttributeCatalog.GetPrice(updated!)!.DecimalValue);
+        Assert.Equal(new DateOnly(2027, 1, 2), updated!.ExpiryDate);
+    }
+
     private sealed class Harness : IAsyncDisposable
     {
         public required TestDb Db { get; init; }
@@ -298,7 +317,8 @@ public class IntakeQueueTests
 
         public Task<VisionIdentification?> IdentifyItemAsync(
             byte[] image, string mediaType, IReadOnlyList<string> knownKinds,
-            CancellationToken ct = default, string? intakeContext = null)
+            CancellationToken ct = default, string? intakeContext = null,
+            AiRegionalContext? regionalContext = null)
         {
             LastIntakeContext = intakeContext;
             return Task.FromResult(Identification);
