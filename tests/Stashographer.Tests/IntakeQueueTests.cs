@@ -490,6 +490,7 @@ public class IntakeQueueTests
 
         var review = (await harness.Queue.GetAsync(receiptQueue.Id))!;
         Assert.Equal(IntakeSourceType.Receipt, review.SourceType);
+        Assert.True(review.SourceTypeOverride);
         Assert.Equal(IntakeQueueStatus.ReadyForReview, review.Status);
         Assert.Equal("GBP", review.Receipt!.Currency);
         Assert.Equal(2, review.Receipt.Lines.Count);
@@ -511,6 +512,66 @@ public class IntakeQueueTests
             Assert.Single(await harness.Inventory.GetImagesAsync(secondApplied.ItemId)).Role);
         await Assert.ThrowsAsync<InvalidOperationException>(
             () => harness.Queue.AcceptReceiptAsync(review.Id, review.Receipt));
+    }
+
+    [Fact]
+    public async Task Ordinary_photo_is_automatically_routed_to_purchase_evidence_review()
+    {
+        await using var harness = await Harness.CreateAsync();
+        harness.Ai.CaptureKind = CaptureContentKind.PurchaseEvidence;
+        harness.Ai.CaptureConfidence = MatchConfidence.High;
+        harness.Ai.Receipt = new ReceiptExtraction
+        {
+            Merchant = "Example Shop",
+            Lines =
+            [
+                new ReceiptLineSuggestion
+                {
+                    LineIndex = 0,
+                    Description = "ORDERED ITEM",
+                    Quantity = 1
+                }
+            ]
+        };
+        await using var screenshot = await PhotoAsync(92);
+        var queued = await harness.Queue.EnqueuePhotoAsync(
+            screenshot, "image/png", "order-screenshot.png");
+
+        await harness.Queue.ProcessAsync(queued.Id, new IntakeOptions(), aiEnabled: true);
+
+        var review = (await harness.Queue.GetAsync(queued.Id))!;
+        Assert.Equal(IntakeSourceType.Receipt, review.SourceType);
+        Assert.False(review.SourceTypeOverride);
+        Assert.Equal(IntakeQueueStatus.ReadyForReview, review.Status);
+        Assert.Equal("Example Shop", review.Receipt!.Merchant);
+        Assert.Null(review.ProposalAction);
+    }
+
+    [Fact]
+    public async Task Manual_item_photo_correction_is_not_undone_by_ai_classification()
+    {
+        await using var harness = await Harness.CreateAsync();
+        harness.Ai.CaptureKind = CaptureContentKind.PurchaseEvidence;
+        harness.Ai.CaptureConfidence = MatchConfidence.High;
+        harness.Ai.Receipt = new ReceiptExtraction
+        {
+            Lines = [new ReceiptLineSuggestion { LineIndex = 0, Description = "FALSE POSITIVE" }]
+        };
+        await using var photo = await PhotoAsync(93);
+        var queued = await harness.Queue.EnqueuePhotoAsync(photo, "image/png", "item.png");
+        await harness.Queue.ProcessAsync(queued.Id, new IntakeOptions(), aiEnabled: true);
+        Assert.Equal(IntakeSourceType.Receipt, (await harness.Queue.GetAsync(queued.Id))!.SourceType);
+
+        await harness.Queue.ReclassifyImageAsync(queued.Id, IntakeSourceType.Photo);
+        harness.Ai.Identification = new VisionIdentification { Name = "Actual item", Kind = "Other" };
+        await harness.Queue.ProcessAsync(queued.Id, new IntakeOptions(), aiEnabled: true);
+
+        var review = (await harness.Queue.GetAsync(queued.Id))!;
+        Assert.Equal(IntakeSourceType.Photo, review.SourceType);
+        Assert.True(review.SourceTypeOverride);
+        Assert.Equal(IntakeQueueStatus.ReadyForReview, review.Status);
+        Assert.Equal("Actual item", review.Draft.Name);
+        Assert.Null(review.Receipt);
     }
 
     [Fact]
@@ -598,6 +659,8 @@ public class IntakeQueueTests
         public bool IsEnabled => true;
         public VisionIdentification? Identification { get; set; }
         public List<DetectedBox> Boxes { get; set; } = new();
+        public CaptureContentKind CaptureKind { get; set; } = CaptureContentKind.InventoryItems;
+        public MatchConfidence CaptureConfidence { get; set; } = MatchConfidence.High;
         public CaptureRelationshipPick? RelationshipPick { get; set; }
         public ReceiptExtraction? Receipt { get; set; }
         public IReadOnlyList<CaptureMatchCandidate> LastCaptureCandidates { get; private set; }
@@ -615,9 +678,9 @@ public class IntakeQueueTests
             return Task.FromResult(Identification);
         }
 
-        public Task<List<DetectedBox>> DetectItemsAsync(
+        public Task<CaptureAnalysis> AnalyzeCaptureAsync(
             byte[] image, string mediaType, CancellationToken ct = default) =>
-            Task.FromResult(Boxes);
+            Task.FromResult(new CaptureAnalysis(CaptureKind, CaptureConfidence, Boxes));
 
         public Task<MatchPick?> PickMatchAsync(
             byte[] image, string mediaType, VisionIdentification identification,

@@ -4,13 +4,13 @@
 @if (QueueItem.Receipt is not { } receipt)
 {
     <MudAlert Severity="Severity.Info">
-        Process the receipt before reviewing its lines.
+        Process the receipt or order before reviewing its lines.
     </MudAlert>
 }
 else
 {
     <MudAlert Severity="Severity.Info" Class="mb-3">
-        Review every match. Accepting attaches this receipt to the selected stock entries and
+        Review every match. Accepting attaches this purchase evidence to the selected stock entries and
         records purchase evidence; it never changes inventory quantities.
     </MudAlert>
 
@@ -27,12 +27,12 @@ else
                           Variant="Variant.Outlined" />
         </MudItem>
         <MudItem xs="6">
-            <MudNumericField @bind-Value="receipt.Total" Label="Receipt total"
+            <MudNumericField @bind-Value="receipt.Total" Label="Purchase total"
                              Min="0" Variant="Variant.Outlined" />
         </MudItem>
     </MudGrid>
 
-    <MudText Typo="Typo.subtitle2" Class="mt-4 mb-2">Receipt lines</MudText>
+    <MudText Typo="Typo.subtitle2" Class="mt-4 mb-2">Purchase lines</MudText>
     @foreach (var line in receipt.Lines.OrderBy(line => line.LineIndex))
     {
         <MudPaper Outlined="true" Class="pa-3 mb-2">
@@ -41,7 +41,7 @@ else
                              Color="Color.Primary" Class="mt-1"
                              AriaLabel="@($"Apply {line.Description}")" />
                 <div class="flex-grow-1">
-                    <MudTextField @bind-Value="line.Description" Label="Receipt description"
+                    <MudTextField @bind-Value="line.Description" Label="Purchase description"
                                   Variant="Variant.Outlined" Margin="Margin.Dense" />
                     <MudGrid Class="mt-0">
                         <MudItem xs="4">
@@ -80,7 +80,7 @@ else
     {
         <MudAlert Severity="Severity.Warning" Dense="true" Class="mt-2">
             There are no earlier items in this intake session. Add and accept the items first,
-            or reject this receipt and capture it in the correct session.
+            or reject this purchase evidence and capture it in the correct session.
         </MudAlert>
     }
 
@@ -88,7 +88,7 @@ else
         <MudButton Color="Color.Success" Variant="Variant.Filled"
                    StartIcon="@Icons.Material.Filled.ReceiptLong"
                    Disabled="@(_working || !CanAccept(receipt))"
-                   OnClick="AcceptAsync">Accept receipt links</MudButton>
+                   OnClick="AcceptAsync">Accept purchase links</MudButton>
         <MudButton Color="Color.Error" Variant="Variant.Outlined"
                    StartIcon="@Icons.Material.Filled.Close"
                    Disabled="_working" OnClick="RejectAsync">Reject</MudButton>

@@ -76,29 +76,39 @@ public class OpenAiEnrichmentService(
         return parsed with { Attributes = AttributeNameService.Canonicalize(parsed.Attributes, focusedNames) };
     }
 
-    // --- Detect -------------------------------------------------------------------
+    // --- Classify and detect ------------------------------------------------------
 
-    public async Task<List<DetectedBox>> DetectItemsAsync(byte[] image, string mediaType, CancellationToken ct = default)
+    public async Task<CaptureAnalysis> AnalyzeCaptureAsync(
+        byte[] image, string mediaType, CancellationToken ct = default)
     {
         const string system =
-            "You locate distinct physical items in a photo for a home inventory. Reply with ONLY a JSON object: " +
-            "{\"items\": [ {\"label\": string, \"box\": {\"x\": number, \"y\": number, \"w\": number, \"h\": number}} ]}. " +
-            "Boxes are normalized to image dimensions (0..1), top-left origin. Return one tight box for every " +
-            "separately countable physical object, including identical or adjacent copies; never group several " +
-            "objects into one box. Ignore surfaces, backgrounds, people, and printed pictures of products.";
+            "You classify an image before locating household inventory. Reply with ONLY a JSON object: " +
+            "{\"captureType\":\"inventory_items\"|\"purchase_evidence\"|\"unknown\", " +
+            "\"confidence\":\"high\"|\"medium\"|\"low\", " +
+            "\"items\":[{\"label\":string,\"box\":{\"x\":number,\"y\":number,\"w\":number,\"h\":number}}]}. " +
+            "purchase_evidence means a paper receipt, invoice, placed-order confirmation, order-history/detail " +
+            "page, or screenshot from a shop, email, or app that visibly records a purchase and its line items. " +
+            "It need not look like a paper receipt. Product listings, catalogue pages, price labels, packaging, " +
+            "bank notifications, and photos of products are inventory_items or unknown, not purchase_evidence. " +
+            "For purchase_evidence return an empty items array so the document is never cropped. " +
+            "For inventory_items, boxes are normalized to image dimensions (0..1), top-left origin. Return one " +
+            "tight box for every separately countable physical object, including identical or adjacent copies; " +
+            "never group several objects into one box. Ignore surfaces, backgrounds, people, and printed pictures.";
 
         var messages = new List<ChatMessage>
         {
             new(ChatRole.System, system),
             new(ChatRole.User, new List<AIContent>
             {
-                new TextContent("Detect the items in this photo."),
+                new TextContent("Classify this capture, then detect inventory items only when applicable."),
                 new DataContent(image, mediaType)
             })
         };
 
         var json = await CompleteJsonAsync(useVision: true, messages, ct);
-        return json is null ? new List<DetectedBox>() : ParseBoxes(json);
+        return json is null
+            ? new CaptureAnalysis(CaptureContentKind.Unknown, MatchConfidence.None, [])
+            : ParseCaptureAnalysis(json);
     }
 
     // --- PickMatch ----------------------------------------------------------------
@@ -198,14 +208,15 @@ public class OpenAiEnrichmentService(
         CancellationToken ct = default)
     {
         const string system =
-            "You extract purchase evidence from a receipt for a household inventory. " +
+            "You extract purchase evidence for a household inventory. The image may be a paper receipt, " +
+            "invoice, completed order confirmation, or screenshot of an order email, app, history, or detail page. " +
             "Reply ONLY as JSON: {\"merchant\": string or null, \"purchaseDate\": \"YYYY-MM-DD\" or null, " +
             "\"currency\": three-letter ISO code or null, \"total\": number or null, " +
             "\"lines\": [{\"lineIndex\": integer, \"description\": string, \"quantity\": number, " +
             "\"unitPrice\": number or null, \"lineTotal\": number or null, " +
             "\"matchedQueueItemId\": integer or null, \"confidence\": \"high\"|\"medium\"|\"low\"}]}. " +
-            "Extract only visible receipt data; never estimate prices, dates, merchant, or currency. " +
-            "Keep one stable zero-based lineIndex per purchasable receipt line and exclude tax, payment, " +
+            "Extract only visible purchase data; never estimate prices, dates, merchant, or currency. " +
+            "Keep one stable zero-based lineIndex per purchased line and exclude tax, payment, " +
             "subtotal, total, discount-summary, and loyalty lines. Match only to the supplied candidates. " +
             "A product name resemblance is insufficient for high confidence when several candidates are plausible. " +
             "Use null and low confidence when uncertain.";
@@ -223,7 +234,7 @@ public class OpenAiEnrichmentService(
             new(ChatRole.User, new List<AIContent>
             {
                 new TextContent(
-                    "Extract this receipt and propose conservative matches to these items captured in the " +
+                    "Extract this receipt or order and propose conservative matches to these items captured in the " +
                     "same intake session: " + JsonSerializer.Serialize(compact)),
                 new DataContent(image, mediaType)
             })
@@ -457,31 +468,43 @@ public class OpenAiEnrichmentService(
         }
     }
 
-    internal List<DetectedBox> ParseBoxes(string json)
+    internal CaptureAnalysis ParseCaptureAnalysis(string json)
     {
         var boxes = new List<DetectedBox>();
         try
         {
             using var doc = JsonDocument.Parse(json);
-            if (!doc.RootElement.TryGetProperty("items", out var items) || items.ValueKind != JsonValueKind.Array)
-                return boxes;
-            foreach (var el in items.EnumerateArray())
+            var root = doc.RootElement;
+            var kind = GetString(root, "captureType")?.Trim().ToLowerInvariant() switch
             {
-                if (!el.TryGetProperty("box", out var b) || !TryReadBox(b, out var values)) continue;
-                var max = values.Max();
-                var scale = max > 100 ? 1000d : max > 1 ? 100d : 1d;
-                var box = new DetectedBox(GetString(el, "label"),
-                    values[0] / scale, values[1] / scale, values[2] / scale, values[3] / scale);
-                // Discard degenerate/out-of-range boxes rather than crop garbage.
-                if (box.W > 0.01 && box.H > 0.01 && box.X is >= 0 and < 1 && box.Y is >= 0 and < 1)
-                    boxes.Add(box);
+                "inventory_items" or "items" or "inventory" => CaptureContentKind.InventoryItems,
+                "purchase_evidence" or "receipt" or "invoice" or "order" or "order_confirmation" =>
+                    CaptureContentKind.PurchaseEvidence,
+                _ => CaptureContentKind.Unknown
+            };
+            var confidence = ParseConfidence(GetString(root, "confidence"));
+            if (root.TryGetProperty("items", out var items) && items.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var el in items.EnumerateArray())
+                {
+                    if (!el.TryGetProperty("box", out var b) || !TryReadBox(b, out var values)) continue;
+                    var max = values.Max();
+                    var scale = max > 100 ? 1000d : max > 1 ? 100d : 1d;
+                    var box = new DetectedBox(GetString(el, "label"),
+                        values[0] / scale, values[1] / scale, values[2] / scale, values[3] / scale);
+                    // Discard degenerate/out-of-range boxes rather than crop garbage.
+                    if (box.W > 0.01 && box.H > 0.01 && box.X is >= 0 and < 1 && box.Y is >= 0 and < 1)
+                        boxes.Add(box);
+                }
             }
+            if (kind == CaptureContentKind.PurchaseEvidence) boxes.Clear();
+            return new CaptureAnalysis(kind, confidence, boxes);
         }
         catch (JsonException ex)
         {
-            logger.LogWarning(ex, "Could not parse detection JSON");
+            logger.LogWarning(ex, "Could not parse capture analysis JSON");
+            return new CaptureAnalysis(CaptureContentKind.Unknown, MatchConfidence.None, boxes);
         }
-        return boxes;
     }
 
     private static bool TryReadBox(JsonElement box, out double[] values)

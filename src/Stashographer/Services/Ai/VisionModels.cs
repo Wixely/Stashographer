@@ -56,6 +56,27 @@ public enum MatchConfidence
     High
 }
 
+public enum CaptureContentKind
+{
+    Unknown,
+    InventoryItems,
+    PurchaseEvidence
+}
+
+/// <summary>
+/// Whole-image classification plus any separately countable inventory objects. Purchase
+/// evidence intentionally has no item boxes so receipts and order screenshots aren't cropped.
+/// </summary>
+public sealed record CaptureAnalysis(
+    CaptureContentKind Kind,
+    MatchConfidence Confidence,
+    List<DetectedBox> Items)
+{
+    public bool IsPurchaseEvidence =>
+        Kind == CaptureContentKind.PurchaseEvidence
+        && Confidence is MatchConfidence.Medium or MatchConfidence.High;
+}
+
 /// <summary>The model's verdict on whether the photo matches an existing inventory item.</summary>
 public record MatchPick(int? MatchedItemId, MatchConfidence Confidence);
 

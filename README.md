@@ -62,10 +62,12 @@ All screenshots use the repository's wholly synthetic Development sample data.
 - **Multi-view item images** — attach front, back, label, detail, and shared receipt images
   without changing quantity. AI crops retain their source-image relationship and exact crop
   region, so the untouched original remains available when a crop needs correcting.
-- **Receipt enrichment** — add a receipt to the current intake session, extract its merchant,
-  date, currency, totals, and purchase lines, then verify conservative line-to-item matches.
-  One sanitized receipt image can be shared by several stock lots with durable purchase
-  provenance; accepting a receipt never changes stock counts.
+- **Purchase-evidence enrichment** — ordinary photo capture automatically recognizes paper
+  receipts, invoices, and screenshots of completed orders, then extracts merchant, date,
+  currency, totals, and purchase lines for conservative line-to-item matching. One sanitized
+  image can be shared by several stock lots with durable provenance; accepting purchase
+  evidence never changes stock counts. A manual receipt/order override and reclassification
+  controls remain available when the model is wrong.
 - **Same-object capture safety** — the vision agent compares each photo with recent session
   captures using instance-specific evidence such as wear, labels, and surrounding context.
   Confident additional views become zero-quantity image attachments; uncertain same-product
@@ -198,11 +200,13 @@ between creating a new item or incrementing a match, then Accept or Reject it. R
 items can also be completed manually. **New session** resets context for the next inventory
 run without discarding unfinished work.
 
-Use **Add receipt** after capturing the session's items. The vision agent only proposes
-matches to earlier captures in that session, and only high-confidence matches start selected.
-Accept the item entries first, then review every receipt line. The shared receipt image,
-merchant/date and line price are stored as purchase evidence on the selected stock lots;
-quantities are deliberately unchanged.
+Capture receipts, invoices, and completed-order screenshots with the normal photo controls;
+the vision agent routes confidently recognized purchase evidence automatically. Use
+**Receipt / order override** only when recognition misses it. The agent only proposes matches
+to earlier captures in that session, and only high-confidence matches start selected. Accept
+the item entries first, then review every purchase line. The shared image, merchant/date and
+line price are stored as purchase evidence on the selected stock lots; quantities are
+deliberately unchanged.
 
 Settings → **Intake workflow** controls queueing, automatic barcode lookup, automatic photo
 processing, the context window, and mandatory review. Turning queueing off restores the

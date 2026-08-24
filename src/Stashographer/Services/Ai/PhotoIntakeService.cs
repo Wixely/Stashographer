@@ -66,30 +66,48 @@ public class PhotoIntakeService(
         await content.CopyToAsync(ms, ct);
         var bytes = ms.ToArray();
         var stored = await images.SaveAsync(new MemoryStream(bytes), mediaType, "photo-intake", null, ct);
-        return await ProcessSingleStoredAsync(stored.Id, bytes, stored.ContentType, null, ct);
+        return await ProcessSingleStoredAsync(stored.Id, bytes, stored.ContentType, null, null, ct);
     }
 
-    /// <summary>Processes an image that was already durably stored by the intake queue.</summary>
-    public async Task<IntakeResult> ProcessStoredAsync(
-        int imageId, string? intakeContext = null, CancellationToken ct = default)
+    /// <summary>Classifies a stored capture and locates any separately countable items.</summary>
+    public async Task<CaptureAnalysis> AnalyzeStoredAsync(
+        int imageId, CancellationToken ct = default)
     {
         var stored = await images.GetAsync(imageId, ct)
             ?? throw new InvalidOperationException("The queued image no longer exists.");
         var bytes = await images.ReadOriginalBytesAsync(imageId, ct)
             ?? throw new InvalidOperationException("The queued image file could not be read.");
-        return await ProcessSingleStoredAsync(imageId, bytes, stored.ContentType, intakeContext, ct);
+        return await ai.AnalyzeCaptureAsync(bytes, stored.ContentType, ct);
     }
 
-    /// <summary>Extracts a stored receipt against items already captured in its intake session.</summary>
+    /// <summary>Processes an image that was already durably stored by the intake queue.</summary>
+    public async Task<IntakeResult> ProcessStoredAsync(
+        int imageId, string? intakeContext = null, CancellationToken ct = default)
+        => await ProcessStoredAsync(imageId, intakeContext, null, ct);
+
+    /// <summary>Processes an image while reusing a capture analysis already obtained by the queue.</summary>
+    public async Task<IntakeResult> ProcessStoredAsync(
+        int imageId, string? intakeContext, CaptureAnalysis? analysis,
+        CancellationToken ct = default)
+    {
+        var stored = await images.GetAsync(imageId, ct)
+            ?? throw new InvalidOperationException("The queued image no longer exists.");
+        var bytes = await images.ReadOriginalBytesAsync(imageId, ct)
+            ?? throw new InvalidOperationException("The queued image file could not be read.");
+        return await ProcessSingleStoredAsync(
+            imageId, bytes, stored.ContentType, intakeContext, analysis, ct);
+    }
+
+    /// <summary>Extracts stored purchase evidence against items already captured in its intake session.</summary>
     public async Task<ReceiptExtraction?> ExtractReceiptStoredAsync(
         int imageId,
         IReadOnlyList<ReceiptMatchCandidate> candidates,
         CancellationToken ct = default)
     {
         var stored = await images.GetAsync(imageId, ct)
-            ?? throw new InvalidOperationException("The queued receipt image no longer exists.");
+            ?? throw new InvalidOperationException("The queued purchase-evidence image no longer exists.");
         var bytes = await images.ReadOriginalBytesAsync(imageId, ct)
-            ?? throw new InvalidOperationException("The queued receipt image file could not be read.");
+            ?? throw new InvalidOperationException("The queued purchase-evidence image file could not be read.");
         var regional = await GetRegionalOptionsAsync(ct);
         var extraction = await ai.ExtractReceiptAsync(
             bytes,
@@ -111,10 +129,12 @@ public class PhotoIntakeService(
     }
 
     private async Task<IntakeResult> ProcessSingleStoredAsync(
-        int imageId, byte[] bytes, string mediaType, string? intakeContext, CancellationToken ct)
+        int imageId, byte[] bytes, string mediaType, string? intakeContext,
+        CaptureAnalysis? analysis, CancellationToken ct)
     {
         var regional = await GetRegionalOptionsAsync(ct);
-        var boxes = PrepareDetectedBoxes(await ai.DetectItemsAsync(bytes, mediaType, ct));
+        analysis ??= await ai.AnalyzeCaptureAsync(bytes, mediaType, ct);
+        var boxes = PrepareDetectedBoxes(analysis.Items);
         var focus = PickSingleItemBox(boxes);
         if (focus is not null)
         {
@@ -250,6 +270,12 @@ public class PhotoIntakeService(
     /// <summary>Runs multi-item detection against a photo already persisted by the queue.</summary>
     public async Task<List<IntakeResult>> ProcessMultiStoredAsync(
         int imageId, string? intakeContext = null, CancellationToken ct = default)
+        => await ProcessMultiStoredAsync(imageId, intakeContext, null, ct);
+
+    /// <summary>Processes a multi-item image while reusing a capture analysis from the queue.</summary>
+    public async Task<List<IntakeResult>> ProcessMultiStoredAsync(
+        int imageId, string? intakeContext, CaptureAnalysis? analysis,
+        CancellationToken ct = default)
     {
         var fullPhoto = await images.GetAsync(imageId, ct)
             ?? throw new InvalidOperationException("The queued image no longer exists.");
@@ -257,7 +283,8 @@ public class PhotoIntakeService(
             ?? throw new InvalidOperationException("The queued image file could not be read.");
 
         var regional = await GetRegionalOptionsAsync(ct);
-        var boxes = PrepareDetectedBoxes(await ai.DetectItemsAsync(bytes, fullPhoto.ContentType, ct));
+        analysis ??= await ai.AnalyzeCaptureAsync(bytes, fullPhoto.ContentType, ct);
+        var boxes = PrepareDetectedBoxes(analysis.Items);
         if (boxes.Count == 0)
         {
             // Nothing detected — treat the whole photo as one item rather than losing it.

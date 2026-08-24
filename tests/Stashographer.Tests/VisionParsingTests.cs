@@ -73,34 +73,50 @@ public class VisionParsingTests
     [Fact]
     public void Boxes_parse_and_degenerate_ones_are_discarded()
     {
-        var boxes = Service().ParseBoxes("""
-            {"items":[
+        var analysis = Service().ParseCaptureAnalysis("""
+            {"captureType":"inventory_items","confidence":"high","items":[
               {"label":"can","box":{"x":0.1,"y":0.2,"w":0.3,"h":0.4}},
               {"label":"degenerate","box":{"x":0.5,"y":0.5,"w":0.0,"h":0.4}},
               {"label":"offscreen","box":{"x":1.5,"y":0.2,"w":0.3,"h":0.4}}
             ]}
             """);
 
-        Assert.Single(boxes);
-        Assert.Equal("can", boxes[0].Label);
-        Assert.Equal(0.3, boxes[0].W, 3);
+        Assert.Equal(CaptureContentKind.InventoryItems, analysis.Kind);
+        Assert.Equal(MatchConfidence.High, analysis.Confidence);
+        Assert.Single(analysis.Items);
+        Assert.Equal("can", analysis.Items[0].Label);
+        Assert.Equal(0.3, analysis.Items[0].W, 3);
     }
 
     [Fact]
     public void Boxes_accept_array_coordinates_and_common_model_scales()
     {
-        var boxes = Service().ParseBoxes("""
-            {"items":[
+        var boxes = Service().ParseCaptureAnalysis("""
+            {"captureType":"inventory_items","confidence":"medium","items":[
               {"label":"percent","box":[10,20,30,40]},
               {"label":"thousand-scale","box":{"x":500,"y":100,"w":250,"h":300}}
             ]}
-            """);
+            """).Items;
 
         Assert.Equal(2, boxes.Count);
         Assert.Equal(0.1, boxes[0].X, 3);
         Assert.Equal(0.4, boxes[0].H, 3);
         Assert.Equal(0.5, boxes[1].X, 3);
         Assert.Equal(0.25, boxes[1].W, 3);
+    }
+
+    [Fact]
+    public void Capture_analysis_recognizes_order_screenshot_and_suppresses_crops()
+    {
+        var analysis = Service().ParseCaptureAnalysis("""
+            {"captureType":"order_confirmation","confidence":"medium","items":[
+              {"label":"printed product","box":{"x":0.1,"y":0.2,"w":0.3,"h":0.4}}
+            ]}
+            """);
+
+        Assert.True(analysis.IsPurchaseEvidence);
+        Assert.Equal(CaptureContentKind.PurchaseEvidence, analysis.Kind);
+        Assert.Empty(analysis.Items);
     }
 
     [Fact]

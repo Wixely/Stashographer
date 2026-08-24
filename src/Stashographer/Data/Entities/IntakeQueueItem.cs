@@ -26,6 +26,8 @@ public class IntakeQueueItem
     public int Id { get; set; }
     public int SessionId { get; set; }
     public IntakeSourceType SourceType { get; set; }
+    /// <summary>True when a person explicitly chose the source type, so AI must not change it.</summary>
+    public bool SourceTypeOverride { get; set; }
     public string? SourceCode { get; set; }
     public string? BrowserUploadToken { get; set; }
     public int? ImageId { get; set; }

@@ -32,8 +32,10 @@ public class PhotoIntakeTests
             return Task.FromResult(Identification);
         }
 
-        public Task<List<DetectedBox>> DetectItemsAsync(byte[] i, string m, CancellationToken ct = default)
-            => Task.FromResult(Boxes);
+        public Task<CaptureAnalysis> AnalyzeCaptureAsync(
+            byte[] i, string m, CancellationToken ct = default) =>
+            Task.FromResult(new CaptureAnalysis(
+                CaptureContentKind.InventoryItems, MatchConfidence.High, Boxes));
 
         public Task<MatchPick?> PickMatchAsync(byte[] i, string m, VisionIdentification id,
             IReadOnlyList<MatchCandidate> c, CancellationToken ct = default)

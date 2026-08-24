@@ -26,8 +26,12 @@ public interface IAiEnrichmentService
         CancellationToken ct = default, string? intakeContext = null,
         AiRegionalContext? regionalContext = null);
 
-    /// <summary>Detects distinct items (with normalized bounding boxes) in a multi-item photo.</summary>
-    Task<List<DetectedBox>> DetectItemsAsync(byte[] image, string mediaType, CancellationToken ct = default);
+    /// <summary>
+    /// Classifies the whole capture and detects distinct inventory items. Purchase evidence
+    /// includes paper receipts, invoices, and screenshots of placed/completed orders.
+    /// </summary>
+    Task<CaptureAnalysis> AnalyzeCaptureAsync(
+        byte[] image, string mediaType, CancellationToken ct = default);
 
     /// <summary>
     /// Decides whether the photographed item matches one of the given existing inventory

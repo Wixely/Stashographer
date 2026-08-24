@@ -124,14 +124,34 @@ else
                         @if (queued.SourceType is IntakeSourceType.Photo or IntakeSourceType.Receipt && !Ai.IsEnabled)
                         {
                             <MudText Typo="Typo.caption" Color="Color.Warning" Class="d-block mt-1">
-                                AI vision is not active; fill the item in manually or configure it in Settings.
+                                AI vision is not active; configure it in Settings to process this image.
                             </MudText>
+                        }
+                        @if (queued.SourceType is IntakeSourceType.Photo or IntakeSourceType.Receipt
+                             && queued.Status != IntakeQueueStatus.Processing)
+                        {
+                            <MudButton FullWidth="true" Class="mt-2" Variant="Variant.Text"
+                                       StartIcon="@(queued.SourceType == IntakeSourceType.Receipt
+                                                        ? Icons.Material.Filled.Inventory2
+                                                        : Icons.Material.Filled.ReceiptLong)"
+                                       Disabled="_working" OnClick="ReclassifyCurrentAsync">
+                                @(queued.SourceType == IntakeSourceType.Receipt
+                                    ? "Treat as item photo"
+                                    : "Treat as receipt / order")
+                            </MudButton>
                         }
                     </MudItem>
 
                     <MudItem xs="12" md="8">
                         @if (queued.SourceType == IntakeSourceType.Receipt)
                         {
+                            @if (!queued.SourceTypeOverride)
+                            {
+                                <MudAlert Severity="Severity.Success" Dense="true" Class="mb-3">
+                                    AI recognized this image as purchase evidence. If that is wrong,
+                                    choose <strong>Treat as item photo</strong>.
+                                </MudAlert>
+                            }
                             <ReceiptReviewPanel QueueItem="queued"
                                                 OnAccepted="ReceiptAcceptedAsync"
                                                 OnRejected="ReceiptRejectedAsync" />
@@ -320,7 +340,7 @@ else
     {
         IntakeSourceType.Barcode => item.SourceCode ?? "Barcode",
         IntakeSourceType.Photo => item.IsMultiPhoto ? "Multi-item photo" : "Photo",
-        IntakeSourceType.Receipt => "Receipt enrichment",
+        IntakeSourceType.Receipt => "Purchase evidence",
         _ => "Automation draft"
     };
 
@@ -405,6 +425,28 @@ else
         finally { _working = false; }
     }
 
+    private async Task ReclassifyCurrentAsync()
+    {
+        if (Current is not { } current) return;
+        var sourceType = current.SourceType == IntakeSourceType.Receipt
+            ? IntakeSourceType.Photo
+            : IntakeSourceType.Receipt;
+        _working = true;
+        try
+        {
+            await IntakeQueue.ReclassifyImageAsync(current.Id, sourceType);
+            Snackbar.Add(sourceType == IntakeSourceType.Receipt
+                ? "Marked as purchase evidence. It is ready to process."
+                : "Marked as an item photo. It is ready to process.", Severity.Success);
+            await LoadAsync(true);
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add(ex.Message, Severity.Error);
+        }
+        finally { _working = false; }
+    }
+
     private async Task AcceptCurrentAsync()
         => await AcceptCurrentAtAsync(_locationId, _containerId);
 
@@ -467,14 +509,14 @@ else
     private async Task ReceiptAcceptedAsync(ReceiptApplied applied)
     {
         Snackbar.Add(
-            $"Receipt linked to {applied.MatchedItems} item{(applied.MatchedItems == 1 ? string.Empty : "s")}. Quantities were not changed.",
+            $"Purchase evidence linked to {applied.MatchedItems} item{(applied.MatchedItems == 1 ? string.Empty : "s")}. Quantities were not changed.",
             Severity.Success);
         await LoadAsync(false);
     }
 
     private async Task ReceiptRejectedAsync()
     {
-        Snackbar.Add("Receipt rejected.", Severity.Info);
+        Snackbar.Add("Purchase evidence rejected.", Severity.Info);
         await LoadAsync(false);
     }
 

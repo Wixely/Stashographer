@@ -99,8 +99,8 @@ public class IntakeQueueService(
     }
 
     /// <summary>
-    /// Queues a receipt as enrichment evidence for earlier items in the active session.
-    /// Receipt processing and acceptance never change inventory quantities.
+    /// Queues purchase evidence as an explicit override for earlier items in the active session.
+    /// Its processing and acceptance never change inventory quantities.
     /// </summary>
     public Task<IntakeQueueItem> EnqueueReceiptAsync(
         Stream content, string mediaType, string? originalName, CancellationToken ct = default) =>
@@ -123,8 +123,38 @@ public class IntakeQueueService(
         {
             SessionId = await GetOrCreateActiveSessionIdAsync(ct),
             SourceType = IntakeSourceType.Receipt,
+            SourceTypeOverride = true,
             BrowserUploadToken = browserUploadToken,
             ImageId = stored.Id,
+            Status = IntakeQueueStatus.Pending,
+            Draft = new Item { Name = string.Empty, ItemKindId = 7 },
+            CreatedAt = DateTimeOffset.UtcNow
+        };
+        item.Id = await InsertIdempotentlyAsync(item, ct);
+        signal.Pulse();
+        return item;
+    }
+
+    /// <summary>
+    /// Queues an already stored image that AI classified as purchase evidence. Unlike the
+    /// receipt/order override, this classification may still be corrected by the user.
+    /// </summary>
+    public async Task<IntakeQueueItem> EnqueueStoredPurchaseEvidenceAsync(
+        int imageId, string? browserUploadToken = null, CancellationToken ct = default)
+    {
+        if (browserUploadToken is not null
+            && await GetByBrowserUploadTokenAsync(browserUploadToken, ct) is { } existing)
+            return existing;
+        if (await images.GetAsync(imageId, ct) is null)
+            throw new InvalidOperationException("The uploaded image no longer exists.");
+
+        var item = new IntakeQueueItem
+        {
+            SessionId = await GetOrCreateActiveSessionIdAsync(ct),
+            SourceType = IntakeSourceType.Receipt,
+            SourceTypeOverride = false,
+            BrowserUploadToken = browserUploadToken,
+            ImageId = imageId,
             Status = IntakeQueueStatus.Pending,
             Draft = new Item { Name = string.Empty, ItemKindId = 7 },
             CreatedAt = DateTimeOffset.UtcNow
@@ -266,7 +296,8 @@ public class IntakeQueueService(
             if (queued.SourceType == IntakeSourceType.Receipt)
             {
                 if (!aiEnabled)
-                    throw new InvalidOperationException("Configure an AI vision model to extract this receipt.");
+                    throw new InvalidOperationException(
+                        "Configure an AI vision model to extract this receipt or order.");
                 await ProcessReceiptAsync(queued, options.ContextItemCount, ct);
                 return true;
             }
@@ -279,7 +310,18 @@ public class IntakeQueueService(
             {
                 if (!aiEnabled)
                     throw new InvalidOperationException("Configure an AI vision model, or enter this item manually.");
-                processed = await ProcessPhotoAsync(queued, options.ContextItemCount, ct);
+                var analysis = await photoIntake.AnalyzeStoredAsync(
+                    queued.ImageId
+                    ?? throw new InvalidOperationException("Queued photo has no stored image."), ct);
+                if (!queued.SourceTypeOverride && analysis.IsPurchaseEvidence)
+                {
+                    await MarkAsPurchaseEvidenceAsync(queued.Id, ct);
+                    queued.SourceType = IntakeSourceType.Receipt;
+                    await ProcessReceiptAsync(queued, options.ContextItemCount, ct);
+                    return true;
+                }
+                processed = await ProcessPhotoAsync(
+                    queued, options.ContextItemCount, analysis, ct);
             }
             else
             {
@@ -370,6 +412,51 @@ public class IntakeQueueService(
                 ProcessingStartedAt = NULL, ProcessedAt = NULL
             WHERE Id = @id AND Status = @failed;
             """, new { id, pending = (int)IntakeQueueStatus.Pending, failed = (int)IntakeQueueStatus.Failed });
+        signal.Pulse();
+    }
+
+    /// <summary>
+    /// Explicitly reclassifies an image and resets its generated data for a clean retry.
+    /// The override is durable so AI cannot immediately undo the correction.
+    /// </summary>
+    public async Task ReclassifyImageAsync(
+        int id, IntakeSourceType sourceType, CancellationToken ct = default)
+    {
+        if (sourceType is not (IntakeSourceType.Photo or IntakeSourceType.Receipt))
+            throw new ArgumentOutOfRangeException(nameof(sourceType));
+        var queued = await GetAsync(id, ct)
+            ?? throw new InvalidOperationException("Queue item was not found.");
+        if (queued.ImageId is null)
+            throw new InvalidOperationException("This queue item has no image to reclassify.");
+        if (queued.Status is IntakeQueueStatus.Accepted or IntakeQueueStatus.Rejected)
+            throw new InvalidOperationException("Completed queue items cannot be reclassified.");
+        if (queued.Status == IntakeQueueStatus.Processing)
+            throw new InvalidOperationException("Wait for processing to finish before reclassifying this image.");
+
+        var draft = new Item
+        {
+            Name = string.Empty,
+            ItemKindId = 7,
+            ImageId = sourceType == IntakeSourceType.Photo ? queued.ImageId : null
+        };
+        using var conn = await db.OpenAsync(ct);
+        await conn.ExecuteAsync("""
+            UPDATE IntakeQueueItems
+            SET SourceType = @sourceType, SourceTypeOverride = 1,
+                Status = @pending, DraftJson = @draft, ReceiptJson = NULL,
+                ProposalAction = NULL, MatchedItemId = NULL, MatchedItemName = NULL,
+                MatchedQueueItemId = NULL, CaptureRelationship = NULL,
+                RelationshipConfidence = NULL, RelationshipReason = NULL,
+                SuggestedImageRole = NULL, IncrementBy = 1, AppliedItemId = NULL,
+                Error = NULL, ProcessingStartedAt = NULL, ProcessedAt = NULL, ReviewedAt = NULL
+            WHERE Id = @id;
+            """, new
+        {
+            id,
+            sourceType = (int)sourceType,
+            pending = (int)IntakeQueueStatus.Pending,
+            draft = JsonSerializer.Serialize(draft, Json)
+        });
         signal.Pulse();
     }
 
@@ -696,13 +783,13 @@ public class IntakeQueueService(
         IntakeQueueItem queued, int contextCount, CancellationToken ct)
     {
         if (queued.ImageId is not { } imageId)
-            throw new InvalidOperationException("Queued receipt has no stored image.");
+            throw new InvalidOperationException("Queued purchase evidence has no stored image.");
         var candidates = await GetReceiptCandidatesAsync(
             queued.Id, Math.Clamp(contextCount, 0, 25), ct);
         var receipt = await photoIntake.ExtractReceiptStoredAsync(imageId, candidates, ct)
-            ?? throw new InvalidOperationException("The vision model could not read this receipt.");
+            ?? throw new InvalidOperationException("The vision model could not read this receipt or order.");
         if (receipt.Lines.Count == 0)
-            throw new InvalidOperationException("No purchasable lines were found on this receipt.");
+            throw new InvalidOperationException("No purchased lines were found in this receipt or order.");
 
         using var conn = await db.OpenAsync(ct);
         await conn.ExecuteAsync("""
@@ -718,8 +805,19 @@ public class IntakeQueueService(
         });
     }
 
+    private async Task MarkAsPurchaseEvidenceAsync(int id, CancellationToken ct)
+    {
+        using var conn = await db.OpenAsync(ct);
+        await conn.ExecuteAsync("""
+            UPDATE IntakeQueueItems
+            SET SourceType = @receipt, ReceiptJson = NULL
+            WHERE Id = @id AND SourceTypeOverride = 0;
+            """, new { id, receipt = (int)IntakeSourceType.Receipt });
+    }
+
     private async Task<List<ProcessedCapture>> ProcessPhotoAsync(
-        IntakeQueueItem queued, int contextCount, CancellationToken ct)
+        IntakeQueueItem queued, int contextCount, CaptureAnalysis analysis,
+        CancellationToken ct)
     {
         if (queued.ImageId is not { } imageId)
             throw new InvalidOperationException("Queued photo has no stored image.");
@@ -735,8 +833,11 @@ public class IntakeQueueService(
             context = "Recent captures (newest first):\n" + string.Join("\n", descriptions);
         }
         var results = queued.IsMultiPhoto
-            ? await photoIntake.ProcessMultiStoredAsync(imageId, context, ct)
-            : new List<IntakeResult> { await photoIntake.ProcessStoredAsync(imageId, context, ct) };
+            ? await photoIntake.ProcessMultiStoredAsync(imageId, context, analysis, ct)
+            : new List<IntakeResult>
+            {
+                await photoIntake.ProcessStoredAsync(imageId, context, analysis, ct)
+            };
         var processed = new List<ProcessedCapture>();
         foreach (var result in results)
         {
@@ -943,12 +1044,12 @@ public class IntakeQueueService(
         using var conn = await db.OpenAsync(ct);
         return await conn.ExecuteScalarAsync<int>("""
             INSERT INTO IntakeQueueItems
-                (SessionId, SourceType, ImageId, IsMultiPhoto, Status, DraftJson, ProposalAction,
+                (SessionId, SourceType, SourceTypeOverride, ImageId, IsMultiPhoto, Status, DraftJson, ProposalAction,
                  MatchedItemId, MatchedItemName, MatchedQueueItemId, CaptureRelationship,
                  RelationshipConfidence, RelationshipReason, SuggestedImageRole,
                  IncrementBy, CreatedAt, ProcessedAt)
             VALUES
-                (@SessionId, @SourceType, @ImageId, 0, @Status, @Draft, @Action,
+                (@SessionId, @SourceType, @SourceTypeOverride, @ImageId, 0, @Status, @Draft, @Action,
                  @MatchedId, @MatchedName, @MatchedQueueItemId, @CaptureRelationship,
                  @RelationshipConfidence, @RelationshipReason, @SuggestedImageRole,
                  @IncrementBy, @CreatedAt, @ProcessedAt);
@@ -957,6 +1058,7 @@ public class IntakeQueueService(
         {
             SessionId = source.SessionId,
             SourceType = (int)IntakeSourceType.Photo,
+            SourceTypeOverride = source.SourceTypeOverride ? 1 : 0,
             ImageId = processed.Draft.ImageId,
             Status = (int)IntakeQueueStatus.ReadyForReview,
             Draft = JsonSerializer.Serialize(processed.Draft, Json),
@@ -1078,16 +1180,17 @@ public class IntakeQueueService(
         using var conn = await db.OpenAsync(ct);
         return await conn.ExecuteScalarAsync<int>("""
             INSERT INTO IntakeQueueItems
-                (SessionId, SourceType, SourceCode, BrowserUploadToken, ImageId, IsMultiPhoto, Status, DraftJson,
+                (SessionId, SourceType, SourceTypeOverride, SourceCode, BrowserUploadToken, ImageId, IsMultiPhoto, Status, DraftJson,
                  ProposalAction, IncrementBy, CreatedAt, ProcessedAt)
             VALUES
-                (@SessionId, @SourceType, @SourceCode, @BrowserUploadToken, @ImageId, @IsMultiPhoto, @Status, @DraftJson,
+                (@SessionId, @SourceType, @SourceTypeOverride, @SourceCode, @BrowserUploadToken, @ImageId, @IsMultiPhoto, @Status, @DraftJson,
                  @ProposalAction, @IncrementBy, @CreatedAt, @ProcessedAt);
             SELECT last_insert_rowid();
             """, new
         {
             item.SessionId,
             SourceType = (int)item.SourceType,
+            SourceTypeOverride = item.SourceTypeOverride ? 1 : 0,
             item.SourceCode,
             item.BrowserUploadToken,
             item.ImageId,
@@ -1182,6 +1285,7 @@ public class IntakeQueueService(
         Id = row.Id,
         SessionId = row.SessionId,
         SourceType = (IntakeSourceType)row.SourceType,
+        SourceTypeOverride = row.SourceTypeOverride,
         SourceCode = row.SourceCode,
         BrowserUploadToken = row.BrowserUploadToken,
         ImageId = row.ImageId,
@@ -1217,7 +1321,7 @@ public class IntakeQueueService(
         string.IsNullOrWhiteSpace(value) ? null : DateTimeOffset.Parse(value);
 
     private const string QueueSelect = """
-        SELECT q.Id, q.SessionId, q.SourceType, q.SourceCode, q.BrowserUploadToken,
+        SELECT q.Id, q.SessionId, q.SourceType, q.SourceTypeOverride, q.SourceCode, q.BrowserUploadToken,
                q.ImageId, q.IsMultiPhoto, q.Status,
                q.DraftJson, q.ReceiptJson, q.ProposalAction, q.MatchedItemId, q.MatchedItemName,
                q.MatchedQueueItemId, q.CaptureRelationship, q.RelationshipConfidence,
@@ -1232,6 +1336,7 @@ public class IntakeQueueService(
         public int Id { get; set; }
         public int SessionId { get; set; }
         public int SourceType { get; set; }
+        public bool SourceTypeOverride { get; set; }
         public string? SourceCode { get; set; }
         public string? BrowserUploadToken { get; set; }
         public int? ImageId { get; set; }

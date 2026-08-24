@@ -53,6 +53,13 @@
                     : "The photo is attached to a new item for you to fill in. Enable AI in Settings to identify and count items automatically.")
             </MudText>
 
+            @if (Ai.IsEnabled)
+            {
+                <MudText Typo="Typo.caption" Class="mud-text-secondary d-block mb-2">
+                    Receipts, invoices, and screenshots of completed orders are recognized automatically.
+                </MudText>
+            }
+
             <ResilientImageInput Id="scan-photo-camera" OwnerKey="scan:camera"
                                  Kind="@PhotoUploadKind" MultipleItems="_multiMode"
                                  Capture="environment" UploadStarted="OnPhotoUploadStarted"
@@ -76,10 +83,11 @@
                 <MudButton HtmlTag="label" for="scan-photo-upload" Variant="Variant.Outlined" Color="Color.Primary"
                            StartIcon="@Icons.Material.Filled.Upload" Disabled="_busy">Upload image</MudButton>
                 <MudButton HtmlTag="label" for="scan-receipt-upload" Variant="Variant.Outlined" Color="Color.Secondary"
-                           StartIcon="@Icons.Material.Filled.ReceiptLong" Disabled="_busy">Add receipt</MudButton>
+                           StartIcon="@Icons.Material.Filled.ReceiptLong" Disabled="_busy">Receipt / order override</MudButton>
             </div>
             <MudText Typo="Typo.caption" Class="mud-text-secondary d-block mt-2">
                 You can also paste an image from the clipboard anywhere on this page (Ctrl+V).
+                Use the override only when automatic recognition misses purchase evidence.
             </MudText>
         </MudPaper>
     </MudItem>
@@ -342,7 +350,7 @@
         ClearIntake();
         _result = null;
         _busy = true;
-        _busyText = "Saving receipt…";
+        _busyText = "Saving purchase evidence…";
         return Task.CompletedTask;
     }
 
@@ -351,12 +359,12 @@
         _busy = false;
         if (upload.QueueItemId is null)
         {
-            Snackbar.Add("The receipt upload did not create a queue entry.", Severity.Error);
+            Snackbar.Add("The purchase-evidence upload did not create a queue entry.", Severity.Error);
             return;
         }
         await RefreshQueueCountAsync();
         if (_intakeOptions.QueueEnabled)
-            Snackbar.Add("Receipt queued for matching to this session's items.", Severity.Success);
+            Snackbar.Add("Purchase evidence queued for matching to this session's items.", Severity.Success);
         else
             Nav.NavigateTo("queue");
     }
@@ -378,7 +386,7 @@
             Snackbar.Add("The uploaded image was not stored.", Severity.Error);
             return;
         }
-        await OnIntakePhoto(imageId);
+        await OnIntakePhoto(imageId, upload.Token);
     }
 
     private Task OnUploadFailed(BrowserUploadFailure failure)
@@ -388,7 +396,7 @@
         return Task.CompletedTask;
     }
 
-    private async Task OnIntakePhoto(int imageId)
+    private async Task OnIntakePhoto(int imageId, string browserUploadToken)
     {
         ClearIntake();
         _result = null;
@@ -414,19 +422,34 @@
         }
 
         _busy = true;
-        _busyText = _multiMode ? "Detecting items…" : "Identifying…";
+        _busyText = "Classifying image…";
         StateHasChanged();
         try
         {
+            var analysis = await Intake.AnalyzeStoredAsync(imageId);
+            if (analysis.IsPurchaseEvidence)
+            {
+                var queued = await Queue.EnqueueStoredPurchaseEvidenceAsync(
+                    imageId, browserUploadToken);
+                await Queue.ProcessAsync(queued.Id, _intakeOptions, Ai.IsEnabled);
+                Snackbar.Add(
+                    "Purchase evidence recognized. Review its extracted lines and item links.",
+                    Severity.Success);
+                Nav.NavigateTo("queue");
+                return;
+            }
+
+            _busyText = _multiMode ? "Detecting items…" : "Identifying…";
+            StateHasChanged();
             if (_multiMode)
             {
-                _multiResults = await Intake.ProcessMultiStoredAsync(imageId);
+                _multiResults = await Intake.ProcessMultiStoredAsync(imageId, null, analysis);
                 if (_multiResults.Count == 0)
                     Snackbar.Add("No items detected in the photo.", Severity.Warning);
             }
             else
             {
-                var intake = await Intake.ProcessStoredAsync(imageId);
+                var intake = await Intake.ProcessStoredAsync(imageId, null, analysis);
                 _pendingIntake = intake; // every queue-disabled photo requires confirmation
             }
         }
