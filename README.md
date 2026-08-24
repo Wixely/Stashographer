@@ -76,6 +76,10 @@ Every container gets a printable QR code — scan it to see what's meant to be i
   allow-list of interchangeable inventory items; allocation avoids double-counting stock.
   A configured AI agent can draft the complete requirement list from a natural-language
   request and current inventory context, with an editable review before anything is saved.
+- **Expiry-aware meal plans** — manually plan from saved recipes or have the configured AI
+  agent draft a reviewable plan that prioritizes dated food. Plans never reserve or change
+  stock. Marking a meal cooked explicitly consumes exact lots earliest-expiry-first, records
+  the event, and supports restoring those same lots with Undo.
 - **AI enrichment (optional)** — identify an item from a photo when a barcode won't do, and
   "season" any item with extra detail, via any **OpenAI-protocol** endpoint.
 - **Agent API & MCP (optional)** — deployment-gated, administrator-activated automation can
@@ -220,6 +224,16 @@ are kept as transient drafts: users can edit every output and requirement, add o
 and only persist the complete definition after explicit acceptance. The accepted definition and
 requirements are written atomically so a partial draft cannot be left behind.
 
+The **Meal Plans** page uses those saved recipes. The configured agent receives only currently
+makeable recipe IDs, matching dated inventory, and regional context; its response is an editable
+draft and cannot mutate inventory. Saving remains inert and does not reserve ingredients because
+later intake or another meal may change availability. Each meal therefore shows a fresh exact-lot
+allocation. **Mark cooked** asks for confirmation and consumes required ingredients across stock
+lots in earliest-expiry-first order without double-counting interchangeable ingredients. Optional
+ingredients are not consumed automatically. Every applied event stores the exact item IDs,
+quantities, units, and expiry snapshots so Undo can restore the same lots. Overdue ingredients are
+flagged for a human safety check; the planner never treats an expiry date as proof that food is safe.
+
 > Keep the key out of git. Put it in a `.env` file next to `docker-compose.yml` (already
 > covered by `.gitignore`) and reference it as `${STASH_AI_API_KEY}`.
 
@@ -232,7 +246,7 @@ dependencies only (see [THIRD-PARTY-NOTICES](THIRD-PARTY-NOTICES.md)).
 ## Development
 
 ```bash
-dotnet test                    # 147 tests, no network access required
+dotnet test                    # 153 tests, no network access required
 dotnet build -c Release
 ```
 

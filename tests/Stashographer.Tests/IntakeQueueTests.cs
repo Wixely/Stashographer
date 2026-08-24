@@ -649,6 +649,13 @@ public class IntakeQueueTests
             IReadOnlyList<string> canonicalAttributeNames, CancellationToken ct = default) =>
             Task.FromResult<AiBomSuggestion?>(null);
 
+        public Task<AiMealPlanSuggestion?> SuggestMealPlanAsync(
+            string? request, DateOnly startDate, int days,
+            IReadOnlyList<AiMealPlanRecipe> recipes,
+            IReadOnlyList<AiMealPlanInventoryItem> inventory,
+            AiRegionalContext regionalContext, CancellationToken ct = default) =>
+            Task.FromResult<AiMealPlanSuggestion?>(null);
+
         public Task<string?> TestConnectionAsync(CancellationToken ct = default) => Task.FromResult<string?>(null);
     }
 

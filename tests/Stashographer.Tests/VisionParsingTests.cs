@@ -197,4 +197,31 @@ public class VisionParsingTests
         Assert.True(suggestion.Requirements[1].IsOptional);
         Assert.Equal(1, suggestion.Requirements[1].Quantity);
     }
+
+    [Fact]
+    public void Meal_plan_suggestion_keeps_valid_saved_recipe_references_and_safe_defaults()
+    {
+        var suggestion = Service().ParseMealPlanSuggestion("""
+            {
+              "name":"Use the spinach",
+              "notes":"Check overdue food before cooking.",
+              "entries":[
+                {"date":"2026-08-25","mealSlot":"Dinner","bomDefinitionId":12,
+                 "outputQuantity":2,"reason":"Uses spinach expiring tomorrow"},
+                {"date":"2026-08-26","mealSlot":"Lunch","bomDefinitionId":13,
+                 "outputQuantity":-4},
+                {"date":"25/08/2026","bomDefinitionId":14},
+                {"date":"2026-08-27","bomDefinitionId":0}
+              ]
+            }
+            """);
+
+        Assert.NotNull(suggestion);
+        Assert.Equal("Use the spinach", suggestion!.Name);
+        Assert.Equal(2, suggestion.Entries.Count);
+        Assert.Equal(new DateOnly(2026, 8, 25), suggestion.Entries[0].Date);
+        Assert.Equal(12, suggestion.Entries[0].BomDefinitionId);
+        Assert.Equal(2, suggestion.Entries[0].OutputQuantity);
+        Assert.Equal(1, suggestion.Entries[1].OutputQuantity);
+    }
 }

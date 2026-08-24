@@ -65,6 +65,16 @@ public interface IAiEnrichmentService
         string request, BomKind kind, IReadOnlyList<AiBomInventoryItem> inventory,
         IReadOnlyList<string> canonicalAttributeNames, CancellationToken ct = default);
 
+    /// <summary>Drafts a date-based plan from saved recipes and expiring stock.</summary>
+    Task<AiMealPlanSuggestion?> SuggestMealPlanAsync(
+        string? request,
+        DateOnly startDate,
+        int days,
+        IReadOnlyList<AiMealPlanRecipe> recipes,
+        IReadOnlyList<AiMealPlanInventoryItem> inventory,
+        AiRegionalContext regionalContext,
+        CancellationToken ct = default);
+
     /// <summary>Makes a minimal round-trip to the endpoint. Returns null on success, else the error.</summary>
     Task<string?> TestConnectionAsync(CancellationToken ct = default);
 }

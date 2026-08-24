@@ -158,6 +158,107 @@ public class BomServiceTests
     }
 
     [Fact]
+    public async Task Exact_allocation_uses_earliest_expiry_without_blocking_a_valid_substitution()
+    {
+        await using var db = await TestDb.CreateAsync();
+        var inventory = new InventoryService(db.Factory);
+        var service = Service(db, inventory);
+        var earlyOnly = await inventory.SaveAsync(new Item
+        {
+            Name = "Early yoghurt",
+            ItemKindId = 1,
+            Quantity = 1,
+            ExpiryDate = new DateOnly(2026, 8, 25)
+        });
+        var flexibleOnly = await inventory.SaveAsync(new Item
+        {
+            Name = "Later yoghurt",
+            ItemKindId = 1,
+            Quantity = 1,
+            ExpiryDate = new DateOnly(2026, 8, 30)
+        });
+        var recipe = await service.SaveDefinitionAsync(new BomDefinition
+        {
+            Name = "Two-part snack",
+            Kind = BomKind.Recipe,
+            OutputQuantity = 1,
+            OutputUnit = "serving"
+        });
+        var flexible = await service.SaveRequirementAsync(new BomRequirement
+        {
+            BomDefinitionId = recipe.Id,
+            Name = "Either yoghurt",
+            MatchMode = BomMatchMode.ExplicitCandidates,
+            CandidateItemIds = [earlyOnly.Id, flexibleOnly.Id]
+        });
+        var fixedRequirement = await service.SaveRequirementAsync(new BomRequirement
+        {
+            BomDefinitionId = recipe.Id,
+            Name = "Specific yoghurt",
+            MatchMode = BomMatchMode.ExplicitCandidates,
+            CandidateItemIds = [earlyOnly.Id]
+        });
+
+        var allocation = await service.GetAllocationAsync(recipe.Id, 1);
+
+        Assert.NotNull(allocation);
+        Assert.True(allocation!.CanMake);
+        Assert.Empty(allocation.Shortfalls);
+        Assert.Contains(allocation.Lines, line =>
+            line.RequirementId == fixedRequirement.Id && line.ItemId == earlyOnly.Id);
+        Assert.Contains(allocation.Lines, line =>
+            line.RequirementId == flexible.Id && line.ItemId == flexibleOnly.Id);
+    }
+
+    [Fact]
+    public async Task Exact_allocation_scales_recipe_and_uses_earliest_expiry_first()
+    {
+        await using var db = await TestDb.CreateAsync();
+        var inventory = new InventoryService(db.Factory);
+        var service = Service(db, inventory);
+        var early = await inventory.SaveAsync(new Item
+        {
+            Name = "Early tomatoes",
+            ItemKindId = 1,
+            Quantity = 2,
+            Unit = "each",
+            ExpiryDate = new DateOnly(2026, 8, 25)
+        });
+        var later = await inventory.SaveAsync(new Item
+        {
+            Name = "Later tomatoes",
+            ItemKindId = 1,
+            Quantity = 5,
+            Unit = "each",
+            ExpiryDate = new DateOnly(2026, 9, 1)
+        });
+        var recipe = await service.SaveDefinitionAsync(new BomDefinition
+        {
+            Name = "Tomato salad",
+            Kind = BomKind.Recipe,
+            OutputQuantity = 2,
+            OutputUnit = "servings"
+        });
+        await service.SaveRequirementAsync(new BomRequirement
+        {
+            BomDefinitionId = recipe.Id,
+            Name = "Tomatoes",
+            Quantity = 2,
+            Unit = "each",
+            MatchMode = BomMatchMode.ExplicitCandidates,
+            CandidateItemIds = [early.Id, later.Id]
+        });
+
+        var allocation = await service.GetAllocationAsync(recipe.Id, 4);
+
+        Assert.NotNull(allocation);
+        Assert.True(allocation!.CanMake);
+        Assert.Equal(2, allocation.Lines.Count);
+        Assert.Equal(2, allocation.Lines.Single(line => line.ItemId == early.Id).Quantity);
+        Assert.Equal(2, allocation.Lines.Single(line => line.ItemId == later.Id).Quantity);
+    }
+
+    [Fact]
     public async Task Unit_matching_is_conservative_but_treats_blank_inventory_unit_as_each()
     {
         await using var db = await TestDb.CreateAsync();

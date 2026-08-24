@@ -1,0 +1,337 @@
+@page "/meal-plans"
+@inject MealPlanService MealPlanSvc
+@inject BomService BomSvc
+@inject InventoryService Inventory
+@inject SettingsService SettingsSvc
+@inject IAiEnrichmentService Ai
+@inject IDialogService Dialogs
+@inject ISnackbar Snackbar
+
+<PageTitle>Meal plans · Stashographer</PageTitle>
+
+<div class="d-flex justify-space-between align-start gap-2 flex-wrap mb-4">
+    <div>
+        <MudText Typo="Typo.h4">Meal plans</MudText>
+        <MudText Typo="Typo.body2" Class="mud-text-secondary">
+            Plan from saved recipes, prioritize expiring lots, and consume stock only when a meal is cooked.
+        </MudText>
+        <MudText Typo="Typo.caption" Class="mud-text-secondary">
+            Plans do not reserve stock; exact availability is recalculated before cooking.
+        </MudText>
+    </div>
+    <div class="d-flex gap-2 flex-wrap">
+        <MudButton Href="expiry" Variant="Variant.Outlined"
+                   StartIcon="@Icons.Material.Filled.EventBusy">Food expiry</MudButton>
+        <MudButton Variant="Variant.Outlined" StartIcon="@Icons.Material.Filled.Add"
+                   OnClick="@(() => OpenPlanDialogAsync(false))"
+                   Disabled="@(_loading || _recipes.Count == 0)">New plan</MudButton>
+        @if (Ai.IsEnabled)
+        {
+            <MudButton Color="Color.Primary" Variant="Variant.Filled"
+                       StartIcon="@Icons.Material.Filled.AutoAwesome"
+                       OnClick="@(() => OpenPlanDialogAsync(true))"
+                       Disabled="@(_loading || ReadyRecipeCount == 0)">Generate with AI</MudButton>
+        }
+    </div>
+</div>
+
+@if (_loading)
+{
+    <MudProgressLinear Indeterminate="true" />
+}
+else if (_recipes.Count == 0)
+{
+    <MudAlert Severity="Severity.Info">
+        Create at least one saved recipe with ingredients before planning meals.
+        <MudButton Href="boms" Variant="Variant.Text" Size="Size.Small">Open recipes</MudButton>
+    </MudAlert>
+}
+else
+{
+    @if (ReadyRecipeCount == 0)
+    {
+        <MudAlert Severity="Severity.Warning" Class="mb-3">
+            No saved recipe can currently be made from inventory. Manual planning remains available,
+            and missing ingredients will be shown before cooking.
+        </MudAlert>
+    }
+
+    @if (_plans.Count == 0)
+    {
+        <MudAlert Severity="Severity.Info">
+            No meal plans yet. Create one manually or ask the configured agent to draft one.
+        </MudAlert>
+    }
+    else
+    {
+        @foreach (var plan in _plans)
+        {
+            <MudPaper Outlined="true" Class="pa-4 mb-4">
+                <div class="d-flex justify-space-between align-start gap-2">
+                    <div>
+                        <MudText Typo="Typo.h6">@plan.Name</MudText>
+                        <MudText Typo="Typo.caption" Class="mud-text-secondary">
+                            @plan.StartDate.ToString("d MMM yyyy")–@plan.EndDate.ToString("d MMM yyyy")
+                        </MudText>
+                        @if (!string.IsNullOrWhiteSpace(plan.Notes))
+                        {
+                            <MudText Typo="Typo.body2" Class="mt-1">@plan.Notes</MudText>
+                        }
+                    </div>
+                    <MudIconButton Icon="@Icons.Material.Filled.Delete" Color="Color.Error"
+                                   OnClick="@(() => DeletePlanAsync(plan))"
+                                   Disabled="@(_workingEntryId is not null)" />
+                </div>
+
+                <MudDivider Class="my-3" />
+                @foreach (var entry in plan.Entries)
+                {
+                    <MudPaper Outlined="true" Class="pa-3 mb-2">
+                        <div class="d-flex justify-space-between align-start gap-2 flex-wrap">
+                            <div class="flex-grow-1">
+                                <div class="d-flex align-center gap-2 flex-wrap">
+                                    <MudText Typo="Typo.subtitle1">@entry.RecipeName</MudText>
+                                    <MudChip T="string" Size="Size.Small">
+                                        @entry.PlanDate.ToString("ddd d MMM") · @entry.MealSlot
+                                    </MudChip>
+                                    @if (entry.Status == MealPlanEntryStatus.Cooked)
+                                    {
+                                        <MudChip T="string" Size="Size.Small" Color="Color.Success"
+                                                 Icon="@Icons.Material.Filled.CheckCircle">Cooked</MudChip>
+                                    }
+                                </div>
+                                <MudText Typo="Typo.caption" Class="mud-text-secondary">
+                                    Makes @entry.OutputQuantity.ToString("0.##") @entry.OutputUnit
+                                </MudText>
+                                @if (!string.IsNullOrWhiteSpace(entry.Reason))
+                                {
+                                    <MudText Typo="Typo.body2" Class="mt-1">@entry.Reason</MudText>
+                                }
+
+                                @if (entry.Status == MealPlanEntryStatus.Cooked
+                                     && entry.Consumption is { } consumption)
+                                {
+                                    <MudText Typo="Typo.caption" Class="mud-text-secondary d-block mt-2">
+                                        Used @AllocationText(consumption.Lines)
+                                    </MudText>
+                                }
+                                else if (_allocations.GetValueOrDefault(entry.Id) is { } allocation)
+                                {
+                                    @if (allocation.CanMake)
+                                    {
+                                        <MudText Typo="Typo.caption" Class="mud-text-secondary d-block mt-2">
+                                            Will use @AllocationText(allocation.Lines)
+                                        </MudText>
+                                        @if (allocation.Lines.Any(line => line.ExpiryDate < _today))
+                                        {
+                                            <MudText Typo="Typo.caption" Color="Color.Error">
+                                                Includes overdue food; check it is safe before cooking.
+                                            </MudText>
+                                        }
+                                    }
+                                    else
+                                    {
+                                        <MudText Typo="Typo.caption" Color="Color.Error" Class="d-block mt-2">
+                                            Missing @ShortfallText(allocation.Shortfalls)
+                                        </MudText>
+                                    }
+                                }
+                                else
+                                {
+                                    <MudText Typo="Typo.caption" Color="Color.Warning" Class="d-block mt-2">
+                                        Source recipe unavailable.
+                                    </MudText>
+                                }
+                            </div>
+                            <div>
+                                @if (entry.Status == MealPlanEntryStatus.Cooked
+                                     && entry.Consumption is { } activeConsumption)
+                                {
+                                    <MudButton Variant="Variant.Outlined" Color="Color.Warning"
+                                               StartIcon="@Icons.Material.Filled.Undo"
+                                               Disabled="@(_workingEntryId is not null)"
+                                               OnClick="@(() => UndoAsync(entry, activeConsumption))">
+                                        Undo
+                                    </MudButton>
+                                }
+                                else
+                                {
+                                    <MudButton Variant="Variant.Filled" Color="Color.Success"
+                                               StartIcon="@Icons.Material.Filled.Restaurant"
+                                               Disabled="@(_workingEntryId is not null
+                                                           || _allocations.GetValueOrDefault(entry.Id)?.CanMake != true)"
+                                               OnClick="@(() => CookAsync(entry))">
+                                        @(_workingEntryId == entry.Id ? "Cooking…" : "Mark cooked")
+                                    </MudButton>
+                                }
+                            </div>
+                        </div>
+                    </MudPaper>
+                }
+            </MudPaper>
+        }
+    }
+}
+
+@code {
+    private List<MealPlan> _plans = [];
+    private List<BomEvaluation> _recipes = [];
+    private List<Item> _foodInventory = [];
+    private readonly Dictionary<int, BomAllocation?> _allocations = [];
+    private DateOnly _today;
+    private bool _loading = true;
+    private int? _workingEntryId;
+
+    private int ReadyRecipeCount => _recipes.Count(recipe =>
+        recipe.CanMakeOne && recipe.RequiredCount > 0);
+
+    protected override async Task OnInitializedAsync()
+    {
+        var regional = await SettingsSvc.GetRegionalOptionsAsync();
+        _today = regional.Today();
+        await ReloadAsync();
+    }
+
+    private async Task ReloadAsync()
+    {
+        _loading = true;
+        _foodInventory = (await Inventory.QueryAsync(new ItemQuery(IncludeKindIds: [1])))
+            .Where(item => item.Quantity > 0)
+            .ToList();
+        var definitions = (await BomSvc.GetAllAsync())
+            .Where(definition => definition.Kind == BomKind.Recipe)
+            .ToList();
+        _recipes = [];
+        foreach (var definition in definitions)
+        {
+            var evaluation = await BomSvc.EvaluateAsync(definition.Id);
+            if (evaluation is not null) _recipes.Add(evaluation);
+        }
+        _plans = await MealPlanSvc.GetAllAsync();
+        _allocations.Clear();
+        foreach (var entry in _plans.SelectMany(plan => plan.Entries)
+                     .Where(entry => entry.Status == MealPlanEntryStatus.Planned))
+            _allocations[entry.Id] = await MealPlanSvc.GetAllocationAsync(entry);
+        _loading = false;
+    }
+
+    private async Task OpenPlanDialogAsync(bool generateWithAi)
+    {
+        var parameters = new DialogParameters
+        {
+            ["GenerateWithAi"] = generateWithAi,
+            ["Today"] = _today,
+            ["Recipes"] = _recipes,
+            ["Inventory"] = _foodInventory
+        };
+        var title = generateWithAi ? "Generate expiry-aware meal plan" : "New meal plan";
+        var result = await (await Dialogs.ShowAsync<MealPlanDialog>(title, parameters)).Result;
+        if (result is not { Canceled: false, Data: MealPlanDraft draft }) return;
+        try
+        {
+            await MealPlanSvc.SaveReviewedAsync(draft);
+            await ReloadAsync();
+            Snackbar.Add("Reviewed meal plan saved. Inventory was not changed.", Severity.Success);
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Could not save the plan: {ex.Message}", Severity.Error);
+        }
+    }
+
+    private async Task CookAsync(MealPlanEntry entry)
+    {
+        var allocation = await MealPlanSvc.GetAllocationAsync(entry);
+        if (allocation is null || !allocation.CanMake)
+        {
+            Snackbar.Add("Inventory no longer satisfies this meal. Reload and review it.", Severity.Error);
+            return;
+        }
+        var overdue = allocation.Lines.Any(line => line.ExpiryDate < _today)
+            ? " This includes overdue food; check it is safe before continuing."
+            : string.Empty;
+        var yes = await Dialogs.ShowMessageBoxAsync(
+            "Mark meal cooked?",
+            $"Consume {AllocationText(allocation.Lines)} for “{entry.RecipeName}”?{overdue}",
+            yesText: "Consume ingredients",
+            cancelText: "Cancel");
+        if (yes != true) return;
+
+        _workingEntryId = entry.Id;
+        try
+        {
+            var applied = await MealPlanSvc.CookAsync(entry.Id);
+            await ReloadAsync();
+            Snackbar.Add(
+                $"Cooked {applied.Description}; {applied.Lines.Count} stock lot(s) updated.",
+                Severity.Success);
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Could not consume ingredients: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            _workingEntryId = null;
+        }
+    }
+
+    private async Task UndoAsync(MealPlanEntry entry, ConsumptionEvent consumption)
+    {
+        var yes = await Dialogs.ShowMessageBoxAsync(
+            "Undo consumption?",
+            $"Restore the exact stock lots consumed for “{entry.RecipeName}”?",
+            yesText: "Restore inventory",
+            cancelText: "Cancel");
+        if (yes != true) return;
+        _workingEntryId = entry.Id;
+        try
+        {
+            await MealPlanSvc.UndoAsync(consumption.Id);
+            await ReloadAsync();
+            Snackbar.Add("Consumption undone and exact stock lots restored.", Severity.Success);
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Could not undo consumption: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            _workingEntryId = null;
+        }
+    }
+
+    private async Task DeletePlanAsync(MealPlan plan)
+    {
+        var yes = await Dialogs.ShowMessageBoxAsync(
+            "Delete meal plan?",
+            $"Delete “{plan.Name}”?",
+            yesText: "Delete",
+            cancelText: "Cancel");
+        if (yes != true) return;
+        try
+        {
+            await MealPlanSvc.DeletePlanAsync(plan.Id);
+            await ReloadAsync();
+            Snackbar.Add("Meal plan deleted.", Severity.Success);
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add(ex.Message, Severity.Error);
+        }
+    }
+
+    private static string AllocationText(IEnumerable<BomAllocationLine> lines) =>
+        string.Join(", ", lines.Select(line =>
+            $"{line.Quantity:0.##} {line.Unit} {line.ItemName}" +
+            (line.ExpiryDate is { } expiry ? $" (expires {expiry:d MMM})" : string.Empty)));
+
+    private static string AllocationText(IEnumerable<ConsumptionLine> lines) =>
+        string.Join(", ", lines.Select(line =>
+            $"{line.Quantity:0.##} {line.Unit} {line.ItemName}" +
+            (line.ExpiryDate is { } expiry ? $" (expiry {expiry:d MMM})" : string.Empty)));
+
+    private static string ShortfallText(IEnumerable<BomRequirementShortfall> shortfalls) =>
+        string.Join(", ", shortfalls.Select(shortfall =>
+            $"{shortfall.RequiredQuantity - shortfall.AllocatedQuantity:0.##} {shortfall.Unit} {shortfall.RequirementName}"));
+}

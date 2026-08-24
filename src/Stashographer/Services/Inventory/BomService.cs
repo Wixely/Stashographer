@@ -211,6 +211,130 @@ public sealed class BomService(
         return new BomEvaluation(definition, evaluations, CanAllocate(evaluations));
     }
 
+    /// <summary>
+    /// Produces an exact lot-level allocation for a requested recipe output. Required
+    /// ingredients are allocated globally so interchangeable requirements cannot double-count
+    /// stock. Among valid allocations, earlier expiries are preferred.
+    /// </summary>
+    public async Task<BomAllocation?> GetAllocationAsync(
+        int id, decimal outputQuantity, CancellationToken ct = default)
+    {
+        if (outputQuantity <= 0)
+            throw new InvalidOperationException("Meal output quantity must be greater than zero.");
+        var definition = await GetAsync(id, ct);
+        if (definition is null) return null;
+        var active = (await inventory.QueryAsync(new ItemQuery(), ct))
+            .Where(item => item.Quantity > 0 && !item.IsCheckedOut)
+            .ToList();
+        return Allocate(definition, outputQuantity, active);
+    }
+
+    internal static BomAllocation Allocate(
+        BomDefinition definition, decimal outputQuantity, IReadOnlyList<Item> activeItems)
+    {
+        if (definition.OutputQuantity <= 0)
+            throw new InvalidOperationException("The recipe output quantity is invalid.");
+        if (outputQuantity <= 0)
+            throw new InvalidOperationException("Meal output quantity must be greater than zero.");
+
+        var requirements = definition.Requirements.Where(requirement => !requirement.IsOptional).ToList();
+        if (requirements.Count == 0)
+            return new BomAllocation(definition, outputQuantity, [],
+            [
+                new BomRequirementShortfall(
+                    0, "Recipe requirements", 1, 0, null)
+            ]);
+
+        var items = activeItems.Where(item => item.Quantity > 0 && !item.IsCheckedOut)
+            .OrderBy(item => item.ExpiryDate is null)
+            .ThenBy(item => item.ExpiryDate)
+            .ThenBy(item => item.Id)
+            .ToList();
+        var source = 0;
+        var itemOffset = 1;
+        var requirementOffset = itemOffset + items.Count;
+        var sink = requirementOffset + requirements.Count;
+        var graph = Enumerable.Range(0, sink + 1).Select(_ => new List<FlowEdge>()).ToArray();
+        var tracked = new Dictionary<(int ItemIndex, int RequirementIndex), FlowEdge>();
+        var scale = outputQuantity / definition.OutputQuantity;
+        var demands = requirements.Select(requirement => requirement.Quantity * scale).ToArray();
+
+        for (var itemIndex = 0; itemIndex < items.Count; itemIndex++)
+        {
+            AddEdge(graph, source, itemOffset + itemIndex, items[itemIndex].Quantity, itemIndex + 1);
+            for (var requirementIndex = 0; requirementIndex < requirements.Count; requirementIndex++)
+            {
+                if (!Matches(requirements[requirementIndex], items[itemIndex])) continue;
+                tracked[(itemIndex, requirementIndex)] = AddEdge(
+                    graph,
+                    itemOffset + itemIndex,
+                    requirementOffset + requirementIndex,
+                    items[itemIndex].Quantity,
+                    0);
+            }
+        }
+        for (var requirementIndex = 0; requirementIndex < requirements.Count; requirementIndex++)
+            AddEdge(graph, requirementOffset + requirementIndex, sink, demands[requirementIndex], 0);
+
+        var targetFlow = demands.Sum();
+        var flow = 0m;
+        while (flow < targetFlow
+               && TryFindCheapestPath(graph, source, sink, out var parents))
+        {
+            var amount = targetFlow - flow;
+            for (var node = sink; node != source;)
+            {
+                var parent = parents[node];
+                amount = Math.Min(amount, graph[parent.From][parent.EdgeIndex].Capacity);
+                node = parent.From;
+            }
+            for (var node = sink; node != source;)
+            {
+                var parent = parents[node];
+                var edge = graph[parent.From][parent.EdgeIndex];
+                edge.Capacity -= amount;
+                graph[node][edge.ReverseIndex].Capacity += amount;
+                node = parent.From;
+            }
+            flow += amount;
+        }
+
+        var lines = new List<BomAllocationLine>();
+        var allocatedByRequirement = new decimal[requirements.Count];
+        foreach (var ((itemIndex, requirementIndex), edge) in tracked)
+        {
+            var allocated = edge.OriginalCapacity - edge.Capacity;
+            if (allocated <= 0) continue;
+            var item = items[itemIndex];
+            var requirement = requirements[requirementIndex];
+            allocatedByRequirement[requirementIndex] += allocated;
+            lines.Add(new BomAllocationLine(
+                requirement.Id,
+                requirement.Name,
+                item.Id,
+                item.Name,
+                allocated,
+                requirement.Unit ?? item.Unit,
+                item.ExpiryDate));
+        }
+        lines = lines
+            .OrderBy(line => line.ExpiryDate is null)
+            .ThenBy(line => line.ExpiryDate)
+            .ThenBy(line => line.RequirementName)
+            .ThenBy(line => line.ItemId)
+            .ToList();
+        var shortfalls = requirements.Select((requirement, index) =>
+                new BomRequirementShortfall(
+                    requirement.Id,
+                    requirement.Name,
+                    demands[index],
+                    allocatedByRequirement[index],
+                    requirement.Unit))
+            .Where(shortfall => shortfall.AllocatedQuantity < shortfall.RequiredQuantity)
+            .ToList();
+        return new BomAllocation(definition, outputQuantity, lines, shortfalls);
+    }
+
     internal static bool Matches(BomRequirement requirement, Item item)
     {
         if (!UnitMatches(requirement.Unit, item.Unit)) return false;
@@ -292,6 +416,48 @@ public sealed class BomService(
         path.Add(source);
         path.Reverse();
         return true;
+    }
+
+    private static FlowEdge AddEdge(
+        IReadOnlyList<List<FlowEdge>> graph, int from, int to, decimal capacity, int cost)
+    {
+        var forward = new FlowEdge(to, graph[to].Count, capacity, capacity, cost);
+        var reverse = new FlowEdge(from, graph[from].Count, 0, 0, -cost);
+        graph[from].Add(forward);
+        graph[to].Add(reverse);
+        return forward;
+    }
+
+    private static bool TryFindCheapestPath(
+        IReadOnlyList<List<FlowEdge>> graph,
+        int source,
+        int sink,
+        out FlowParent[] parents)
+    {
+        const long infinity = long.MaxValue / 4;
+        var distances = Enumerable.Repeat(infinity, graph.Count).ToArray();
+        parents = Enumerable.Repeat(new FlowParent(-1, -1), graph.Count).ToArray();
+        distances[source] = 0;
+        for (var pass = 0; pass < graph.Count - 1; pass++)
+        {
+            var changed = false;
+            for (var from = 0; from < graph.Count; from++)
+            {
+                if (distances[from] == infinity) continue;
+                for (var edgeIndex = 0; edgeIndex < graph[from].Count; edgeIndex++)
+                {
+                    var edge = graph[from][edgeIndex];
+                    if (edge.Capacity <= 0 || edge.To == source) continue;
+                    var candidate = distances[from] + edge.Cost;
+                    if (candidate >= distances[edge.To]) continue;
+                    distances[edge.To] = candidate;
+                    parents[edge.To] = new FlowParent(from, edgeIndex);
+                    changed = true;
+                }
+            }
+            if (!changed) break;
+        }
+        return parents[sink].From >= 0;
     }
 
     private static bool UnitMatches(string? required, string? available)
@@ -396,4 +562,16 @@ public sealed class BomService(
         public int RequirementId { get; set; }
         public int ItemId { get; set; }
     }
+
+    private sealed class FlowEdge(
+        int to, int reverseIndex, decimal capacity, decimal originalCapacity, int cost)
+    {
+        public int To { get; } = to;
+        public int ReverseIndex { get; } = reverseIndex;
+        public decimal Capacity { get; set; } = capacity;
+        public decimal OriginalCapacity { get; } = originalCapacity;
+        public int Cost { get; } = cost;
+    }
+
+    private readonly record struct FlowParent(int From, int EdgeIndex);
 }

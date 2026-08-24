@@ -63,3 +63,29 @@ public sealed record BomEvaluation(
     public int SatisfiedRequiredCount => Requirements.Count(x => !x.Requirement.IsOptional && x.IsSatisfied);
     public int RequiredCount => Requirements.Count(x => !x.Requirement.IsOptional);
 }
+
+/// <summary>An exact, reviewable stock-lot allocation for one recipe output quantity.</summary>
+public sealed record BomAllocation(
+    BomDefinition Definition,
+    decimal OutputQuantity,
+    IReadOnlyList<BomAllocationLine> Lines,
+    IReadOnlyList<BomRequirementShortfall> Shortfalls)
+{
+    public bool CanMake => Shortfalls.Count == 0;
+}
+
+public sealed record BomAllocationLine(
+    int RequirementId,
+    string RequirementName,
+    int ItemId,
+    string ItemName,
+    decimal Quantity,
+    string? Unit,
+    DateOnly? ExpiryDate);
+
+public sealed record BomRequirementShortfall(
+    int RequirementId,
+    string RequirementName,
+    decimal RequiredQuantity,
+    decimal AllocatedQuantity,
+    string? Unit);

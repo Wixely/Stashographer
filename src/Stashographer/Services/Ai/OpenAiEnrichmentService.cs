@@ -318,6 +318,57 @@ public class OpenAiEnrichmentService(
         return json is null ? null : ParseBomSuggestion(json, kind);
     }
 
+    // --- Meal-plan suggestion (text) ----------------------------------------------
+
+    public async Task<AiMealPlanSuggestion?> SuggestMealPlanAsync(
+        string? request,
+        DateOnly startDate,
+        int days,
+        IReadOnlyList<AiMealPlanRecipe> recipes,
+        IReadOnlyList<AiMealPlanInventoryItem> inventory,
+        AiRegionalContext regionalContext,
+        CancellationToken ct = default)
+    {
+        days = Math.Clamp(days, 1, 14);
+        if (recipes.Count == 0) return null;
+        var endDate = startDate.AddDays(days - 1);
+        const string system =
+            "You draft practical household meal plans using only saved recipes supplied by the application. " +
+            "Prioritize recipes whose matching inventory expires soonest, especially overdue or near-expiry food, " +
+            "without claiming food is safe when it may not be. Do not invent recipes or inventory. " +
+            "Account for required ingredient quantities across the whole plan and do not budget any inventory " +
+            "quantity more than once; return fewer meals when the supplied stock cannot support every day. " +
+            "Reply ONLY as JSON: {\"name\": string, \"notes\": string or null, \"entries\": [" +
+            "{\"date\":\"YYYY-MM-DD\", \"mealSlot\":string, \"bomDefinitionId\":integer, " +
+            "\"outputQuantity\":number, \"reason\":string}]}. " +
+            "Return one dinner per requested day when enough distinct ready recipes exist; recipes may repeat when needed. " +
+            "The reason should briefly name the expiring ingredient that motivated the choice. " +
+            "Output quantity means the recipe's output amount (usually servings), not a multiplier.";
+        var prompt =
+            $"Plan dates: {startDate:yyyy-MM-dd} through {endDate:yyyy-MM-dd}. " +
+            $"User preferences: {(string.IsNullOrWhiteSpace(request) ? "none supplied" : request.Trim())}. " +
+            $"Ready saved recipes: {JsonSerializer.Serialize(recipes)}. " +
+            $"Relevant inventory, earliest expiry first: {JsonSerializer.Serialize(inventory)}.";
+        var messages = new List<ChatMessage>
+        {
+            new(ChatRole.System, system + RegionalRule(regionalContext)),
+            new(ChatRole.User, prompt)
+        };
+        var json = await CompleteJsonAsync(useVision: false, messages, ct);
+        var suggestion = json is null ? null : ParseMealPlanSuggestion(json);
+        if (suggestion is null) return null;
+        var recipeIds = recipes.Select(recipe => recipe.Id).ToHashSet();
+        suggestion.Entries = suggestion.Entries
+            .Where(entry => entry.Date >= startDate
+                            && entry.Date <= endDate
+                            && recipeIds.Contains(entry.BomDefinitionId)
+                            && entry.OutputQuantity > 0)
+            .OrderBy(entry => entry.Date)
+            .ThenBy(entry => entry.MealSlot)
+            .ToList();
+        return suggestion.Entries.Count == 0 ? null : suggestion;
+    }
+
     // --- Connection test ------------------------------------------------------------
 
     public async Task<string?> TestConnectionAsync(CancellationToken ct = default)
@@ -662,6 +713,45 @@ public class OpenAiEnrichmentService(
         catch (JsonException ex)
         {
             logger.LogWarning(ex, "Could not parse BOM suggestion JSON");
+            return null;
+        }
+    }
+
+    internal AiMealPlanSuggestion? ParseMealPlanSuggestion(string json)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(json);
+            var root = doc.RootElement;
+            var suggestion = new AiMealPlanSuggestion
+            {
+                Name = GetString(root, "name")?.Trim() ?? string.Empty,
+                Notes = GetString(root, "notes")?.Trim()
+            };
+            if (!root.TryGetProperty("entries", out var entries)
+                || entries.ValueKind != JsonValueKind.Array) return null;
+            foreach (var element in entries.EnumerateArray())
+            {
+                if (!DateOnly.TryParseExact(GetString(element, "date"), "yyyy-MM-dd", out var date))
+                    continue;
+                if (!element.TryGetProperty("bomDefinitionId", out var recipeElement)
+                    || recipeElement.ValueKind != JsonValueKind.Number
+                    || !recipeElement.TryGetInt32(out var recipeId)
+                    || recipeId <= 0) continue;
+                suggestion.Entries.Add(new AiMealPlanEntrySuggestion
+                {
+                    Date = date,
+                    MealSlot = GetString(element, "mealSlot")?.Trim() ?? "Dinner",
+                    BomDefinitionId = recipeId,
+                    OutputQuantity = GetPositiveDecimal(element, "outputQuantity") ?? 1,
+                    Reason = GetString(element, "reason")?.Trim()
+                });
+            }
+            return suggestion.Entries.Count == 0 ? null : suggestion;
+        }
+        catch (JsonException ex)
+        {
+            logger.LogWarning(ex, "Could not parse meal-plan suggestion JSON");
             return null;
         }
     }

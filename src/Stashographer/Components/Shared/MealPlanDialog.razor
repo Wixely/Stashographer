@@ -1,0 +1,333 @@
+@inject IAiEnrichmentService Ai
+@inject SettingsService SettingsSvc
+
+<MudDialog Options="@(new DialogOptions { MaxWidth = MaxWidth.Large, FullWidth = true })">
+    <DialogContent>
+        @if (_draftReady)
+        {
+            <MudAlert Severity="Severity.Warning" Class="mb-3">
+                Review every date, recipe, and output quantity. Saving a plan does not consume
+                inventory; stock changes only after you explicitly mark a meal cooked.
+            </MudAlert>
+            <MudGrid>
+                <MudItem xs="12" sm="8">
+                    <MudTextField @bind-Value="_name" Label="Plan name"
+                                  Variant="Variant.Outlined" Required="true" />
+                </MudItem>
+                <MudItem xs="6" sm="2">
+                    <MudTextField @bind-Value="_startDateText" Label="Starts"
+                                  Placeholder="YYYY-MM-DD" Variant="Variant.Outlined" />
+                </MudItem>
+                <MudItem xs="6" sm="2">
+                    <MudTextField @bind-Value="_endDateText" Label="Ends"
+                                  Placeholder="YYYY-MM-DD" Variant="Variant.Outlined" />
+                </MudItem>
+                <MudItem xs="12">
+                    <MudTextField @bind-Value="_notes" Label="Notes"
+                                  Variant="Variant.Outlined" Lines="2" />
+                </MudItem>
+            </MudGrid>
+
+            <div class="d-flex justify-space-between align-center mt-4 mb-2">
+                <MudText Typo="Typo.h6">Meals</MudText>
+                <MudButton Variant="Variant.Text" StartIcon="@Icons.Material.Filled.Add"
+                           OnClick="AddEntry">Add meal</MudButton>
+            </div>
+            @foreach (var editor in _entries)
+            {
+                <MudPaper @key="editor" Outlined="true" Class="pa-3 mb-3">
+                    <div class="d-flex justify-space-between align-center mb-2">
+                        <MudText Typo="Typo.subtitle2">Planned meal</MudText>
+                        <MudIconButton Icon="@Icons.Material.Filled.Delete" Color="Color.Error"
+                                       Size="Size.Small" OnClick="@(() => _entries.Remove(editor))" />
+                    </div>
+                    <MudGrid>
+                        <MudItem xs="6" sm="3">
+                            <MudTextField @bind-Value="editor.DateText" Label="Date"
+                                          Placeholder="YYYY-MM-DD" Variant="Variant.Outlined" />
+                        </MudItem>
+                        <MudItem xs="6" sm="3">
+                            <MudTextField @bind-Value="editor.Draft.MealSlot" Label="Meal"
+                                          Placeholder="Dinner" Variant="Variant.Outlined" />
+                        </MudItem>
+                        <MudItem xs="12" sm="6">
+                            <MudSelect T="int" @bind-Value="editor.Draft.BomDefinitionId"
+                                       Label="Saved recipe" Variant="Variant.Outlined">
+                                @foreach (var recipe in RecipeDefinitions)
+                                {
+                                    <MudSelectItem T="int" Value="@recipe.Id">
+                                        @recipe.Name
+                                    </MudSelectItem>
+                                }
+                            </MudSelect>
+                        </MudItem>
+                        <MudItem xs="5" sm="3">
+                            <MudNumericField T="decimal" @bind-Value="editor.Draft.OutputQuantity"
+                                             Label="Makes" Min="0.01m" Variant="Variant.Outlined" />
+                        </MudItem>
+                        <MudItem xs="7" sm="9">
+                            <MudTextField @bind-Value="editor.Draft.Reason" Label="Why this meal?"
+                                          Variant="Variant.Outlined"
+                                          Placeholder="For example: uses spinach expiring tomorrow" />
+                        </MudItem>
+                    </MudGrid>
+                </MudPaper>
+            }
+        }
+        else
+        {
+            <MudAlert Severity="Severity.Info" Class="mb-3">
+                The agent can choose only from saved, currently makeable recipes. It receives
+                expiry dates and recipe matches so it can prioritize food that should be used soon.
+                Its result remains an editable draft.
+            </MudAlert>
+            <MudGrid>
+                <MudItem xs="7">
+                    <MudTextField @bind-Value="_startDateText" Label="Start date"
+                                  Placeholder="YYYY-MM-DD" Variant="Variant.Outlined" />
+                </MudItem>
+                <MudItem xs="5">
+                    <MudNumericField T="int" @bind-Value="_days" Label="Days"
+                                     Min="1" Max="14" Variant="Variant.Outlined" />
+                </MudItem>
+                <MudItem xs="12">
+                    <MudTextField @bind-Value="_request" Label="Preferences (optional)"
+                                  Placeholder="Vegetarian; quick weekday dinners; avoid repeating meals…"
+                                  Variant="Variant.Outlined" Lines="3" />
+                </MudItem>
+            </MudGrid>
+            <MudText Typo="Typo.caption" Class="mud-text-secondary d-block mt-2">
+                @ReadyRecipeCount makeable recipe(s) ·
+                @Inventory.Count(item => item.ExpiryDate is not null) dated food lot(s)
+            </MudText>
+        }
+
+        @if (!string.IsNullOrWhiteSpace(_error))
+        {
+            <MudAlert Severity="Severity.Error" Class="mt-3">@_error</MudAlert>
+        }
+    </DialogContent>
+    <DialogActions>
+        <MudButton OnClick="Cancel" Disabled="_working">Cancel</MudButton>
+        @if (_draftReady)
+        {
+            @if (GenerateWithAi)
+            {
+                <MudButton Variant="Variant.Text" OnClick="StartOver" Disabled="_working">Start over</MudButton>
+            }
+            <MudButton Color="Color.Primary" Variant="Variant.Filled"
+                       StartIcon="@Icons.Material.Filled.Check"
+                       Disabled="@(_working || !CanAccept())" OnClick="Accept">
+                Save reviewed plan
+            </MudButton>
+        }
+        else
+        {
+            <MudButton Color="Color.Primary" Variant="Variant.Filled"
+                       StartIcon="@Icons.Material.Filled.AutoAwesome"
+                       Disabled="@(_working || ReadyRecipeCount == 0)"
+                       OnClick="GenerateAsync">
+                @(_working ? "Generating…" : "Generate draft")
+            </MudButton>
+        }
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private IMudDialogInstance Dialog { get; set; } = default!;
+    [Parameter] public bool GenerateWithAi { get; set; }
+    [Parameter] public DateOnly Today { get; set; }
+    [Parameter] public List<BomEvaluation> Recipes { get; set; } = [];
+    [Parameter] public List<Item> Inventory { get; set; } = [];
+
+    private readonly List<EntryEditor> _entries = [];
+    private string _name = string.Empty;
+    private string? _notes;
+    private string _startDateText = string.Empty;
+    private string _endDateText = string.Empty;
+    private string? _request;
+    private int _days = 7;
+    private bool _draftReady;
+    private bool _working;
+    private string? _error;
+
+    private List<BomDefinition> RecipeDefinitions =>
+        Recipes.Select(recipe => recipe.Definition).OrderBy(recipe => recipe.Name).ToList();
+    private int ReadyRecipeCount => Recipes.Count(recipe =>
+        recipe.CanMakeOne && recipe.RequiredCount > 0);
+
+    protected override void OnInitialized()
+    {
+        _startDateText = Today.ToString("yyyy-MM-dd");
+        _endDateText = Today.AddDays(6).ToString("yyyy-MM-dd");
+        if (GenerateWithAi) return;
+        _name = $"Meal plan from {Today:d MMM}";
+        _draftReady = true;
+        AddEntry();
+    }
+
+    private async Task GenerateAsync()
+    {
+        _error = null;
+        if (!TryDate(_startDateText, out var start))
+        {
+            _error = "Enter the start date as YYYY-MM-DD.";
+            return;
+        }
+        _days = Math.Clamp(_days, 1, 14);
+        var ready = Recipes.Where(recipe => recipe.CanMakeOne && recipe.RequiredCount > 0).ToList();
+        if (ready.Count == 0)
+        {
+            _error = "No saved recipe can currently be made. Add recipes or inventory first.";
+            return;
+        }
+        _working = true;
+        try
+        {
+            var recipeContext = ready.Select(evaluation => new AiMealPlanRecipe(
+                evaluation.Definition.Id,
+                evaluation.Definition.Name,
+                evaluation.Definition.Description,
+                evaluation.Definition.OutputQuantity,
+                evaluation.Definition.OutputUnit,
+                evaluation.Requirements
+                    .Select(requirement => new AiMealPlanIngredient(
+                        requirement.Requirement.Name,
+                        requirement.Requirement.Quantity,
+                        requirement.Requirement.Unit,
+                        requirement.Requirement.IsOptional,
+                        requirement.MatchingItems.Select(item => item.Id).Distinct().ToList()))
+                    .ToList())).ToList();
+            var inventoryContext = ready
+                .SelectMany(evaluation => evaluation.Requirements)
+                .SelectMany(requirement => requirement.MatchingItems)
+                .Where(item => item.Quantity > 0 && !item.IsCheckedOut)
+                .DistinctBy(item => item.Id)
+                .OrderBy(item => item.ExpiryDate is null)
+                .ThenBy(item => item.ExpiryDate)
+                .Take(200)
+                .Select(item => new AiMealPlanInventoryItem(
+                    item.Id, item.Name, item.Quantity, item.Unit, item.ExpiryDate))
+                .ToList();
+            var regional = await SettingsSvc.GetRegionalOptionsAsync();
+            var suggestion = await Ai.SuggestMealPlanAsync(
+                _request,
+                start,
+                _days,
+                recipeContext,
+                inventoryContext,
+                new AiRegionalContext(
+                    regional.DefaultCurrency,
+                    regional.DateOrder.ToString(),
+                    regional.CultureName,
+                    regional.TimeZoneId,
+                    regional.Today()));
+            if (suggestion is null)
+            {
+                _error = "The configured agent did not return a usable meal plan.";
+                return;
+            }
+            _name = string.IsNullOrWhiteSpace(suggestion.Name)
+                ? $"Meal plan from {start:d MMM}"
+                : suggestion.Name;
+            _notes = suggestion.Notes;
+            _endDateText = start.AddDays(_days - 1).ToString("yyyy-MM-dd");
+            _entries.Clear();
+            _entries.AddRange(suggestion.Entries.Select(entry => new EntryEditor(
+                new MealPlanEntryDraft
+                {
+                    PlanDate = entry.Date,
+                    MealSlot = entry.MealSlot,
+                    BomDefinitionId = entry.BomDefinitionId,
+                    OutputQuantity = entry.OutputQuantity,
+                    Reason = entry.Reason
+                },
+                entry.Date.ToString("yyyy-MM-dd"))));
+            _draftReady = true;
+        }
+        catch (Exception ex)
+        {
+            _error = $"Could not generate a plan: {ex.Message}";
+        }
+        finally
+        {
+            _working = false;
+        }
+    }
+
+    private void AddEntry()
+    {
+        var date = TryDate(_startDateText, out var start) ? start : Today;
+        if (_entries.Count > 0 && TryDate(_entries[^1].DateText, out var last))
+            date = last.AddDays(1);
+        var recipe = RecipeDefinitions.FirstOrDefault();
+        _entries.Add(new EntryEditor(
+            new MealPlanEntryDraft
+            {
+                PlanDate = date,
+                MealSlot = "Dinner",
+                BomDefinitionId = recipe?.Id ?? 0,
+                OutputQuantity = recipe?.OutputQuantity ?? 1
+            },
+            date.ToString("yyyy-MM-dd")));
+    }
+
+    private bool CanAccept() => TryBuildDraft(out _);
+
+    private void Accept()
+    {
+        if (TryBuildDraft(out var draft)) Dialog.Close(DialogResult.Ok(draft));
+    }
+
+    private bool TryBuildDraft(out MealPlanDraft draft)
+    {
+        draft = new MealPlanDraft();
+        if (string.IsNullOrWhiteSpace(_name)
+            || !TryDate(_startDateText, out var start)
+            || !TryDate(_endDateText, out var end)
+            || end < start
+            || _entries.Count == 0) return false;
+        var entries = new List<MealPlanEntryDraft>();
+        foreach (var editor in _entries)
+        {
+            if (!TryDate(editor.DateText, out var date)
+                || date < start || date > end
+                || editor.Draft.BomDefinitionId <= 0
+                || editor.Draft.OutputQuantity <= 0) return false;
+            editor.Draft.PlanDate = date;
+            entries.Add(editor.Draft);
+        }
+        draft = new MealPlanDraft
+        {
+            Name = _name,
+            StartDate = start,
+            EndDate = end,
+            Notes = _notes,
+            Entries = entries
+        };
+        return true;
+    }
+
+    private void StartOver()
+    {
+        _draftReady = false;
+        _entries.Clear();
+        _error = null;
+    }
+
+    private static bool TryDate(string? value, out DateOnly date) =>
+        DateOnly.TryParseExact(
+            value,
+            "yyyy-MM-dd",
+            System.Globalization.CultureInfo.InvariantCulture,
+            System.Globalization.DateTimeStyles.None,
+            out date);
+
+    private void Cancel() => Dialog.Cancel();
+
+    private sealed class EntryEditor(MealPlanEntryDraft draft, string dateText)
+    {
+        public MealPlanEntryDraft Draft { get; } = draft;
+        public string DateText { get; set; } = dateText;
+    }
+}
