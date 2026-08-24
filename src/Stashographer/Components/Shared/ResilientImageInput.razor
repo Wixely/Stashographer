@@ -1,13 +1,15 @@
 @implements IAsyncDisposable
 @inject IJSRuntime JS
 
-<input id="@Id" type="file" hidden accept="@Accept" capture="@Capture" />
+<input id="@Id" type="file" hidden accept="@Accept" capture="@Capture"
+       multiple="@AllowMultipleFiles" />
 
 @code {
     [Parameter, EditorRequired] public string Id { get; set; } = string.Empty;
     [Parameter, EditorRequired] public string OwnerKey { get; set; } = string.Empty;
     [Parameter] public BrowserUploadKind Kind { get; set; } = BrowserUploadKind.Image;
     [Parameter] public bool MultipleItems { get; set; } = true;
+    [Parameter] public bool AllowMultipleFiles { get; set; }
     [Parameter] public bool CompletesClipboardQueue { get; set; }
     [Parameter] public string Accept { get; set; } = "image/*";
     [Parameter] public string? Capture { get; set; }
@@ -21,7 +23,7 @@
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
-        var signature = $"{Id}|{OwnerKey}|{Kind}|{MultipleItems}|{CompletesClipboardQueue}";
+        var signature = $"{Id}|{OwnerKey}|{Kind}|{MultipleItems}|{AllowMultipleFiles}|{CompletesClipboardQueue}";
         if (_registeredSignature == signature) return;
         _self ??= DotNetObjectReference.Create(this);
         if (_registeredId is not null && _registeredId != Id)

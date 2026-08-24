@@ -221,32 +221,38 @@ window.stashResilientUpload = (() => {
         if (entry.state === 'uploading' || entry.retryable) poll(entry);
     }
 
-    function selected(controller) {
-        const file = controller.input.files && controller.input.files[0];
+    async function selected(controller) {
+        const selectedFiles = Array.from(controller.input.files || []);
         controller.input.value = '';
-        if (!file) return;
-
-        const entry = {
-            token: createToken(),
-            ownerKey: controller.ownerKey,
-            kind: controller.kind,
-            multipleItems: controller.multipleItems,
-            fileName: file.name || 'image',
-            createdAt: new Date().toISOString(),
-            state: 'uploading',
-            retryable: true
-        };
-        const entries = readPending();
-        entries.push(entry);
-        writePending(entries);
-        files.set(entry.token, file);
+        if (selectedFiles.length === 0) return;
 
         if (controller.completesClipboardQueue
             && window.stashClipboardImages
             && typeof window.stashClipboardImages.complete === 'function') {
             window.stashClipboardImages.complete();
         }
-        upload(entry, file);
+
+        // Each file gets its own durable token and queue entry. Upload sequentially so
+        // Blazor receives predictable start/completion pairs and the final completion
+        // reliably clears the page's busy state. HTTP uploads continue even if the
+        // interactive circuit is suspended while a mobile picker is open.
+        for (const file of selectedFiles) {
+            const entry = {
+                token: createToken(),
+                ownerKey: controller.ownerKey,
+                kind: controller.kind,
+                multipleItems: controller.multipleItems,
+                fileName: file.name || 'image',
+                createdAt: new Date().toISOString(),
+                state: 'uploading',
+                retryable: true
+            };
+            const entries = readPending();
+            entries.push(entry);
+            writePending(entries);
+            files.set(entry.token, file);
+            await upload(entry, file);
+        }
     }
 
     function register(inputId, ownerKey, kind, multipleItems, completesClipboardQueue, dotNetRef) {
@@ -264,7 +270,7 @@ window.stashResilientUpload = (() => {
             dotNetRef,
             onChange: null
         };
-        controller.onChange = () => selected(controller);
+        controller.onChange = () => { void selected(controller); };
         input.addEventListener('change', controller.onChange);
         controllers.set(inputId, controller);
 

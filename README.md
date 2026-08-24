@@ -31,7 +31,7 @@ All screenshots use the repository's wholly synthetic Development sample data.
 
 | Scan & add | Intake queue |
 |---|---|
-| ![Scan and add — queue-first barcode, camera, upload, clipboard, and receipt capture](docs/screenshots/scan.png) | ![Intake queue — item-by-item verification of a synthetic automation draft](docs/screenshots/queue.png) |
+| ![Scan and add — queue-first barcode, batch photo, clipboard, and purchase-evidence capture](docs/screenshots/scan.png) | ![Intake queue — item-by-item verification of a synthetic automation draft](docs/screenshots/queue.png) |
 
 | Places (dark theme) | Container (dark theme) |
 |---|---|
@@ -56,6 +56,12 @@ All screenshots use the repository's wholly synthetic Development sample data.
   items as context, and the review queue presents every suggestion for item-by-item acceptance
   or correction. Mobile file and camera selections upload through a circuit-independent HTTP
   path, so suspending the browser picker cannot strand the photo during a Blazor reconnect.
+- **Batch photo selection** — in queue mode, the Scan page accepts multiple images from one
+  gallery/file-picker action and camera apps that support multi-capture. Every selected image
+  receives its own durable, idempotent upload and queue entry. Mobile camera apps that return
+  only one shot cannot be forced to remain open by a webpage; use **Take photos** again for the
+  next shot. Immediate-validation mode intentionally remains single-image so one capture is
+  confirmed before another replaces it.
 - **Automatic photo framing** — AI bounding boxes produce a focused, square-ish crop for each
   detected object. Explicit single-item captures crop around the dominant object and fall back
   to the original photo when no reliable bound is available.
@@ -191,8 +197,12 @@ runs in Docker and Qwen Studio runs on the Windows host, use
 
 The intake queue is enabled by default. Barcode scanners can enter a code and press Enter;
 the field clears and regains focus as soon as the capture is stored. Photos can be taken,
-uploaded, or pasted from the clipboard anywhere on the Scan page with Ctrl+V. Processing runs
-in capture order, which lets the model use recent item kinds, attributes, and confirmed
+uploaded, or pasted from the clipboard anywhere on the Scan page with Ctrl+V. In queue mode,
+the photo controls accept multiple files from supporting camera apps and gallery pickers;
+every image is stored as its own durable queue entry. Gallery multi-select is reliable where
+the picker exposes it; many mobile camera apps still return only one shot, in which case tap
+**Take photos** again. Queue-disabled immediate validation remains single-image. Processing
+runs in capture order, which lets the model use recent item kinds, attributes, and confirmed
 placement from the same session as weak context.
 
 Open **Intake Queue** to verify one item at a time, edit its fields and placement, choose

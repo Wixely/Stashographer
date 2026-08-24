@@ -62,10 +62,12 @@
 
             <ResilientImageInput Id="scan-photo-camera" OwnerKey="scan:camera"
                                  Kind="@PhotoUploadKind" MultipleItems="_multiMode"
+                                 AllowMultipleFiles="_intakeOptions.QueueEnabled"
                                  Capture="environment" UploadStarted="OnPhotoUploadStarted"
                                  UploadCompleted="OnIntakePhotoUploaded" UploadFailed="OnUploadFailed" />
             <ResilientImageInput Id="scan-photo-upload" OwnerKey="scan:library"
                                  Kind="@PhotoUploadKind" MultipleItems="_multiMode"
+                                 AllowMultipleFiles="_intakeOptions.QueueEnabled"
                                  UploadStarted="OnPhotoUploadStarted"
                                  UploadCompleted="OnIntakePhotoUploaded" UploadFailed="OnUploadFailed" />
             <ResilientImageInput Id="scan-receipt-upload" OwnerKey="scan:receipt"
@@ -79,14 +81,25 @@
                                  UploadCompleted="OnIntakePhotoUploaded" UploadFailed="OnUploadFailed" />
             <div class="d-flex gap-2 flex-wrap">
                 <MudButton HtmlTag="label" for="scan-photo-camera" Variant="Variant.Filled" Color="Color.Primary"
-                           StartIcon="@Icons.Material.Filled.PhotoCamera" Disabled="_busy">Take photo</MudButton>
+                           StartIcon="@Icons.Material.Filled.PhotoCamera" Disabled="_busy">
+                    @(_intakeOptions.QueueEnabled ? "Take photos" : "Take photo")
+                </MudButton>
                 <MudButton HtmlTag="label" for="scan-photo-upload" Variant="Variant.Outlined" Color="Color.Primary"
-                           StartIcon="@Icons.Material.Filled.Upload" Disabled="_busy">Upload image</MudButton>
+                           StartIcon="@Icons.Material.Filled.Upload" Disabled="_busy">
+                    @(_intakeOptions.QueueEnabled ? "Select photos" : "Upload image")
+                </MudButton>
                 <MudButton HtmlTag="label" for="scan-receipt-upload" Variant="Variant.Outlined" Color="Color.Secondary"
                            StartIcon="@Icons.Material.Filled.ReceiptLong" Disabled="_busy">Receipt / order override</MudButton>
             </div>
             <MudText Typo="Typo.caption" Class="mud-text-secondary d-block mt-2">
                 You can also paste an image from the clipboard anywhere on this page (Ctrl+V).
+                @if (_intakeOptions.QueueEnabled)
+                {
+                    <text>
+                        Gallery selection supports several images in one batch. Camera apps that support
+                        multi-capture can return several shots; otherwise tap Take photos again for the next shot.
+                    </text>
+                }
                 Use the override only when automatic recognition misses purchase evidence.
             </MudText>
         </MudPaper>
