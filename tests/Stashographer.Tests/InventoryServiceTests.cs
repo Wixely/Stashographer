@@ -46,6 +46,33 @@ public class InventoryServiceTests
     }
 
     [Fact]
+    public async Task Fractional_quantity_after_arithmetic_roundtrips_across_inventory_views()
+    {
+        await using var db = await TestDb.CreateAsync();
+        var svc = new InventoryService(db.Factory);
+        var today = new DateOnly(2026, 8, 24);
+        var item = await svc.SaveAsync(new Item
+        {
+            Name = "Chopped tomatoes",
+            ItemKindId = 1,
+            Quantity = 2,
+            Unit = "tin",
+            LowStockThreshold = 2,
+            ExpiryDate = today.AddDays(2)
+        });
+
+        await svc.AdjustQuantityAsync(item.Id, -0.5m);
+
+        Assert.Equal(1.5m, (await svc.GetAsync(item.Id))!.Quantity);
+        Assert.Equal(1.5m, Assert.Single(await svc.QueryAsync(new ItemQuery())).Quantity);
+        var dashboard = await svc.GetDashboardAsync(today);
+        Assert.Equal(1.5m, dashboard.TotalQuantity);
+        Assert.Equal(1.5m, Assert.Single(dashboard.LowStock).Quantity);
+        Assert.Equal(1.5m, Assert.Single(
+            (await svc.GetExpiryOverviewAsync(today)).NextThreeDays).Quantity);
+    }
+
+    [Fact]
     public async Task Query_filters_by_kind_and_search()
     {
         await using var db = await TestDb.CreateAsync();
@@ -102,7 +129,9 @@ public class InventoryServiceTests
         await svc.SaveAsync(new Item { Name = "Milk", ItemKindId = 1, Quantity = 1, LowStockThreshold = 2 });
         await svc.SaveAsync(new Item
         {
-            Name = "Yoghurt", ItemKindId = 1, Quantity = 5,
+            Name = "Yoghurt",
+            ItemKindId = 1,
+            Quantity = 5,
             ExpiryDate = DateOnly.FromDateTime(DateTime.Today.AddDays(2))
         });
 
@@ -141,7 +170,10 @@ public class InventoryServiceTests
         await svc.SaveAsync(new Item { Name = "Missing", ItemKindId = 1 });
         await svc.SaveAsync(new Item
         {
-            Name = "Empty expired", ItemKindId = 1, Quantity = 0, ExpiryDate = today.AddDays(-2)
+            Name = "Empty expired",
+            ItemKindId = 1,
+            Quantity = 0,
+            ExpiryDate = today.AddDays(-2)
         });
         await svc.SaveAsync(new Item { Name = "Dated tool", ItemKindId = 3, ExpiryDate = today.AddDays(2) });
 

@@ -56,6 +56,31 @@ public class DateTimeOffsetTypeHandler : SqlMapper.TypeHandler<DateTimeOffset>
     };
 }
 
+/// <summary>
+/// Normalizes SQLite's dynamic INTEGER/REAL representation of NUMERIC columns. A value can
+/// switch from an integer to a floating-point storage class after arithmetic, while the domain
+/// model deliberately keeps exact decimal quantities.
+/// </summary>
+public sealed class DecimalTypeHandler : SqlMapper.TypeHandler<decimal>
+{
+    public override void SetValue(IDbDataParameter parameter, decimal value)
+    {
+        parameter.DbType = DbType.Decimal;
+        parameter.Value = value;
+    }
+
+    public override decimal Parse(object value) => value switch
+    {
+        decimal number => number,
+        long number => number,
+        int number => number,
+        double number => Convert.ToDecimal(number, CultureInfo.InvariantCulture),
+        float number => Convert.ToDecimal(number, CultureInfo.InvariantCulture),
+        string text => decimal.Parse(text, NumberStyles.Number, CultureInfo.InvariantCulture),
+        _ => Convert.ToDecimal(value, CultureInfo.InvariantCulture)
+    };
+}
+
 public static class DapperConfig
 {
     private static bool _configured;
@@ -68,6 +93,7 @@ public static class DapperConfig
 
         SqlMapper.AddTypeHandler(new DateOnlyTypeHandler());
         SqlMapper.AddTypeHandler(new DateTimeOffsetTypeHandler());
+        SqlMapper.AddTypeHandler(new DecimalTypeHandler());
         SqlMapper.AddTypeHandler(new JsonTypeHandler<Dictionary<string, string>>());
         SqlMapper.AddTypeHandler(new JsonTypeHandler<List<string>>());
         SqlMapper.AddTypeHandler(new JsonTypeHandler<List<int>>());

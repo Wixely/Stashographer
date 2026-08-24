@@ -15,17 +15,27 @@ administrator password protects configuration.
 
 ## Screenshots
 
+All screenshots use the repository's wholly synthetic Development sample data.
+
 | Dashboard | Inventory |
 |---|---|
-| ![Dashboard — item counts, expiring soon, low stock, currently out](docs/screenshots/dashboard.png) | ![Inventory — filterable item list with inline quantity controls](docs/screenshots/inventory.png) |
+| ![Dashboard — quantities, values, expiry, low stock, and checked-out items](docs/screenshots/dashboard.png) | ![Inventory — tags, prices, locations, and inline quantity controls](docs/screenshots/inventory.png) |
 
-| Scan & add | Places |
+| Food expiry | Meal plans |
 |---|---|
-| ![Scan & add — camera scanning, manual barcode entry, add from photo](docs/screenshots/scan.png) | ![Places — rooms and containers explorer](docs/screenshots/places.png) |
+| ![Food expiry — urgency groups and quick-use actions](docs/screenshots/expiry.png) | ![Meal plans — cooked history and shared stock budgeting](docs/screenshots/meal-plans.png) |
 
-Every container gets a printable QR code — scan it to see what's meant to be inside:
+| Recipes & builds | Use history |
+|---|---|
+| ![Recipes and builds — interchangeable requirements and availability](docs/screenshots/boms.png) | ![Use history — reversible manual and cooked-meal consumption](docs/screenshots/consumption.png) |
 
-![Container view — contents of a shelf with its QR code](docs/screenshots/container.png)
+| Scan & add | Intake queue |
+|---|---|
+| ![Scan and add — queue-first barcode, camera, upload, clipboard, and receipt capture](docs/screenshots/scan.png) | ![Intake queue — item-by-item verification of a synthetic automation draft](docs/screenshots/queue.png) |
+
+| Places (dark theme) | Container (dark theme) |
+|---|---|
+| ![Places — rooms and containers explorer in dark theme](docs/screenshots/places.png) | ![Container — shelf contents and printable QR code in dark theme](docs/screenshots/container.png) |
 
 ## Features
 
@@ -268,7 +278,7 @@ dependencies only (see [THIRD-PARTY-NOTICES](THIRD-PARTY-NOTICES.md)).
 ## Development
 
 ```bash
-dotnet test                    # 162 tests, no network access required
+dotnet test                    # 163 tests, no network access required
 dotnet build -c Release
 ```
 
