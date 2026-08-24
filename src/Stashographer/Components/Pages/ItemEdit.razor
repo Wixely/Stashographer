@@ -213,7 +213,7 @@ else
             </MudPaper>
 
             <MudPaper Class="pa-4" Outlined="true">
-                <SpecialAttributeEditor Item="_item" DefaultCurrency="_defaultCurrency" />
+                <SpecialAttributeEditor Item="_item" DefaultCurrency="@_defaultCurrency" />
                 <MudDivider Class="my-4" />
                 <AttributeEditor Attributes="_item.Attributes" Suggestions="SuggestionsForKind()" />
                 @if (Ai.IsEnabled)
