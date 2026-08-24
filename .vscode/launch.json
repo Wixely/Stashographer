@@ -12,7 +12,9 @@
       "env": {
         "ASPNETCORE_ENVIRONMENT": "Development",
         "ASPNETCORE_URLS": "http://0.0.0.0:5207",
-        "STASHOGRAPHER_ADMIN_PASSWORD": "admin"
+        "STASHOGRAPHER_ADMIN_PASSWORD": "admin",
+        "Stashographer__EnableApi": "true",
+        "Stashographer__EnableMcp": "true"
       },
       "serverReadyAction": {
         "action": "openExternally",

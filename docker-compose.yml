@@ -22,6 +22,10 @@ services:
       Images__RootPath: "/data/images"
       Stashographer__DataProtectionKeysPath: "/data/keys"
       STASHOGRAPHER_ADMIN_PASSWORD: "${STASHOGRAPHER_ADMIN_PASSWORD:-admin}"
+      # The deployment gates only reveal the administrator controls. API/MCP remain
+      # inactive until a key is generated and access is explicitly saved in Settings.
+      Stashographer__EnableApi: "${STASHOGRAPHER_ENABLE_API:-false}"
+      Stashographer__EnableMcp: "${STASHOGRAPHER_ENABLE_MCP:-false}"
 
       # --- AI enrichment (optional) --------------------------------------------
       # Leave these out entirely to run without AI; every non-AI feature works.

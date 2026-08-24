@@ -67,6 +67,10 @@ Every container gets a printable QR code — scan it to see what's meant to be i
   request and current inventory context, with an editable review before anything is saved.
 - **AI enrichment (optional)** — identify an item from a photo when a barcode won't do, and
   "season" any item with extra detail, via any **OpenAI-protocol** endpoint.
+- **Agent API & MCP (optional)** — deployment-gated, administrator-activated automation can
+  search inventory, inspect places and queue context, and propose or refine item drafts through
+  `/api/v1` or stateless Streamable HTTP MCP. Human item-by-item acceptance remains mandatory
+  for automation drafts.
 - **Light / dark themes**, mobile-friendly (MudBlazor).
 
 ## Quick start
@@ -112,6 +116,15 @@ HTTP-only, same-site cookie (marked Secure when served over HTTPS). Set a privat
 before treating it as a security boundary. Changing the password and restarting invalidates
 existing sessions. See
 [`docs/administration.md`](docs/administration.md) for deployment and cookie-key details.
+
+## API and MCP automation (optional)
+
+API and MCP are disabled by default. Enable their deployment flags, then use the protected
+Settings page to generate one-time-visible bearer keys and activate the surfaces. The API
+always requires a key; MCP can deliberately be keyless on a trusted network or use a separate
+rotatable key. Both transports share the same review-safe operations, and neither exposes an
+accept/reject action. See [`docs/automation.md`](docs/automation.md) for activation, endpoint
+and tool reference, examples, and audit behavior.
 
 ## Enable AI (optional)
 
@@ -196,7 +209,7 @@ dependencies only (see [THIRD-PARTY-NOTICES](THIRD-PARTY-NOTICES.md)).
 ## Development
 
 ```bash
-dotnet test                    # 128 tests, no network access required
+dotnet test                    # 135 tests, no network access required
 dotnet build -c Release
 ```
 

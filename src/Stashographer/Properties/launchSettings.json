@@ -8,7 +8,9 @@
         "applicationUrl": "http://0.0.0.0:5207",
         "environmentVariables": {
           "ASPNETCORE_ENVIRONMENT": "Development",
-          "STASHOGRAPHER_ADMIN_PASSWORD": "admin"
+          "STASHOGRAPHER_ADMIN_PASSWORD": "admin",
+          "Stashographer__EnableApi": "true",
+          "Stashographer__EnableMcp": "true"
         }
       },
       "https": {
@@ -18,7 +20,9 @@
         "applicationUrl": "https://localhost:7283;http://0.0.0.0:5207",
         "environmentVariables": {
           "ASPNETCORE_ENVIRONMENT": "Development",
-          "STASHOGRAPHER_ADMIN_PASSWORD": "admin"
+          "STASHOGRAPHER_ADMIN_PASSWORD": "admin",
+          "Stashographer__EnableApi": "true",
+          "Stashographer__EnableMcp": "true"
         }
       }
     }

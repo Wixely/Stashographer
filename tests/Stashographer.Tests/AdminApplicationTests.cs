@@ -2,7 +2,6 @@ using System.Net;
 using System.Text.RegularExpressions;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
-using Microsoft.Extensions.Configuration;
 using Stashographer.Services.Security;
 
 namespace Stashographer.Tests;
@@ -13,36 +12,38 @@ public sealed partial class AdminApplicationTests : IAsyncLifetime
     private const string Password = "test-administrator-password";
     private string _directory = null!;
     private WebApplicationFactory<Program> _factory = null!;
+    private Dictionary<string, string?> _previousEnvironment = null!;
 
     public Task InitializeAsync()
     {
         _directory = Path.Combine(
             Path.GetTempPath(), "stashographer-admin-tests", Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(_directory);
-        Environment.SetEnvironmentVariable(
-            AdminPasswordValidator.PasswordEnvironmentVariable, Password);
-        _factory = new WebApplicationFactory<Program>().WithWebHostBuilder(builder =>
+        var environment = new Dictionary<string, string?>
         {
-            builder.UseEnvironment("Testing");
-            builder.ConfigureAppConfiguration((_, configuration) =>
-                configuration.AddInMemoryCollection(new Dictionary<string, string?>
-                {
-                    ["ConnectionStrings:Default"] =
-                        $"Data Source={Path.Combine(_directory, "web.db")};Pooling=False",
-                    ["Images:RootPath"] = Path.Combine(_directory, "images"),
-                    ["Stashographer:DataProtectionKeysPath"] = Path.Combine(_directory, "keys"),
-                    ["SampleData:Enabled"] = "false",
-                    ["Ai:Enabled"] = "false"
-                }));
-        });
+            [AdminPasswordValidator.PasswordEnvironmentVariable] = Password,
+            ["ConnectionStrings__Default"] =
+                $"Data Source={Path.Combine(_directory, "web.db")};Pooling=False",
+            ["Images__RootPath"] = Path.Combine(_directory, "images"),
+            ["Stashographer__DataProtectionKeysPath"] = Path.Combine(_directory, "keys"),
+            ["SampleData__Enabled"] = "false",
+            ["Ai__Enabled"] = "false"
+        };
+        _previousEnvironment = environment.Keys.ToDictionary(
+            key => key,
+            Environment.GetEnvironmentVariable);
+        foreach (var (key, value) in environment)
+            Environment.SetEnvironmentVariable(key, value);
+        _factory = new WebApplicationFactory<Program>().WithWebHostBuilder(builder =>
+            builder.UseEnvironment("Testing"));
         return Task.CompletedTask;
     }
 
     public async Task DisposeAsync()
     {
         await _factory.DisposeAsync();
-        Environment.SetEnvironmentVariable(
-            AdminPasswordValidator.PasswordEnvironmentVariable, null);
+        foreach (var (key, value) in _previousEnvironment)
+            Environment.SetEnvironmentVariable(key, value);
         if (Directory.Exists(_directory)) Directory.Delete(_directory, recursive: true);
     }
 

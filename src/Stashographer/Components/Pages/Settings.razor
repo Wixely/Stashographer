@@ -6,8 +6,11 @@
 @inject QuickLinksService QuickLinks
 @inject InventoryService Inventory
 @inject IntakeQueueSignal QueueSignal
+@inject AgentAccessService AgentAccess
 @inject IDialogService Dialogs
 @inject ISnackbar Snackbar
+@inject IJSRuntime JS
+@inject NavigationManager Navigation
 
 <PageTitle>Settings · Stashographer</PageTitle>
 
@@ -186,6 +189,113 @@
     </MudText>
 </MudPaper>
 
+@if (_agentAccess.ApiAvailable || _agentAccess.McpAvailable)
+{
+    <MudPaper Class="pa-4 mb-3" Outlined="true">
+        <MudText Typo="Typo.h6" Class="mb-2">API &amp; MCP automation</MudText>
+        <MudText Typo="Typo.body2" Class="mud-text-secondary mb-3">
+            Deployment flags make these controls available; each endpoint must also be explicitly
+            activated here. Automation can propose intake drafts but cannot accept them into inventory.
+        </MudText>
+
+        @if (_agentAccess.ApiAvailable)
+        {
+            <MudText Typo="Typo.subtitle1" Class="mb-1">HTTP API</MudText>
+            <MudSwitch T="bool" Value="_apiEnabled" ValueChanged="SetApiEnabled"
+                       Label="Enable API" Color="Color.Primary"
+                       Disabled="@(_agentAccess.ApiCredential is null)" />
+            <MudText Typo="Typo.caption" Class="mud-text-secondary d-block mb-2">
+                @(_agentAccess.ApiCredential is null
+                    ? "Generate an API key first."
+                    : $"Active key ends in {_agentAccess.ApiCredential.Suffix}. Generating a new key revokes it.")
+            </MudText>
+            <div class="d-flex gap-2 flex-wrap mb-2">
+                <MudButton Variant="Variant.Outlined" StartIcon="@Icons.Material.Filled.Key"
+                           OnClick="GenerateApiKeyAsync">
+                    @(_agentAccess.ApiCredential is null ? "Generate API key" : "Generate new API key")
+                </MudButton>
+                <MudButton Variant="Variant.Text" StartIcon="@Icons.Material.Filled.ContentCopy"
+                           OnClick="@(() => CopyAutomationAsync(ApiUrl))">Copy API URL</MudButton>
+            </div>
+            <MudTextField Value="@ApiUrl" Label="API base URL" Variant="Variant.Outlined"
+                          Margin="Margin.Dense" ReadOnly="true" Class="mb-2" />
+            @if (_newApiKey is not null)
+            {
+                <MudAlert Severity="Severity.Warning" Class="mb-3">
+                    Copy this API key now. It will not be shown again after leaving this page.
+                </MudAlert>
+                <div class="d-flex gap-2 align-center mb-4">
+                    <MudTextField Value="@_newApiKey" Label="New API key" Variant="Variant.Outlined"
+                                  Margin="Margin.Dense" ReadOnly="true" Class="flex-grow-1" />
+                    <MudIconButton Icon="@Icons.Material.Filled.ContentCopy"
+                                   OnClick="@(() => CopyAutomationAsync(_newApiKey))" />
+                </div>
+            }
+        }
+
+        @if (_agentAccess.McpAvailable)
+        {
+            <MudDivider Class="my-3" />
+            <MudText Typo="Typo.subtitle1" Class="mb-1">MCP server</MudText>
+            @if (!_agentAccess.ApiAvailable)
+            {
+                <MudAlert Severity="Severity.Warning" Dense="true" Class="mb-2">
+                    MCP also requires Stashographer__EnableApi=true.
+                </MudAlert>
+            }
+            <MudSwitch T="bool" @bind-Value="_mcpEnabled" Label="Enable MCP"
+                       Color="Color.Primary"
+                       Disabled="@(!_apiEnabled || _agentAccess.ApiCredential is null || !_agentAccess.ApiAvailable)" />
+            <MudText Typo="Typo.caption" Class="mud-text-secondary d-block mb-2">
+                Stateless Streamable HTTP tools backed by the same authoritative API operations.
+            </MudText>
+            <div class="d-flex gap-2 flex-wrap mb-2">
+                <MudButton Variant="Variant.Outlined" StartIcon="@Icons.Material.Filled.Key"
+                           Disabled="@(_agentAccess.ApiCredential is null)" OnClick="GenerateMcpKeyAsync">
+                    @(_agentAccess.McpCredential is null ? "Generate MCP key" : "Generate new MCP key")
+                </MudButton>
+                @if (_agentAccess.McpCredential is not null)
+                {
+                    <MudButton Variant="Variant.Text" Color="Color.Error"
+                               OnClick="RemoveMcpKeyAsync">Remove MCP key</MudButton>
+                }
+                <MudButton Variant="Variant.Text" StartIcon="@Icons.Material.Filled.ContentCopy"
+                           OnClick="@(() => CopyAutomationAsync(McpUrl))">Copy MCP URL</MudButton>
+            </div>
+            <MudTextField Value="@McpUrl" Label="MCP URL" Variant="Variant.Outlined"
+                          Margin="Margin.Dense" ReadOnly="true" Class="mb-2" />
+            @if (_agentAccess.McpCredential is not null)
+            {
+                <MudText Typo="Typo.caption" Class="mud-text-secondary d-block mb-2">
+                    Active MCP key ends in @_agentAccess.McpCredential.Suffix.
+                </MudText>
+            }
+            else if (_mcpEnabled)
+            {
+                <MudAlert Severity="Severity.Warning" Class="mb-2">
+                    MCP is enabled without its own key. Anyone who can reach this trusted network
+                    endpoint can invoke every tool.
+                </MudAlert>
+            }
+            @if (_newMcpKey is not null)
+            {
+                <MudAlert Severity="Severity.Warning" Class="mb-2">
+                    Copy this MCP key now. It will not be shown again after leaving this page.
+                </MudAlert>
+                <div class="d-flex gap-2 align-center mb-3">
+                    <MudTextField Value="@_newMcpKey" Label="New MCP key" Variant="Variant.Outlined"
+                                  Margin="Margin.Dense" ReadOnly="true" Class="flex-grow-1" />
+                    <MudIconButton Icon="@Icons.Material.Filled.ContentCopy"
+                                   OnClick="@(() => CopyAutomationAsync(_newMcpKey))" />
+                </div>
+            }
+        }
+
+        <MudButton Color="Color.Primary" Variant="Variant.Filled" StartIcon="@Icons.Material.Filled.Save"
+                   OnClick="SaveAutomationAsync">Save automation access</MudButton>
+    </MudPaper>
+}
+
 <MudPaper Class="pa-4" Outlined="true">
     <MudText Typo="Typo.h6" Class="mb-2">Theme</MudText>
     <MudText Typo="Typo.body2">
@@ -215,6 +325,13 @@
     private RegionalDateOrder _dateOrder = RegionalDateOrder.DayMonthYear;
     private string _cultureName = "en-GB";
     private string _timeZoneId = "Europe/London";
+    private AgentAccessConfiguration _agentAccess = new(false, false, false, false, null, null);
+    private bool _apiEnabled;
+    private bool _mcpEnabled;
+    private string? _newApiKey;
+    private string? _newMcpKey;
+    private string ApiUrl => Navigation.ToAbsoluteUri("api/v1").ToString();
+    private string McpUrl => Navigation.ToAbsoluteUri("mcp").ToString();
     private string DateExample => _dateOrder switch
     {
         RegionalDateOrder.MonthDayYear => "03/04/2026 → 4 March 2026",
@@ -242,6 +359,9 @@
         _dateOrder = regional.DateOrder;
         _cultureName = regional.CultureName;
         _timeZoneId = regional.TimeZoneId;
+        _agentAccess = await AgentAccess.GetAsync();
+        _apiEnabled = _agentAccess.ApiEnabled;
+        _mcpEnabled = _agentAccess.McpEnabled;
 
         _kinds = await Inventory.GetKindsAsync();
         await Reload();
@@ -285,6 +405,81 @@
         });
         QueueSignal.Pulse();
         Snackbar.Add("Intake workflow saved.", Severity.Success);
+    }
+
+    private void SetApiEnabled(bool enabled)
+    {
+        _apiEnabled = enabled;
+        if (!enabled) _mcpEnabled = false;
+    }
+
+    private async Task GenerateApiKeyAsync()
+    {
+        try
+        {
+            _newApiKey = (await AgentAccess.GenerateAsync(AgentSurface.Api)).Secret;
+            _agentAccess = await AgentAccess.GetAsync();
+            Snackbar.Add("New API key generated. Copy it now; the previous key no longer works.", Severity.Success);
+        }
+        catch (InvalidOperationException ex)
+        {
+            Snackbar.Add(ex.Message, Severity.Error);
+        }
+    }
+
+    private async Task GenerateMcpKeyAsync()
+    {
+        try
+        {
+            _newMcpKey = (await AgentAccess.GenerateAsync(AgentSurface.Mcp)).Secret;
+            _agentAccess = await AgentAccess.GetAsync();
+            Snackbar.Add("New MCP key generated. Copy it now; the previous key no longer works.", Severity.Success);
+        }
+        catch (InvalidOperationException ex)
+        {
+            Snackbar.Add(ex.Message, Severity.Error);
+        }
+    }
+
+    private async Task RemoveMcpKeyAsync()
+    {
+        var confirmed = await Dialogs.ShowMessageBoxAsync(
+            "Remove MCP key?",
+            "If MCP remains enabled, the trusted-network endpoint will become unauthenticated.",
+            yesText: "Remove key",
+            cancelText: "Cancel");
+        if (confirmed != true) return;
+        await AgentAccess.RemoveMcpKeyAsync();
+        _newMcpKey = null;
+        _agentAccess = await AgentAccess.GetAsync();
+        Snackbar.Add("MCP key removed.", Severity.Warning);
+    }
+
+    private async Task SaveAutomationAsync()
+    {
+        try
+        {
+            await AgentAccess.UpdateEnabledAsync(_apiEnabled, _mcpEnabled);
+            _agentAccess = await AgentAccess.GetAsync();
+            Snackbar.Add("Automation access saved.", Severity.Success);
+        }
+        catch (InvalidOperationException ex)
+        {
+            Snackbar.Add(ex.Message, Severity.Error);
+        }
+    }
+
+    private async Task CopyAutomationAsync(string value)
+    {
+        try
+        {
+            await JS.InvokeVoidAsync("navigator.clipboard.writeText", value);
+            Snackbar.Add("Copied.", Severity.Success);
+        }
+        catch (JSException)
+        {
+            Snackbar.Add("Copy was unavailable; select the value manually.", Severity.Warning);
+        }
     }
 
     private async Task SaveAiAsync()

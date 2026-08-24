@@ -23,6 +23,8 @@ LABEL org.opencontainers.image.title="Stashographer" \
 ENV ConnectionStrings__Default="Data Source=/data/stashographer.db"
 ENV Images__RootPath="/data/images"
 ENV Stashographer__DataProtectionKeysPath="/data/keys"
+ENV Stashographer__EnableApi="false"
+ENV Stashographer__EnableMcp="false"
 # Household-friendly default matching Daybreak. Override this at runtime when stronger
 # protection is required; the plaintext value is never stored in SQLite or logs.
 ENV STASHOGRAPHER_ADMIN_PASSWORD="admin"

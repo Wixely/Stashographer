@@ -12,6 +12,7 @@ Stashographer is MIT-licensed and depends only on permissive (non-copyleft) comp
 | ZXing.Net | Apache-2.0 | Local server-side barcode decoding from fallback camera photos |
 | SixLabors.ImageSharp (2.1.x) | Apache-2.0 | Image decoding and on-demand thumbnail generation (v2 pinned; v3+ is not permissively licensed) |
 | Microsoft.Extensions.AI / .OpenAI | MIT | Optional AI enrichment over the OpenAI protocol |
+| ModelContextProtocol.AspNetCore | Apache-2.0 | Stateless Streamable HTTP MCP server and tools |
 | ASP.NET Core / Blazor (Microsoft.*) | MIT | Web framework |
 
 Live browser barcode scanning uses the native [`BarcodeDetector`](https://developer.mozilla.org/docs/Web/API/BarcodeDetector)

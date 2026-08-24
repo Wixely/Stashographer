@@ -68,6 +68,33 @@ public class IntakeQueueService(
         return item;
     }
 
+    /// <summary>
+    /// Queues an automation/manual proposal directly for human review. It is never accepted
+    /// automatically, even when background review requirements are disabled.
+    /// </summary>
+    public async Task<IntakeQueueItem> EnqueueDraftAsync(Item draft, CancellationToken ct = default)
+    {
+        draft.Name = draft.Name.Trim();
+        if (draft.Name.Length == 0) throw new ArgumentException("An item name is required.", nameof(draft));
+        if (draft.Quantity <= 0) throw new ArgumentException("Quantity must be greater than zero.", nameof(draft));
+        draft.Id = 0;
+
+        var item = new IntakeQueueItem
+        {
+            SessionId = await GetOrCreateActiveSessionIdAsync(ct),
+            SourceType = IntakeSourceType.Manual,
+            SourceCode = draft.Code,
+            Status = IntakeQueueStatus.ReadyForReview,
+            Draft = draft,
+            ProposalAction = IntakeAction.CreateNew,
+            CreatedAt = DateTimeOffset.UtcNow,
+            ProcessedAt = DateTimeOffset.UtcNow
+        };
+        item.Id = await InsertAsync(item, ct);
+        signal.Pulse();
+        return item;
+    }
+
     public async Task<List<IntakeQueueItem>> GetOpenAsync(CancellationToken ct = default)
     {
         using var conn = await db.OpenAsync(ct);
@@ -175,11 +202,15 @@ public class IntakeQueueService(
             {
                 processed = new List<ProcessedCapture> { await ProcessBarcodeAsync(queued, ct) };
             }
-            else
+            else if (queued.SourceType == IntakeSourceType.Photo)
             {
                 if (!aiEnabled)
                     throw new InvalidOperationException("Configure an AI vision model, or enter this item manually.");
                 processed = await ProcessPhotoAsync(queued, options.ContextItemCount, ct);
+            }
+            else
+            {
+                throw new InvalidOperationException("Manual drafts are already ready for review.");
             }
 
             var recentPlacement = await GetRecentDraftsAsync(queued, 1, ct);
@@ -542,9 +573,11 @@ public class IntakeQueueService(
         using var conn = await db.OpenAsync(ct);
         return await conn.ExecuteScalarAsync<int>("""
             INSERT INTO IntakeQueueItems
-                (SessionId, SourceType, SourceCode, ImageId, IsMultiPhoto, Status, DraftJson, IncrementBy, CreatedAt)
+                (SessionId, SourceType, SourceCode, ImageId, IsMultiPhoto, Status, DraftJson,
+                 ProposalAction, IncrementBy, CreatedAt, ProcessedAt)
             VALUES
-                (@SessionId, @SourceType, @SourceCode, @ImageId, @IsMultiPhoto, @Status, @DraftJson, @IncrementBy, @CreatedAt);
+                (@SessionId, @SourceType, @SourceCode, @ImageId, @IsMultiPhoto, @Status, @DraftJson,
+                 @ProposalAction, @IncrementBy, @CreatedAt, @ProcessedAt);
             SELECT last_insert_rowid();
             """, new
         {
@@ -555,8 +588,10 @@ public class IntakeQueueService(
             IsMultiPhoto = item.IsMultiPhoto ? 1 : 0,
             Status = (int)item.Status,
             DraftJson = JsonSerializer.Serialize(item.Draft, Json),
+            ProposalAction = item.ProposalAction is { } action ? (int)action : (int?)null,
             item.IncrementBy,
-            CreatedAt = item.CreatedAt.ToString("O")
+            CreatedAt = item.CreatedAt.ToString("O"),
+            ProcessedAt = item.ProcessedAt?.ToString("O")
         });
     }
 

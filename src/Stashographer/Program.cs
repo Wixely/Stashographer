@@ -7,6 +7,7 @@ using MudBlazor.Services;
 using Stashographer.Components;
 using Stashographer.Data;
 using Stashographer.Data.Migrations;
+using Stashographer.Services.Automation;
 using Stashographer.Services.Ai;
 using Stashographer.Services.Config;
 using Stashographer.Services.Images;
@@ -14,6 +15,7 @@ using Stashographer.Services.Inventory;
 using Stashographer.Services.Intake;
 using Stashographer.Services.Lookup;
 using Stashographer.Services.Security;
+using System.Text.Json.Serialization;
 using System.Threading.RateLimiting;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -21,7 +23,11 @@ var builder = WebApplication.CreateBuilder(args);
 // --- Razor / Blazor + MudBlazor -----------------------------------------------
 builder.Services.AddRazorComponents()
     .AddInteractiveServerComponents();
+builder.Services.ConfigureHttpJsonOptions(options =>
+    options.SerializerOptions.Converters.Add(new JsonStringEnumConverter()));
 builder.Services.AddMudServices();
+builder.Services.Configure<AgentFeatureOptions>(
+    builder.Configuration.GetSection(AgentFeatureOptions.SectionName));
 builder.Services.AddCascadingAuthenticationState();
 builder.Services.AddAuthentication(CookieAuthenticationDefaults.AuthenticationScheme)
     .AddCookie(options =>
@@ -62,6 +68,7 @@ builder.Services.AddRateLimiter(options =>
     options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
 });
 builder.Services.AddSingleton<AdminPasswordValidator>();
+builder.Services.AddSingleton(TimeProvider.System);
 
 // --- Persistence: Dapper over SQLite (provider seam for Postgres in phase 2) ---
 DapperConfig.Register();
@@ -94,6 +101,8 @@ builder.Services.AddScoped<QuickLinksService>();
 builder.Services.AddScoped<BomService>();
 builder.Services.AddScoped<ItemDraftState>();
 builder.Services.AddScoped<SampleDataSeeder>();
+builder.Services.AddScoped<AgentAccessService>();
+builder.Services.AddScoped<AutomationOperations>();
 
 // --- Image storage ------------------------------------------------------------
 var imageOptions = builder.Configuration.GetSection(ImageOptions.SectionName).Get<ImageOptions>() ?? new ImageOptions();
@@ -120,6 +129,9 @@ builder.Services.AddScoped<PhotoIntakeService>();
 builder.Services.AddSingleton<IntakeQueueSignal>();
 builder.Services.AddScoped<IntakeQueueService>();
 builder.Services.AddHostedService<IntakeQueueWorker>();
+builder.Services.AddMcpServer()
+    .WithHttpTransport(options => options.Stateless = true)
+    .WithTools<StashographerMcpTools>();
 
 var app = builder.Build();
 
@@ -153,6 +165,7 @@ app.UseStatusCodePagesWithReExecute("/not-found", createScopeForStatusCodePages:
 app.UseHttpsRedirection();
 app.UseAuthentication();
 app.UseAuthorization();
+app.UseMiddleware<AgentAccessMiddleware>();
 app.UseAntiforgery();
 app.UseRateLimiter();
 
@@ -180,6 +193,9 @@ app.MapPost("/auth/logout", async (HttpContext context, IAntiforgery antiforgery
     await context.SignOutAsync();
     return Results.LocalRedirect("/");
 }).RequireAuthorization();
+
+app.MapAutomationApi();
+app.MapMcp("/mcp").DisableAntiforgery();
 
 app.MapStaticAssets();
 app.MapRazorComponents<App>()

@@ -15,6 +15,29 @@ namespace Stashographer.Tests;
 public class IntakeQueueTests
 {
     [Fact]
+    public async Task Automation_draft_waits_in_queue_for_human_acceptance()
+    {
+        await using var harness = await Harness.CreateAsync();
+        var draft = new Item
+        {
+            Name = "Agent-proposed cable",
+            ItemKindId = 4,
+            Quantity = 2,
+            LocationId = 3
+        };
+
+        var queued = await harness.Queue.EnqueueDraftAsync(draft);
+        var reloaded = await harness.Queue.GetAsync(queued.Id);
+
+        Assert.NotNull(reloaded);
+        Assert.Equal(IntakeSourceType.Manual, reloaded!.SourceType);
+        Assert.Equal(IntakeQueueStatus.ReadyForReview, reloaded.Status);
+        Assert.Equal(IntakeAction.CreateNew, reloaded.ProposalAction);
+        Assert.Equal("Agent-proposed cable", reloaded.Draft.Name);
+        Assert.Empty(await harness.Inventory.QueryAsync(new ItemQuery(Search: "Agent-proposed cable")));
+    }
+
+    [Fact]
     public async Task Barcode_capture_is_persisted_then_review_accepts_it()
     {
         await using var harness = await Harness.CreateAsync();

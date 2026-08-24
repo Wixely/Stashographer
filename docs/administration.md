@@ -28,6 +28,7 @@ are stored under `Stashographer:DataProtectionKeysPath` (`App_Data/keys` from so
 antiforgery tokens, external return URLs are rejected, and the login endpoint permits five
 attempts per minute per application instance.
 
-This administrator gate will also protect the future API and MCP activation and credential
-controls. API and MCP clients will use their own rotatable bearer credentials; the browser
-administrator cookie will not be reused as an automation credential.
+This administrator gate also protects API and MCP activation and credential controls. API and
+MCP clients use their own rotatable bearer credentials; the browser administrator cookie is
+never reused as an automation credential. See [API and MCP automation](automation.md) for the
+two-stage activation model and supported operations.

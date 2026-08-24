@@ -5,7 +5,8 @@ namespace Stashographer.Data.Entities;
 public enum IntakeSourceType
 {
     Barcode,
-    Photo
+    Photo,
+    Manual
 }
 
 public enum IntakeQueueStatus

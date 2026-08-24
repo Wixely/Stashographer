@@ -60,9 +60,7 @@ else
                         @StatusLabel(queued.Status)
                     </MudChip>
                     <MudText Typo="Typo.body2">
-                        @(queued.SourceType == IntakeSourceType.Barcode
-                            ? queued.SourceCode
-                            : queued.IsMultiPhoto ? "Multi-item photo" : "Photo")
+                        @SourceLabel(queued)
                     </MudText>
                 </div>
                 <MudText Typo="Typo.caption" Class="mud-text-secondary">
@@ -101,17 +99,27 @@ else
                         else
                         {
                             <div class="d-flex flex-column align-center justify-center pa-6">
-                                <MudIcon Icon="@Icons.Material.Filled.QrCode" Size="Size.Large" Color="Color.Primary" />
-                                <MudText Typo="Typo.h6" Class="mt-2">@queued.SourceCode</MudText>
+                                <MudIcon Icon="@(queued.SourceType == IntakeSourceType.Manual
+                                                   ? Icons.Material.Filled.EditNote
+                                                   : Icons.Material.Filled.QrCode)"
+                                         Size="Size.Large" Color="Color.Primary" />
+                                <MudText Typo="Typo.h6" Class="mt-2">
+                                    @(queued.SourceType == IntakeSourceType.Manual
+                                        ? queued.Draft.Name
+                                        : queued.SourceCode)
+                                </MudText>
                             </div>
                         }
 
-                        <MudButton FullWidth="true" Class="mt-2" Variant="Variant.Outlined"
-                                   StartIcon="@Icons.Material.Filled.AutoAwesome"
-                                   Disabled="@(_working || (queued.SourceType == IntakeSourceType.Photo && !Ai.IsEnabled))"
-                                   OnClick="ProcessCurrentAsync">
-                            @(_working ? "Processing…" : queued.Status == IntakeQueueStatus.Failed ? "Retry processing" : "Process now")
-                        </MudButton>
+                        @if (queued.SourceType != IntakeSourceType.Manual)
+                        {
+                            <MudButton FullWidth="true" Class="mt-2" Variant="Variant.Outlined"
+                                       StartIcon="@Icons.Material.Filled.AutoAwesome"
+                                       Disabled="@(_working || (queued.SourceType == IntakeSourceType.Photo && !Ai.IsEnabled))"
+                                       OnClick="ProcessCurrentAsync">
+                                @(_working ? "Processing…" : queued.Status == IntakeQueueStatus.Failed ? "Retry processing" : "Process now")
+                            </MudButton>
+                        }
                         @if (queued.SourceType == IntakeSourceType.Photo && !Ai.IsEnabled)
                         {
                             <MudText Typo="Typo.caption" Color="Color.Warning" Class="d-block mt-1">
@@ -213,6 +221,13 @@ else
 }
 
 @code {
+    private static string SourceLabel(IntakeQueueItem item) => item.SourceType switch
+    {
+        IntakeSourceType.Barcode => item.SourceCode ?? "Barcode",
+        IntakeSourceType.Photo => item.IsMultiPhoto ? "Multi-item photo" : "Photo",
+        _ => "Automation draft"
+    };
+
     private readonly CancellationTokenSource _dispose = new();
     private List<IntakeQueueItem> _items = new();
     private List<ItemKind> _kinds = new();
