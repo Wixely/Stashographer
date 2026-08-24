@@ -11,7 +11,7 @@ public sealed class StashographerMcpTools
     [Description("Searches current inventory. Use this before proposing duplicates or substitutes.")]
     public static Task<IReadOnlyList<AutomationItem>> SearchInventoryAsync(
         AutomationOperations operations,
-        [Description("Optional words from item name, code, or description.")] string? search = null,
+        [Description("Optional words from item name, code, description, or tag.")] string? search = null,
         [Description("Optional exact item-kind identifier.")] int? itemKindId = null,
         [Description("Optional location identifier, including its containers.")] int? locationId = null,
         [Description("Optional exact container identifier.")] int? containerId = null,
@@ -31,6 +31,12 @@ public sealed class StashographerMcpTools
     public static Task<List<ItemKind>> ListItemKindsAsync(
         AutomationOperations operations,
         CancellationToken ct = default) => operations.ListItemKindsAsync(ct);
+
+    [McpServerTool(Name = "list_tags", UseStructuredContent = true)]
+    [Description("Lists reusable inventory tags and the number of items assigned to each one.")]
+    public static Task<List<Tag>> ListTagsAsync(
+        AutomationOperations operations,
+        CancellationToken ct = default) => operations.ListTagsAsync(ct);
 
     [McpServerTool(Name = "list_places", UseStructuredContent = true)]
     [Description("Lists valid locations and their containers for placing an intake draft.")]

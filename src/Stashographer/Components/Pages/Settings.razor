@@ -11,6 +11,7 @@
 @inject ISnackbar Snackbar
 @inject IJSRuntime JS
 @inject NavigationManager Navigation
+@inject TagService Tags
 
 <PageTitle>Settings · Stashographer</PageTitle>
 
@@ -69,6 +70,57 @@
         </MudTable>
     }
 </MudPaper>
+
+<div id="tags">
+<MudPaper Class="pa-4 mb-3" Outlined="true">
+    <MudText Typo="Typo.h6" Class="mb-2">Tags</MudText>
+    <MudText Typo="Typo.body2" Class="mud-text-secondary mb-3">
+        Reusable labels group items across kinds and locations. Renaming a tag updates every assigned item.
+    </MudText>
+    <div class="d-flex gap-2 align-end mb-3">
+        <MudTextField T="string" @bind-Value="_newTagName" Label="New tag"
+                      Variant="Variant.Outlined" Margin="Margin.Dense" MaxLength="50"
+                      Class="flex-grow-1" />
+        <MudButton Color="Color.Primary" Variant="Variant.Filled" StartIcon="@Icons.Material.Filled.Add"
+                   Disabled="@string.IsNullOrWhiteSpace(_newTagName)" OnClick="AddTagAsync">
+            Add tag
+        </MudButton>
+    </div>
+    @if (_tags is null)
+    {
+        <MudProgressCircular Indeterminate="true" />
+    }
+    else if (_tags.Count == 0)
+    {
+        <MudText Typo="Typo.body2" Class="mud-text-secondary">No tags yet.</MudText>
+    }
+    else
+    {
+        <MudTable Items="_tags" Dense="true" Hover="true" T="Tag" Breakpoint="Breakpoint.Sm">
+            <HeaderContent>
+                <MudTh>Name</MudTh>
+                <MudTh Style="width:8rem">Items</MudTh>
+                <MudTh Style="width:6rem"></MudTh>
+            </HeaderContent>
+            <RowTemplate>
+                <MudTd DataLabel="Name">
+                    <MudTextField T="string" Value="@context.Name" ValueChanged="@(value => context.Name = value)"
+                                  Variant="Variant.Outlined" Margin="Margin.Dense" MaxLength="50" />
+                </MudTd>
+                <MudTd DataLabel="Items">@context.ItemCount</MudTd>
+                <MudTd>
+                    <div class="d-flex">
+                        <MudIconButton Icon="@Icons.Material.Filled.Save" Color="Color.Primary" Size="Size.Small"
+                                       OnClick="@(() => SaveTagAsync(context))" />
+                        <MudIconButton Icon="@Icons.Material.Filled.Delete" Color="Color.Error" Size="Size.Small"
+                                       OnClick="@(() => DeleteTagAsync(context))" />
+                    </div>
+                </MudTd>
+            </RowTemplate>
+        </MudTable>
+    }
+</MudPaper>
+</div>
 
 <MudPaper Class="pa-4 mb-3" Outlined="true">
     <MudText Typo="Typo.h6" Class="mb-2">Inventory region</MudText>
@@ -306,6 +358,8 @@
 @code {
     private List<QuickLink>? _links;
     private List<ItemKind> _kinds = new();
+    private List<Tag>? _tags;
+    private string _newTagName = string.Empty;
 
     // AI form state (API key handled write-only: blank input keeps the stored key).
     private bool _aiEnabled;
@@ -364,7 +418,7 @@
         _mcpEnabled = _agentAccess.McpEnabled;
 
         _kinds = await Inventory.GetKindsAsync();
-        await Reload();
+        await Task.WhenAll(Reload(), ReloadTagsAsync());
     }
 
     private async Task SaveInventoryAsync()
@@ -526,6 +580,52 @@
     }
 
     private async Task Reload() => _links = await QuickLinks.GetAllAsync();
+
+    private async Task ReloadTagsAsync() => _tags = await Tags.GetAllAsync();
+
+    private async Task AddTagAsync()
+    {
+        try
+        {
+            await Tags.SaveAsync(new Tag { Name = _newTagName });
+            _newTagName = string.Empty;
+            await ReloadTagsAsync();
+            Snackbar.Add("Tag added.", Severity.Success);
+        }
+        catch (InvalidOperationException ex)
+        {
+            Snackbar.Add(ex.Message, Severity.Error);
+        }
+    }
+
+    private async Task SaveTagAsync(Tag tag)
+    {
+        try
+        {
+            await Tags.SaveAsync(tag);
+            await ReloadTagsAsync();
+            Snackbar.Add("Tag renamed.", Severity.Success);
+        }
+        catch (InvalidOperationException ex)
+        {
+            Snackbar.Add(ex.Message, Severity.Error);
+        }
+    }
+
+    private async Task DeleteTagAsync(Tag tag)
+    {
+        var assignmentSummary = tag.ItemCount == 0
+            ? "It is not assigned to any items."
+            : $"It will be removed from {tag.ItemCount} item{(tag.ItemCount == 1 ? string.Empty : "s")}; the items will not be deleted.";
+        var confirmed = await Dialogs.ShowMessageBoxAsync(
+            "Delete tag?", $"Delete '{tag.Name}'? {assignmentSummary}",
+            yesText: "Delete", cancelText: "Cancel");
+        if (confirmed != true) return;
+
+        await Tags.DeleteAsync(tag.Id);
+        await ReloadTagsAsync();
+        Snackbar.Add("Tag deleted.", Severity.Info);
+    }
 
     private string TargetSummary(QuickLink link) => link.Target switch
     {

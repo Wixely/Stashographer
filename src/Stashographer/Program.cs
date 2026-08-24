@@ -94,6 +94,7 @@ builder.Services.AddSingleton<BarcodeImageDecoder>();
 
 // --- Domain services ----------------------------------------------------------
 builder.Services.AddScoped<InventoryService>();
+builder.Services.AddScoped<TagService>();
 builder.Services.AddScoped<AttributeNameService>();
 builder.Services.AddScoped<CheckoutService>();
 builder.Services.AddScoped<ContainerService>();

@@ -60,6 +60,7 @@ public sealed class AutomationApplicationTests
         {
             var inventoryService = consumptionScope.ServiceProvider.GetRequiredService<InventoryService>();
             var consumptionService = consumptionScope.ServiceProvider.GetRequiredService<ConsumptionService>();
+            var tagService = consumptionScope.ServiceProvider.GetRequiredService<TagService>();
             var usedItem = await inventoryService.SaveAsync(new Item
             {
                 Name = "API-visible soup",
@@ -67,6 +68,8 @@ public sealed class AutomationApplicationTests
                 Quantity = 2,
                 Unit = "cans"
             });
+            var tag = await tagService.SaveAsync(new Tag { Name = "Automation-visible" });
+            await tagService.SetForItemAsync(usedItem.Id, [tag.Id]);
             await consumptionService.UseItemAsync(usedItem.Id, description: "API history check");
         }
         using (var consumptionResponse = await client.GetAsync("/api/v1/consumption?search=soup"))
@@ -77,6 +80,24 @@ public sealed class AutomationApplicationTests
             Assert.Equal("Manual", history.GetProperty("kind").GetString());
             Assert.Equal("API-visible soup", Assert.Single(history.GetProperty("lines").EnumerateArray())
                 .GetProperty("itemName").GetString());
+        }
+
+        using (var tagResponse = await client.GetAsync("/api/v1/tags"))
+        {
+            Assert.Equal(HttpStatusCode.OK, tagResponse.StatusCode);
+            using var tagJson = JsonDocument.Parse(await tagResponse.Content.ReadAsStringAsync());
+            var tag = Assert.Single(tagJson.RootElement.EnumerateArray());
+            Assert.Equal("Automation-visible", tag.GetProperty("name").GetString());
+            Assert.Equal(1, tag.GetProperty("itemCount").GetInt32());
+        }
+        using (var taggedInventoryResponse = await client.GetAsync("/api/v1/inventory?search=Automation-visible"))
+        {
+            Assert.Equal(HttpStatusCode.OK, taggedInventoryResponse.StatusCode);
+            using var taggedInventoryJson = JsonDocument.Parse(
+                await taggedInventoryResponse.Content.ReadAsStringAsync());
+            var taggedItem = Assert.Single(taggedInventoryJson.RootElement.EnumerateArray());
+            Assert.Equal("Automation-visible", Assert.Single(
+                taggedItem.GetProperty("tags").EnumerateArray()).GetString());
         }
 
         using var created = await client.PostAsJsonAsync("/api/v1/intake/items", new ItemDraftRequest
@@ -180,6 +201,7 @@ public sealed class AutomationApplicationTests
         {
             var tools = await mcp.ListToolsAsync();
             Assert.Contains(tools, tool => tool.Name == "search_inventory");
+            Assert.Contains(tools, tool => tool.Name == "list_tags");
             Assert.Contains(tools, tool => tool.Name == "list_consumption_history");
             Assert.Contains(tools, tool => tool.Name == "queue_item_draft");
             Assert.DoesNotContain(tools, tool => tool.Name.Contains("accept", StringComparison.OrdinalIgnoreCase));
@@ -189,6 +211,12 @@ public sealed class AutomationApplicationTests
                 new Dictionary<string, object?>());
             Assert.False(result.IsError ?? false);
             Assert.NotNull(result.StructuredContent);
+
+            var tagsResult = await mcp.CallToolAsync(
+                "list_tags",
+                new Dictionary<string, object?>());
+            Assert.False(tagsResult.IsError ?? false);
+            Assert.NotNull(tagsResult.StructuredContent);
 
             var historyResult = await mcp.CallToolAsync(
                 "list_consumption_history",

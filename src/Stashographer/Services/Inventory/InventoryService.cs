@@ -19,7 +19,9 @@ public record ItemQuery(
     int? LocationId = null,
     int? ContainerId = null,
     bool LooseOnly = false,
-    ItemSort Sort = ItemSort.Name);
+    ItemSort Sort = ItemSort.Name,
+    IReadOnlyList<int>? IncludeTagIds = null,
+    IReadOnlyList<int>? ExcludeTagIds = null);
 
 public enum ItemSort
 {
@@ -71,7 +73,8 @@ public sealed class PriceMetric
 public class InventoryService(
     IDbConnectionFactory db,
     ImageService? images = null,
-    AttributeNameService? attributeNames = null)
+    AttributeNameService? attributeNames = null,
+    TagService? tagService = null)
 {
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
 
@@ -97,6 +100,16 @@ public class InventoryService(
         var where = new List<string>();
         if (query.IncludeKindIds is { Count: > 0 }) where.Add("i.ItemKindId IN @IncludeKindIds");
         if (query.ExcludeKindIds is { Count: > 0 }) where.Add("i.ItemKindId NOT IN @ExcludeKindIds");
+        if (query.IncludeTagIds is { Count: > 0 })
+            where.Add("""
+                (SELECT COUNT(DISTINCT includedTags.TagId) FROM ItemTags includedTags
+                 WHERE includedTags.ItemId = i.Id AND includedTags.TagId IN @IncludeTagIds) = @IncludeTagCount
+                """);
+        if (query.ExcludeTagIds is { Count: > 0 })
+            where.Add("""
+                NOT EXISTS (SELECT 1 FROM ItemTags excludedTags
+                            WHERE excludedTags.ItemId = i.Id AND excludedTags.TagId IN @ExcludeTagIds)
+                """);
         if (query.ContainerId is not null) where.Add("i.ContainerId = @ContainerId");
         if (query.LooseOnly) where.Add("i.ContainerId IS NULL");
         if (query.LocationId is not null)
@@ -104,7 +117,12 @@ public class InventoryService(
                 ? "i.LocationId = @LocationId"
                 : "(i.LocationId = @LocationId OR c.LocationId = @LocationId)");
         if (!string.IsNullOrWhiteSpace(query.Search))
-            where.Add("(i.Name LIKE @Like OR i.Code LIKE @Like OR i.Description LIKE @Like)");
+            where.Add("""
+                (i.Name LIKE @Like OR i.Code LIKE @Like OR i.Description LIKE @Like OR
+                 EXISTS (SELECT 1 FROM ItemTags searchItemTags
+                         JOIN Tags searchTags ON searchTags.Id = searchItemTags.TagId
+                         WHERE searchItemTags.ItemId = i.Id AND searchTags.Name LIKE @Like))
+                """);
 
         var orderBy = query.Sort switch
         {
@@ -127,11 +145,16 @@ public class InventoryService(
         {
             query.IncludeKindIds,
             query.ExcludeKindIds,
+            query.IncludeTagIds,
+            query.ExcludeTagIds,
+            IncludeTagCount = query.IncludeTagIds?.Distinct().Count() ?? 0,
             query.ContainerId,
             query.LocationId,
             Like = $"%{query.Search}%"
         });
-        return rows.Select(Map).ToList();
+        var items = rows.Select(Map).ToList();
+        if (tagService is not null) await tagService.PopulateAsync(items, ct);
+        return items;
     }
 
     /// <summary>
@@ -193,7 +216,10 @@ public class InventoryService(
     {
         using var conn = await db.OpenAsync(ct);
         var row = await conn.QuerySingleOrDefaultAsync<ItemRow>(SelectItem + " WHERE i.Id = @id", new { id });
-        return row is null ? null : Map(row);
+        if (row is null) return null;
+        var item = Map(row);
+        if (tagService is not null) await tagService.PopulateAsync([item], ct);
+        return item;
     }
 
     /// <summary>
@@ -215,12 +241,17 @@ public class InventoryService(
         if (string.IsNullOrWhiteSpace(collectionKey))
         {
             var row = await conn.QuerySingleOrDefaultAsync<ItemRow>(SelectItem + " WHERE i.Id = @itemId", new { itemId });
-            return row is null ? new List<Item>() : [Map(row)];
+            if (row is null) return [];
+            var single = new List<Item> { Map(row) };
+            if (tagService is not null) await tagService.PopulateAsync(single, ct);
+            return single;
         }
 
         var rows = await conn.QueryAsync<ItemRow>(
             SelectItem + " WHERE i.CollectionKey = @collectionKey ORDER BY i.Id", new { collectionKey });
-        return rows.Select(Map).ToList();
+        var items = rows.Select(Map).ToList();
+        if (tagService is not null) await tagService.PopulateAsync(items, ct);
+        return items;
     }
 
     public async Task<Item> SaveAsync(Item item, CancellationToken ct = default)
@@ -513,6 +544,10 @@ public class InventoryService(
             }, tx);
         }
         await conn.ExecuteAsync("""
+            INSERT INTO ItemTags (ItemId, TagId)
+            SELECT @createdId, TagId FROM ItemTags WHERE ItemId = @itemId;
+            """, new { itemId, createdId }, tx);
+        await conn.ExecuteAsync("""
             INSERT INTO ItemImages (ItemId, ImageId, Role, IsPrimary, SortOrder, CreatedAt)
             SELECT @createdId, ImageId, Role, IsPrimary, SortOrder, @now
             FROM ItemImages WHERE ItemId = @itemId;
@@ -618,6 +653,10 @@ public class InventoryService(
             UpdatedAt = now.ToString("O")
         }, tx);
 
+        await conn.ExecuteAsync("""
+            INSERT INTO ItemTags (ItemId, TagId)
+            SELECT @createdId, TagId FROM ItemTags WHERE ItemId = @matchedItemId;
+            """, new { createdId, matchedItemId }, tx);
         var hasNewPrimaryImage = observed.ImageId is { } observedImageId
                                  && observedImageId != source.ImageId;
         await conn.ExecuteAsync("""

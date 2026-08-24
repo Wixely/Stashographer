@@ -20,6 +20,7 @@ public sealed record AutomationItem(
     int? ContainerId,
     string? Container,
     int? ImageId,
+    IReadOnlyList<string> Tags,
     IReadOnlyDictionary<string, string> Attributes,
     IReadOnlyDictionary<string, SpecialAttributeValue> SpecialAttributes,
     string? Notes,

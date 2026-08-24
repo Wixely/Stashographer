@@ -63,6 +63,9 @@ Every container gets a printable QR code — scan it to see what's meant to be i
   container gets a **printable QR code**; scan it to see what's (meant to be) inside.
 - **Fast placement** — queue review remembers recent location/container targets, while the
   inventory supports multi-selection and Quick Move from either the toolbar or context menu.
+- **Reusable tags** — label an item with any number of centrally managed tags, search by tag,
+  and combine must-have and excluded tag filters in either the list or gallery inventory view.
+  Tags follow an item when its quantity is split into another place or expiry lot.
 - **Stock lots and split quantities** — each inventory entry is homogeneous by place and
   expiry. Split a product across rooms/containers or keep cans with different dates as linked,
   independently usable stock entries. Product counts and low-stock checks remain collection-aware.
@@ -264,7 +267,7 @@ dependencies only (see [THIRD-PARTY-NOTICES](THIRD-PARTY-NOTICES.md)).
 ## Development
 
 ```bash
-dotnet test                    # 158 tests, no network access required
+dotnet test                    # 161 tests, no network access required
 dotnet build -c Release
 ```
 
@@ -277,7 +280,7 @@ Sample data is seeded automatically in the Development environment (see
 
 ## Roadmap (phase 2)
 
-Postgres/other database providers, tags UI, shopping lists from low stock,
+Postgres/other database providers, shopping lists from low stock,
 CSV import/export, optional multi-user auth, PWA/offline.
 
 ## License

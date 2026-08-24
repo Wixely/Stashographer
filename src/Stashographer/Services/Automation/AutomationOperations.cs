@@ -14,7 +14,8 @@ public sealed class AutomationOperations(
     ContainerService places,
     IntakeQueueService intake,
     SettingsService settings,
-    ConsumptionService consumption)
+    ConsumptionService consumption,
+    TagService tags)
 {
     public async Task<IReadOnlyList<AutomationItem>> SearchInventoryAsync(
         string? search = null,
@@ -41,6 +42,9 @@ public sealed class AutomationOperations(
 
     public Task<List<ItemKind>> ListItemKindsAsync(CancellationToken ct = default) =>
         inventory.GetKindsAsync(ct);
+
+    public Task<List<Tag>> ListTagsAsync(CancellationToken ct = default) =>
+        tags.GetAllAsync(ct);
 
     public async Task<IReadOnlyList<AutomationLocation>> ListPlacesAsync(CancellationToken ct = default) =>
         (await places.GetLocationsAsync(ct)).Select(location => new AutomationLocation(
@@ -238,6 +242,7 @@ public sealed class AutomationOperations(
         item.ContainerId,
         item.Container?.Name,
         item.ImageId,
+        item.Tags.Select(tag => tag.Name).ToList(),
         item.Attributes,
         item.SpecialAttributes,
         item.Notes,

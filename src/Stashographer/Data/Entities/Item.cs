@@ -58,6 +58,9 @@ public class Item
     /// <summary>All locally stored views. Loaded explicitly for item detail workflows.</summary>
     public List<ItemImage> Images { get; set; } = new();
 
+    /// <summary>Reusable labels populated by inventory queries and item detail loading.</summary>
+    public List<Tag> Tags { get; set; } = new();
+
     /// <summary>Flexible per-item metadata, persisted as JSON in <c>AttributesJson</c>.</summary>
     public Dictionary<string, string> Attributes { get; set; } = new();
 

@@ -11,6 +11,7 @@
 @inject SettingsService SettingsSvc
 @inject IntakeQueueService IntakeQueue
 @inject ConsumptionService Consumption
+@inject TagService Tags
 
 <PageTitle>@(_item.Id == 0 ? "New item" : _item.Name) · Stashographer</PageTitle>
 
@@ -212,6 +213,46 @@ else
                 </MudSelect>
             </MudPaper>
 
+            <MudPaper Class="pa-4 mb-3" Outlined="true">
+                <div class="d-flex justify-space-between align-center gap-2 mb-2">
+                    <MudText Typo="Typo.subtitle2">Tags</MudText>
+                    <MudButton Href="settings#tags" Variant="Variant.Text" Size="Size.Small">
+                        Manage
+                    </MudButton>
+                </div>
+                @if (_availableTags.Count == 0)
+                {
+                    <MudText Typo="Typo.body2" Class="mud-text-secondary mb-2">
+                        Add a reusable tag to group this item across kinds and locations.
+                    </MudText>
+                }
+                else
+                {
+                    <div class="d-flex gap-2 flex-wrap mb-3">
+                        @foreach (var tag in _availableTags)
+                        {
+                            var selected = _selectedTagIds.Contains(tag.Id);
+                            <MudChip T="string" Size="Size.Small"
+                                     Variant="@(selected ? Variant.Filled : Variant.Outlined)"
+                                     Color="@(selected ? Color.Primary : Color.Default)"
+                                     Icon="@(selected ? Icons.Material.Filled.Check : null)"
+                                     OnClick="@(() => ToggleTag(tag.Id))">
+                                @tag.Name
+                            </MudChip>
+                        }
+                    </div>
+                }
+                <div class="d-flex gap-2 align-end">
+                    <MudTextField T="string" @bind-Value="_newTagName" Label="New tag"
+                                  Variant="Variant.Outlined" Margin="Margin.Dense" MaxLength="50"
+                                  Class="flex-grow-1" />
+                    <MudButton Variant="Variant.Outlined" StartIcon="@Icons.Material.Filled.Add"
+                               Disabled="@string.IsNullOrWhiteSpace(_newTagName)" OnClick="AddTagAsync">
+                        Add
+                    </MudButton>
+                </div>
+            </MudPaper>
+
             <MudPaper Class="pa-4" Outlined="true">
                 <SpecialAttributeEditor Item="_item" DefaultCurrency="@_defaultCurrency" />
                 <MudDivider Class="my-4" />
@@ -243,6 +284,9 @@ else
     private List<Item> _collectionMembers = new();
     private List<ItemPurchase> _purchases = new();
     private List<ConsumptionEvent> _consumptionHistory = [];
+    private List<Tag> _availableTags = [];
+    private readonly HashSet<int> _selectedTagIds = [];
+    private string _newTagName = string.Empty;
     private CheckoutRecord? _openCheckout;
     private int? _locationId;
     private int? _containerId;
@@ -258,6 +302,7 @@ else
         _loading = true;
         _kinds = await Inventory.GetKindsAsync();
         _locations = await Containers.GetLocationsAsync();
+        _availableTags = await Tags.GetAllAsync();
         var regional = await SettingsSvc.GetRegionalOptionsAsync();
         _defaultCurrency = regional.DefaultCurrency;
         _culture = System.Globalization.CultureInfo.GetCultureInfo(regional.CultureName);
@@ -281,6 +326,8 @@ else
 
         _locationId = _item.LocationId ?? _item.Container?.LocationId;
         _containerId = _item.ContainerId;
+        _selectedTagIds.Clear();
+        _selectedTagIds.UnionWith(_item.Tags.Select(tag => tag.Id));
         _loading = false;
     }
 
@@ -306,6 +353,7 @@ else
             _item.ContainerId = _containerId;
             _item.LocationId = _containerId is null ? _locationId : null;
             await Inventory.SaveAsync(_item);
+            await Tags.SetForItemAsync(_item.Id, _selectedTagIds);
             Snackbar.Add("Saved.", Severity.Success);
             Nav.NavigateTo("inventory");
         }
@@ -316,6 +364,26 @@ else
     }
 
     private void SetPrimaryImage(int? imageId) => _item.ImageId = imageId;
+
+    private void ToggleTag(int tagId)
+    {
+        if (!_selectedTagIds.Add(tagId)) _selectedTagIds.Remove(tagId);
+    }
+
+    private async Task AddTagAsync()
+    {
+        try
+        {
+            var tag = await Tags.SaveAsync(new Tag { Name = _newTagName });
+            _availableTags = await Tags.GetAllAsync();
+            _selectedTagIds.Add(tag.Id);
+            _newTagName = string.Empty;
+        }
+        catch (InvalidOperationException ex)
+        {
+            Snackbar.Add(ex.Message, Severity.Error);
+        }
+    }
 
     private async Task Delete()
     {

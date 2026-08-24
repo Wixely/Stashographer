@@ -10,7 +10,7 @@ public static class AutomationApiEndpoints
         api.MapGet(string.Empty, () => new AutomationIdentity(
             "Stashographer API",
             "v1",
-            ["inventory", "item-kinds", "places", "consumption", "intake"],
+            ["inventory", "item-kinds", "tags", "places", "consumption", "intake"],
             "Automation can propose queue drafts; a user must accept them in Intake Queue."));
         api.MapGet("/inventory", (
             string? search,
@@ -25,6 +25,8 @@ public static class AutomationApiEndpoints
             ExecuteAsync(() => operations.GetItemAsync(id, ct)));
         api.MapGet("/item-kinds", (AutomationOperations operations, CancellationToken ct) =>
             operations.ListItemKindsAsync(ct));
+        api.MapGet("/tags", (AutomationOperations operations, CancellationToken ct) =>
+            operations.ListTagsAsync(ct));
         api.MapGet("/places", (AutomationOperations operations, CancellationToken ct) =>
             operations.ListPlacesAsync(ct));
         api.MapGet("/consumption", (

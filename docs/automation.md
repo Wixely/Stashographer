@@ -48,9 +48,10 @@ The API base is `/api/v1`. JSON enums are represented by names such as `Manual` 
 | Method | Path | Purpose |
 |---|---|---|
 | `GET` | `/api/v1` | Identity, version and review policy |
-| `GET` | `/api/v1/inventory` | Search with `search`, `itemKindId`, `locationId`, `containerId`, and `limit` |
+| `GET` | `/api/v1/inventory` | Search names, codes, descriptions, and tags; optionally filter by kind or place |
 | `GET` | `/api/v1/inventory/{id}` | Get an inventory item |
 | `GET` | `/api/v1/item-kinds` | List valid kinds and their known attribute vocabulary |
+| `GET` | `/api/v1/tags` | List reusable tags and their item counts |
 | `GET` | `/api/v1/places` | List locations and nested containers |
 | `GET` | `/api/v1/consumption` | Read use history; filter by item, source, text, UTC time bounds, or active/undone state |
 | `GET` | `/api/v1/intake` | List the open intake queue |
@@ -62,7 +63,7 @@ The API base is `/api/v1`. JSON enums are represented by names such as `Manual` 
 | `POST` | `/api/v1/intake/receipts` | Queue multipart field `receipt` for reviewable session enrichment |
 | `POST` | `/api/v1/intake/session` | End the context window and start a new intake session |
 
-Discover identifiers with `item-kinds` and `places` before creating a draft. A minimal request
+Discover identifiers and current vocabulary with `item-kinds`, `tags`, and `places`. A minimal request
 looks like this:
 
 ```json
@@ -99,9 +100,10 @@ the bearer token for that connection.
 
 | Tool | Purpose |
 |---|---|
-| `search_inventory` | Search before proposing duplicates or substitutes |
+| `search_inventory` | Search names, codes, descriptions, and tags before proposing duplicates or substitutes |
 | `get_item` | Read one current inventory item |
 | `list_item_kinds` | Discover valid kinds and known attributes |
+| `list_tags` | Discover reusable tags and their item counts |
 | `list_places` | Discover valid locations and containers |
 | `list_consumption_history` | Read exact-lot manual and meal use history; optionally filter by item or source |
 | `list_intake_queue` | Read captures and drafts awaiting work or review |
