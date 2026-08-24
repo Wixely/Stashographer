@@ -78,4 +78,16 @@ public sealed class StashographerMcpTools
     public static Task<IntakeSession> StartIntakeSessionAsync(
         AutomationOperations operations,
         CancellationToken ct = default) => operations.StartIntakeSessionAsync(ct);
+
+    [McpServerTool(Name = "list_consumption_history", UseStructuredContent = true)]
+    [Description("Lists read-only inventory use history with exact consumed stock lots and quantities.")]
+    public static Task<IReadOnlyList<AutomationConsumptionEvent>> ListConsumptionHistoryAsync(
+        AutomationOperations operations,
+        [Description("Optional words from the event description or consumed item name.")] string? search = null,
+        [Description("Optional inventory lot identifier.")] int? itemId = null,
+        [Description("Optional event source: Manual or Meal.")] ConsumptionKind? kind = null,
+        [Description("Include events that were undone.")] bool includeUndone = false,
+        [Description("Maximum results from 1 to 500.")] int limit = 100,
+        CancellationToken ct = default) =>
+        operations.ListConsumptionAsync(search, itemId, kind, includeUndone, limit: limit, ct: ct);
 }

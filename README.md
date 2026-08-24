@@ -71,6 +71,9 @@ Every container gets a printable QR code — scan it to see what's meant to be i
 - **Food expiry workflow** — overdue, today, next-three-day, weekly, and later views use
   the configured local date. Quickly decrement used items and find food whose expiry date
   still needs recording; dated non-food items can be included when useful.
+- **Reversible use history** — quick manual decrements and cooked meals share one durable
+  event log with exact stock-lot, quantity, unit, and expiry snapshots. Filter the history,
+  inspect it from an item, and safely Undo while the original lots still exist.
 - **Recipes & builds (BOMs)** — define reusable outputs and their required ingredients or
   parts. Requirements can use generic kind/text/attribute selectors or a durable explicit
   allow-list of interchangeable inventory items; allocation avoids double-counting stock.
@@ -85,7 +88,8 @@ Every container gets a printable QR code — scan it to see what's meant to be i
 - **AI enrichment (optional)** — identify an item from a photo when a barcode won't do, and
   "season" any item with extra detail, via any **OpenAI-protocol** endpoint.
 - **Agent API & MCP (optional)** — deployment-gated, administrator-activated automation can
-  search inventory, inspect places and queue context, and propose or refine item drafts through
+  search inventory, inspect places, consumption history and queue context, and propose or refine
+  item drafts through
   `/api/v1` or stateless Streamable HTTP MCP. Human item-by-item acceptance remains mandatory
   for automation drafts.
 - **Light / dark themes**, mobile-friendly (MudBlazor).
@@ -242,6 +246,12 @@ item IDs, quantities, units, and expiry snapshots so Undo can restore the same l
 ingredients are flagged for a human safety check; the planner never treats an expiry date as proof
 that food is safe.
 
+The **Use History** page unifies those meal events with manual “used one” actions from Inventory
+and Food Expiry. It defaults to active events, can include undone history, filters by source, date,
+item, or text, and restores only the exact source lots. Deleted lots leave their audit snapshot
+intact but deliberately disable automatic restoration. The same history is read-only through API
+and MCP automation.
+
 > Keep the key out of git. Put it in a `.env` file next to `docker-compose.yml` (already
 > covered by `.gitignore`) and reference it as `${STASH_AI_API_KEY}`.
 
@@ -254,7 +264,7 @@ dependencies only (see [THIRD-PARTY-NOTICES](THIRD-PARTY-NOTICES.md)).
 ## Development
 
 ```bash
-dotnet test                    # 155 tests, no network access required
+dotnet test                    # 158 tests, no network access required
 dotnet build -c Release
 ```
 
@@ -267,8 +277,8 @@ Sample data is seeded automatically in the Development environment (see
 
 ## Roadmap (phase 2)
 
-Postgres/other database providers, tags UI, shopping lists from low stock, consumption
-history, CSV import/export, optional multi-user auth, PWA/offline.
+Postgres/other database providers, tags UI, shopping lists from low stock,
+CSV import/export, optional multi-user auth, PWA/offline.
 
 ## License
 

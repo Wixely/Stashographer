@@ -22,6 +22,8 @@
     <div class="d-flex gap-2 flex-wrap">
         <MudButton Href="expiry" Variant="Variant.Outlined"
                    StartIcon="@Icons.Material.Filled.EventBusy">Food expiry</MudButton>
+        <MudButton Href="consumption" Variant="Variant.Outlined"
+                   StartIcon="@Icons.Material.Filled.History">Use history</MudButton>
         <MudButton Variant="Variant.Outlined" StartIcon="@Icons.Material.Filled.Add"
                    OnClick="@(() => OpenPlanDialogAsync(false))"
                    Disabled="@(_loading || _recipes.Count == 0)">New plan</MudButton>

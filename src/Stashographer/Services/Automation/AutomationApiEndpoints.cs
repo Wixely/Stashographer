@@ -1,3 +1,5 @@
+using Stashographer.Data.Entities;
+
 namespace Stashographer.Services.Automation;
 
 public static class AutomationApiEndpoints
@@ -8,7 +10,7 @@ public static class AutomationApiEndpoints
         api.MapGet(string.Empty, () => new AutomationIdentity(
             "Stashographer API",
             "v1",
-            ["inventory", "item-kinds", "places", "intake"],
+            ["inventory", "item-kinds", "places", "consumption", "intake"],
             "Automation can propose queue drafts; a user must accept them in Intake Queue."));
         api.MapGet("/inventory", (
             string? search,
@@ -25,6 +27,18 @@ public static class AutomationApiEndpoints
             operations.ListItemKindsAsync(ct));
         api.MapGet("/places", (AutomationOperations operations, CancellationToken ct) =>
             operations.ListPlacesAsync(ct));
+        api.MapGet("/consumption", (
+            string? search,
+            int? itemId,
+            ConsumptionKind? kind,
+            bool? includeUndone,
+            DateTimeOffset? consumedFrom,
+            DateTimeOffset? consumedBefore,
+            int? limit,
+            AutomationOperations operations,
+            CancellationToken ct) => operations.ListConsumptionAsync(
+                search, itemId, kind, includeUndone ?? false,
+                consumedFrom, consumedBefore, limit ?? 100, ct));
         api.MapGet("/intake", (AutomationOperations operations, CancellationToken ct) =>
             operations.ListIntakeQueueAsync(ct));
         api.MapGet("/intake/{id:int}", (int id, AutomationOperations operations, CancellationToken ct) =>

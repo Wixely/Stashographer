@@ -10,6 +10,7 @@
 @inject IDialogService Dialogs
 @inject SettingsService SettingsSvc
 @inject IntakeQueueService IntakeQueue
+@inject ConsumptionService Consumption
 
 <PageTitle>@(_item.Id == 0 ? "New item" : _item.Name) · Stashographer</PageTitle>
 
@@ -156,6 +157,43 @@ else
                 </MudPaper>
             }
 
+            @if (_item.Id != 0)
+            {
+                <MudPaper Class="pa-4 mb-3" Outlined="true">
+                    <div class="d-flex justify-space-between align-center gap-2 mb-2">
+                        <MudText Typo="Typo.subtitle2">Use history</MudText>
+                        <MudButton Href="@($"consumption?itemId={_item.Id}")" Variant="Variant.Text"
+                                   Size="Size.Small" EndIcon="@Icons.Material.Filled.ChevronRight">View all</MudButton>
+                    </div>
+                    @if (_consumptionHistory.Count == 0)
+                    {
+                        <MudText Typo="Typo.body2" Class="mud-text-secondary">No recorded use for this stock lot.</MudText>
+                    }
+                    else
+                    {
+                        @foreach (var consumption in _consumptionHistory)
+                        {
+                            var line = consumption.Lines.First(entry => entry.ItemId == _item.Id);
+                            <div class="d-flex justify-space-between align-start gap-2 py-2">
+                                <div>
+                                    <MudText Typo="Typo.body2">
+                                        @consumption.Description · @line.Quantity.ToString("0.##") @line.Unit
+                                    </MudText>
+                                    <MudText Typo="Typo.caption" Class="mud-text-secondary">
+                                        @FormatConsumptionTime(consumption.ConsumedAt) ·
+                                        @(consumption.Kind == ConsumptionKind.Meal ? "cooked meal" : "manual use")
+                                    </MudText>
+                                </div>
+                                @if (consumption.UndoneAt is not null)
+                                {
+                                    <MudChip T="string" Size="Size.Small">Undone</MudChip>
+                                }
+                            </div>
+                        }
+                    }
+                </MudPaper>
+            }
+
             <MudPaper Class="pa-4 mb-3" Outlined="true">
                 <MudText Typo="Typo.subtitle2" Class="mb-2">Where is it?</MudText>
                 <MudSelect Value="_locationId" Label="Location" Variant="Variant.Outlined" Clearable="true"
@@ -204,19 +242,26 @@ else
     private List<Location> _locations = new();
     private List<Item> _collectionMembers = new();
     private List<ItemPurchase> _purchases = new();
+    private List<ConsumptionEvent> _consumptionHistory = [];
     private CheckoutRecord? _openCheckout;
     private int? _locationId;
     private int? _containerId;
     private bool _loading = true;
     private bool _enriching;
     private string _defaultCurrency = "GBP";
+    private System.Globalization.CultureInfo _culture =
+        System.Globalization.CultureInfo.GetCultureInfo("en-GB");
+    private TimeZoneInfo _timeZone = TimeZoneInfo.Utc;
 
     protected override async Task OnParametersSetAsync()
     {
         _loading = true;
         _kinds = await Inventory.GetKindsAsync();
         _locations = await Containers.GetLocationsAsync();
-        _defaultCurrency = await SettingsSvc.GetDefaultCurrencyAsync();
+        var regional = await SettingsSvc.GetRegionalOptionsAsync();
+        _defaultCurrency = regional.DefaultCurrency;
+        _culture = System.Globalization.CultureInfo.GetCultureInfo(regional.CultureName);
+        _timeZone = TimeZoneInfo.FindSystemTimeZoneById(regional.TimeZoneId);
 
         if (Id is { } id)
         {
@@ -224,12 +269,14 @@ else
             _openCheckout = _item.IsCheckedOut ? await Checkouts.GetOpenForItemAsync(id) : null;
             _collectionMembers = await Inventory.GetCollectionMembersAsync(id);
             _purchases = await IntakeQueue.GetPurchasesAsync(id);
+            _consumptionHistory = await Consumption.GetForItemAsync(id, includeUndone: true, limit: 10);
         }
         else
         {
             _item = Draft.Take() ?? new Item { Name = string.Empty, ItemKindId = 7 };
             _collectionMembers.Clear();
             _purchases.Clear();
+            _consumptionHistory.Clear();
         }
 
         _locationId = _item.LocationId ?? _item.Container?.LocationId;
@@ -305,6 +352,7 @@ else
         _openCheckout = _item.IsCheckedOut ? await Checkouts.GetOpenForItemAsync(_item.Id) : null;
         _collectionMembers = await Inventory.GetCollectionMembersAsync(_item.Id);
         _purchases = await IntakeQueue.GetPurchasesAsync(_item.Id);
+        _consumptionHistory = await Consumption.GetForItemAsync(_item.Id, includeUndone: true, limit: 10);
         StateHasChanged();
     }
 
@@ -373,6 +421,9 @@ else
 
     private static string ExpiryLabel(Item item) =>
         item.ExpiryDate is { } expiry ? $"expires {expiry:d MMM yyyy}" : "expiry unknown";
+
+    private string FormatConsumptionTime(DateTimeOffset value) =>
+        TimeZoneInfo.ConvertTime(value, _timeZone).ToString("g", _culture);
 
     private async Task Enrich()
     {

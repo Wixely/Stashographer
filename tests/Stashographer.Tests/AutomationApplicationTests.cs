@@ -13,6 +13,7 @@ using ModelContextProtocol.Client;
 using Stashographer.Data;
 using Stashographer.Data.Entities;
 using Stashographer.Services.Automation;
+using Stashographer.Services.Inventory;
 using Stashographer.Services.Security;
 
 namespace Stashographer.Tests;
@@ -37,6 +38,11 @@ public sealed class AutomationApplicationTests
             Assert.Null(initial.ApiCredential);
         }
         Assert.Equal(HttpStatusCode.NotFound, (await client.GetAsync("/api/v1")).StatusCode);
+        using (var historyPage = await client.GetAsync("/consumption"))
+        {
+            Assert.Equal(HttpStatusCode.OK, historyPage.StatusCode);
+            Assert.Contains("Use history", await historyPage.Content.ReadAsStringAsync());
+        }
 
         string secret;
         await using (var scope = app.Factory.Services.CreateAsyncScope())
@@ -49,6 +55,29 @@ public sealed class AutomationApplicationTests
         Assert.Equal(HttpStatusCode.Unauthorized, (await client.GetAsync("/api/v1")).StatusCode);
         client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", secret);
         Assert.Equal(HttpStatusCode.OK, (await client.GetAsync("/api/v1")).StatusCode);
+
+        await using (var consumptionScope = app.Factory.Services.CreateAsyncScope())
+        {
+            var inventoryService = consumptionScope.ServiceProvider.GetRequiredService<InventoryService>();
+            var consumptionService = consumptionScope.ServiceProvider.GetRequiredService<ConsumptionService>();
+            var usedItem = await inventoryService.SaveAsync(new Item
+            {
+                Name = "API-visible soup",
+                ItemKindId = 1,
+                Quantity = 2,
+                Unit = "cans"
+            });
+            await consumptionService.UseItemAsync(usedItem.Id, description: "API history check");
+        }
+        using (var consumptionResponse = await client.GetAsync("/api/v1/consumption?search=soup"))
+        {
+            Assert.Equal(HttpStatusCode.OK, consumptionResponse.StatusCode);
+            using var consumptionJson = JsonDocument.Parse(await consumptionResponse.Content.ReadAsStringAsync());
+            var history = Assert.Single(consumptionJson.RootElement.EnumerateArray());
+            Assert.Equal("Manual", history.GetProperty("kind").GetString());
+            Assert.Equal("API-visible soup", Assert.Single(history.GetProperty("lines").EnumerateArray())
+                .GetProperty("itemName").GetString());
+        }
 
         using var created = await client.PostAsJsonAsync("/api/v1/intake/items", new ItemDraftRequest
         {
@@ -151,6 +180,7 @@ public sealed class AutomationApplicationTests
         {
             var tools = await mcp.ListToolsAsync();
             Assert.Contains(tools, tool => tool.Name == "search_inventory");
+            Assert.Contains(tools, tool => tool.Name == "list_consumption_history");
             Assert.Contains(tools, tool => tool.Name == "queue_item_draft");
             Assert.DoesNotContain(tools, tool => tool.Name.Contains("accept", StringComparison.OrdinalIgnoreCase));
 
@@ -159,6 +189,12 @@ public sealed class AutomationApplicationTests
                 new Dictionary<string, object?>());
             Assert.False(result.IsError ?? false);
             Assert.NotNull(result.StructuredContent);
+
+            var historyResult = await mcp.CallToolAsync(
+                "list_consumption_history",
+                new Dictionary<string, object?>());
+            Assert.False(historyResult.IsError ?? false);
+            Assert.NotNull(historyResult.StructuredContent);
         }
     }
 

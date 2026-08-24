@@ -77,7 +77,8 @@
                             else
                             {
                                 <MudButton Size="Size.Small" Variant="Variant.Outlined" Color="Color.Primary"
-                                           StartIcon="@Icons.Material.Filled.Check" Disabled="@(BusyItemId == item.Id)"
+                                           StartIcon="@Icons.Material.Filled.Check"
+                                           Disabled="@(BusyItemId == item.Id || item.Quantity < 1)"
                                            OnClick="@(async () => await OnUsedOne.InvokeAsync(item.Id))">
                                     @(BusyItemId == item.Id ? "Updating…" : "Used one")
                                 </MudButton>

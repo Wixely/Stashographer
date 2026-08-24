@@ -11,7 +11,7 @@ public class MealPlanServiceTests
         await using var db = await TestDb.CreateAsync();
         var inventory = new InventoryService(db.Factory);
         var boms = BomService(db, inventory);
-        var meals = new MealPlanService(db.Factory, boms, inventory);
+        var meals = new MealPlanService(db.Factory, boms, inventory, new ConsumptionService(db.Factory));
         var early = await inventory.SaveAsync(new Item
         {
             Name = "Early beans",
@@ -52,6 +52,7 @@ public class MealPlanServiceTests
 
         var cooked = await meals.CookAsync(Assert.Single(plan.Entries).Id);
 
+        Assert.Equal(ConsumptionKind.Meal, cooked.Kind);
         Assert.Equal(0, (await inventory.GetAsync(early.Id))!.Quantity);
         Assert.Equal(2, (await inventory.GetAsync(later.Id))!.Quantity);
         Assert.Equal(2, cooked.Lines.Count);
@@ -85,7 +86,7 @@ public class MealPlanServiceTests
         await using var db = await TestDb.CreateAsync();
         var inventory = new InventoryService(db.Factory);
         var boms = BomService(db, inventory);
-        var meals = new MealPlanService(db.Factory, boms, inventory);
+        var meals = new MealPlanService(db.Factory, boms, inventory, new ConsumptionService(db.Factory));
         var first = await inventory.SaveAsync(new Item
         {
             Name = "First tin",
@@ -115,7 +116,7 @@ public class MealPlanServiceTests
         await using var db = await TestDb.CreateAsync();
         var inventory = new InventoryService(db.Factory);
         var boms = BomService(db, inventory);
-        var meals = new MealPlanService(db.Factory, boms, inventory);
+        var meals = new MealPlanService(db.Factory, boms, inventory, new ConsumptionService(db.Factory));
         var item = await inventory.SaveAsync(new Item
         {
             Name = "Dinner tin",
@@ -139,7 +140,7 @@ public class MealPlanServiceTests
         await using var db = await TestDb.CreateAsync();
         var inventory = new InventoryService(db.Factory);
         var boms = BomService(db, inventory);
-        var meals = new MealPlanService(db.Factory, boms, inventory);
+        var meals = new MealPlanService(db.Factory, boms, inventory, new ConsumptionService(db.Factory));
         var earlySpecific = await inventory.SaveAsync(new Item
         {
             Name = "Specific yoghurt",
@@ -196,7 +197,7 @@ public class MealPlanServiceTests
         await using var db = await TestDb.CreateAsync();
         var inventory = new InventoryService(db.Factory);
         var boms = BomService(db, inventory);
-        var meals = new MealPlanService(db.Factory, boms, inventory);
+        var meals = new MealPlanService(db.Factory, boms, inventory, new ConsumptionService(db.Factory));
         var beans = await inventory.SaveAsync(new Item
         {
             Name = "Beans",

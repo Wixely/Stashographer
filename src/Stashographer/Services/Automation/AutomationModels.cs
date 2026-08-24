@@ -62,6 +62,27 @@ public sealed record AutomationQueueItem(
     DateTimeOffset CreatedAt,
     DateTimeOffset? ProcessedAt);
 
+public sealed record AutomationConsumptionLine(
+    int Id,
+    int? ItemId,
+    string ItemName,
+    decimal Quantity,
+    string? Unit,
+    DateOnly? ExpiryDate);
+
+public sealed record AutomationConsumptionEvent(
+    int Id,
+    ConsumptionKind Kind,
+    string Description,
+    DateTimeOffset ConsumedAt,
+    DateTimeOffset? UndoneAt,
+    int? MealPlanEntryId,
+    int? BomDefinitionId,
+    string? MealPlanName,
+    DateOnly? PlanDate,
+    string? MealSlot,
+    IReadOnlyList<AutomationConsumptionLine> Lines);
+
 /// <summary>A proposed item that is always queued for final human review.</summary>
 public sealed class ItemDraftRequest
 {

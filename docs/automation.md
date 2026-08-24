@@ -52,6 +52,7 @@ The API base is `/api/v1`. JSON enums are represented by names such as `Manual` 
 | `GET` | `/api/v1/inventory/{id}` | Get an inventory item |
 | `GET` | `/api/v1/item-kinds` | List valid kinds and their known attribute vocabulary |
 | `GET` | `/api/v1/places` | List locations and nested containers |
+| `GET` | `/api/v1/consumption` | Read use history; filter by item, source, text, UTC time bounds, or active/undone state |
 | `GET` | `/api/v1/intake` | List the open intake queue |
 | `GET` | `/api/v1/intake/{id}` | Get one queue entry and its draft |
 | `POST` | `/api/v1/intake/barcodes` | Queue `{ "code": "..." }` for lookup |
@@ -102,6 +103,7 @@ the bearer token for that connection.
 | `get_item` | Read one current inventory item |
 | `list_item_kinds` | Discover valid kinds and known attributes |
 | `list_places` | Discover valid locations and containers |
+| `list_consumption_history` | Read exact-lot manual and meal use history; optionally filter by item or source |
 | `list_intake_queue` | Read captures and drafts awaiting work or review |
 | `get_intake_item` | Read one queue entry and its current draft |
 | `queue_barcode` | Queue a barcode, ISBN, or scanned code |

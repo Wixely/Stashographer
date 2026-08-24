@@ -4,12 +4,6 @@ using Stashographer.Data.Entities;
 
 namespace Stashographer.Services.Inventory;
 
-public sealed record ConsumptionApplied(
-    int EventId,
-    int MealPlanEntryId,
-    string Description,
-    IReadOnlyList<ConsumptionLine> Lines);
-
 /// <summary>
 /// Persists reviewed meal plans and applies explicit, reversible FEFO consumption events.
 /// Merely generating or saving a plan never changes inventory quantities.
@@ -17,7 +11,8 @@ public sealed record ConsumptionApplied(
 public sealed class MealPlanService(
     IDbConnectionFactory db,
     BomService boms,
-    InventoryService inventory)
+    InventoryService inventory,
+    ConsumptionService consumption)
 {
     public async Task<List<MealPlan>> GetAllAsync(CancellationToken ct = default)
     {
@@ -40,7 +35,7 @@ public sealed class MealPlanService(
         var activeEvents = entryIds.Length == 0
             ? []
             : (await conn.QueryAsync<ConsumptionEvent>("""
-                SELECT Id, MealPlanEntryId, BomDefinitionId, Description, ConsumedAt, UndoneAt
+                SELECT Id, Kind, MealPlanEntryId, BomDefinitionId, Description, ConsumedAt, UndoneAt
                 FROM ConsumptionEvents
                 WHERE MealPlanEntryId IN @entryIds AND UndoneAt IS NULL;
                 """, new { entryIds })).ToList();
@@ -248,87 +243,32 @@ public sealed class MealPlanService(
                 throw new InvalidOperationException(
                     $"Inventory changed while allocating {line.ItemName}; review the meal again.");
         }
-        var eventId = await write.ExecuteScalarAsync<int>("""
-            INSERT INTO ConsumptionEvents
-                (MealPlanEntryId, BomDefinitionId, Description, ConsumedAt)
-            VALUES
-                (@mealPlanEntryId, @bomDefinitionId, @description, @consumedAt);
-            SELECT last_insert_rowid();
-            """, new
+        var consumedLines = allocation.Lines.Select(line => new ConsumptionLine
         {
-            mealPlanEntryId,
-            bomDefinitionId = entry.BomDefinitionId,
-            description = entry.RecipeName,
-            consumedAt = now
-        }, tx);
-        var consumedLines = new List<ConsumptionLine>();
-        foreach (var line in allocation.Lines)
-        {
-            var consumed = new ConsumptionLine
-            {
-                ConsumptionEventId = eventId,
-                ItemId = line.ItemId,
-                ItemName = line.ItemName,
-                Quantity = line.Quantity,
-                Unit = line.Unit,
-                ExpiryDate = line.ExpiryDate
-            };
-            consumed.Id = await write.ExecuteScalarAsync<int>("""
-                INSERT INTO ConsumptionLines
-                    (ConsumptionEventId, ItemId, ItemName, Quantity, Unit, ExpiryDate)
-                VALUES
-                    (@ConsumptionEventId, @ItemId, @ItemName, @Quantity, @Unit, @ExpiryDate);
-                SELECT last_insert_rowid();
-                """, consumed, tx);
-            consumedLines.Add(consumed);
-        }
+            ItemId = line.ItemId,
+            ItemName = line.ItemName,
+            Quantity = line.Quantity,
+            Unit = line.Unit,
+            ExpiryDate = line.ExpiryDate
+        }).ToList();
+        var applied = await consumption.RecordAsync(
+            write,
+            tx,
+            ConsumptionKind.Meal,
+            entry.RecipeName,
+            entry.Id,
+            entry.BomDefinitionId,
+            consumedLines,
+            now);
         await write.ExecuteAsync("""
             UPDATE MealPlans SET UpdatedAt = @now WHERE Id = @mealPlanId;
             """, new { now, mealPlanId = entry.MealPlanId }, tx);
         tx.Commit();
-        return new ConsumptionApplied(eventId, entry.Id, entry.RecipeName, consumedLines);
+        return applied;
     }
 
-    public async Task UndoAsync(int consumptionEventId, CancellationToken ct = default)
-    {
-        using var conn = await db.OpenAsync(ct);
-        using var tx = conn.BeginTransaction();
-        var consumption = await conn.QuerySingleOrDefaultAsync<ConsumptionEvent>("""
-            SELECT Id, MealPlanEntryId, BomDefinitionId, Description, ConsumedAt, UndoneAt
-            FROM ConsumptionEvents WHERE Id = @consumptionEventId;
-            """, new { consumptionEventId }, tx)
-            ?? throw new InvalidOperationException("The consumption event no longer exists.");
-        if (consumption.UndoneAt is not null)
-            throw new InvalidOperationException("This consumption event was already undone.");
-        var lines = (await conn.QueryAsync<ConsumptionLine>("""
-            SELECT Id, ConsumptionEventId, ItemId, ItemName, Quantity, Unit, ExpiryDate
-            FROM ConsumptionLines WHERE ConsumptionEventId = @consumptionEventId ORDER BY Id;
-            """, new { consumptionEventId }, tx)).ToList();
-        if (lines.Any(line => line.ItemId is null))
-            throw new InvalidOperationException(
-                "An inventory lot used by this meal was deleted, so it cannot be restored automatically.");
-        var now = DateTimeOffset.UtcNow;
-        var claimed = await conn.ExecuteAsync("""
-            UPDATE ConsumptionEvents SET UndoneAt = @now
-            WHERE Id = @consumptionEventId AND UndoneAt IS NULL;
-            """, new { now, consumptionEventId }, tx);
-        if (claimed != 1)
-            throw new InvalidOperationException("This consumption event was already undone.");
-        foreach (var line in lines)
-        {
-            var changed = await conn.ExecuteAsync("""
-                UPDATE Items SET Quantity = Quantity + @quantity, UpdatedAt = @now WHERE Id = @itemId;
-                """, new { quantity = line.Quantity, now, itemId = line.ItemId }, tx);
-            if (changed != 1)
-                throw new InvalidOperationException(
-                    $"The inventory lot “{line.ItemName}” no longer exists, so the event cannot be undone.");
-        }
-        if (consumption.MealPlanEntryId is { } entryId)
-            await conn.ExecuteAsync("""
-                UPDATE MealPlanEntries SET Status = @planned, CookedAt = NULL WHERE Id = @entryId;
-                """, new { planned = (int)MealPlanEntryStatus.Planned, entryId }, tx);
-        tx.Commit();
-    }
+    public Task UndoAsync(int consumptionEventId, CancellationToken ct = default) =>
+        consumption.UndoAsync(consumptionEventId, ct);
 
     public async Task DeletePlanAsync(int id, CancellationToken ct = default)
     {

@@ -13,7 +13,8 @@ public sealed class AutomationOperations(
     InventoryService inventory,
     ContainerService places,
     IntakeQueueService intake,
-    SettingsService settings)
+    SettingsService settings,
+    ConsumptionService consumption)
 {
     public async Task<IReadOnlyList<AutomationItem>> SearchInventoryAsync(
         string? search = null,
@@ -114,6 +115,24 @@ public sealed class AutomationOperations(
 
     public Task<IntakeSession> StartIntakeSessionAsync(CancellationToken ct = default) =>
         intake.StartNewSessionAsync(ct);
+
+    public async Task<IReadOnlyList<AutomationConsumptionEvent>> ListConsumptionAsync(
+        string? search = null,
+        int? itemId = null,
+        ConsumptionKind? kind = null,
+        bool includeUndone = false,
+        DateTimeOffset? consumedFrom = null,
+        DateTimeOffset? consumedBefore = null,
+        int limit = 100,
+        CancellationToken ct = default) =>
+        (await consumption.GetHistoryAsync(new ConsumptionHistoryQuery(
+            Search: search,
+            ItemId: itemId,
+            Kind: kind,
+            IncludeUndone: includeUndone,
+            ConsumedFrom: consumedFrom,
+            ConsumedBefore: consumedBefore,
+            Limit: limit), ct)).Select(ToAutomationConsumptionEvent).ToList();
 
     private async Task<Item> BuildDraftAsync(
         ItemDraftRequest request,
@@ -225,6 +244,25 @@ public sealed class AutomationOperations(
         item.IsCheckedOut,
         item.CreatedAt,
         item.UpdatedAt);
+
+    private static AutomationConsumptionEvent ToAutomationConsumptionEvent(ConsumptionEvent consumption) => new(
+        consumption.Id,
+        consumption.Kind,
+        consumption.Description,
+        consumption.ConsumedAt,
+        consumption.UndoneAt,
+        consumption.MealPlanEntryId,
+        consumption.BomDefinitionId,
+        consumption.MealPlanName,
+        consumption.PlanDate,
+        consumption.MealSlot,
+        consumption.Lines.Select(line => new AutomationConsumptionLine(
+            line.Id,
+            line.ItemId,
+            line.ItemName,
+            line.Quantity,
+            line.Unit,
+            line.ExpiryDate)).ToList());
 
     private static string? Clean(string? value) =>
         string.IsNullOrWhiteSpace(value) ? null : value.Trim();

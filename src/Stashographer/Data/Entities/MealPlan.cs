@@ -36,30 +36,6 @@ public sealed class MealPlanEntry
     public ConsumptionEvent? Consumption { get; set; }
 }
 
-/// <summary>An explicit inventory mutation produced when a reviewed meal is marked cooked.</summary>
-public sealed class ConsumptionEvent
-{
-    public int Id { get; set; }
-    public int? MealPlanEntryId { get; set; }
-    public int? BomDefinitionId { get; set; }
-    public string Description { get; set; } = string.Empty;
-    public DateTimeOffset ConsumedAt { get; set; }
-    public DateTimeOffset? UndoneAt { get; set; }
-    public List<ConsumptionLine> Lines { get; set; } = [];
-}
-
-/// <summary>The exact stock lot and quantity consumed, retained so the event can be undone.</summary>
-public sealed class ConsumptionLine
-{
-    public int Id { get; set; }
-    public int ConsumptionEventId { get; set; }
-    public int? ItemId { get; set; }
-    public string ItemName { get; set; } = string.Empty;
-    public decimal Quantity { get; set; }
-    public string? Unit { get; set; }
-    public DateOnly? ExpiryDate { get; set; }
-}
-
 /// <summary>Editable plan data that is not persisted until the user accepts it.</summary>
 public sealed class MealPlanDraft
 {

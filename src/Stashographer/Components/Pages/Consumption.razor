@@ -1,0 +1,251 @@
+@page "/consumption"
+@inject ConsumptionService ConsumptionSvc
+@inject SettingsService SettingsSvc
+@inject IDialogService Dialogs
+@inject ISnackbar Snackbar
+
+<PageTitle>Use history · Stashographer</PageTitle>
+
+<div class="d-flex justify-space-between align-start gap-2 flex-wrap mb-4">
+    <div>
+        <MudText Typo="Typo.h4">Use history</MudText>
+        <MudText Typo="Typo.body2" Class="mud-text-secondary">
+            Every explicit use records the exact stock lot and quantity, so mistakes can be restored safely.
+        </MudText>
+    </div>
+    <div class="d-flex gap-2 flex-wrap">
+        <MudButton Href="inventory" Variant="Variant.Outlined"
+                   StartIcon="@Icons.Material.Filled.Inventory2">Inventory</MudButton>
+        <MudButton Href="meal-plans" Variant="Variant.Outlined"
+                   StartIcon="@Icons.Material.Filled.CalendarMonth">Meal plans</MudButton>
+    </div>
+</div>
+
+<MudPaper Class="pa-3 mb-4" Outlined="true">
+    <MudGrid Spacing="2">
+        <MudItem xs="12" md="4">
+            <MudTextField @bind-Value="_search" Label="Search description or item"
+                          Variant="Variant.Outlined" Margin="Margin.Dense"
+                          Adornment="Adornment.Start" AdornmentIcon="@Icons.Material.Filled.Search" />
+        </MudItem>
+        <MudItem xs="12" sm="4" md="2">
+            <MudSelect T="ConsumptionKind?" @bind-Value="_kind" Label="Source" Clearable="true"
+                       Variant="Variant.Outlined" Margin="Margin.Dense">
+                <MudSelectItem T="ConsumptionKind?" Value="@((ConsumptionKind?)ConsumptionKind.Manual)">Manual use</MudSelectItem>
+                <MudSelectItem T="ConsumptionKind?" Value="@((ConsumptionKind?)ConsumptionKind.Meal)">Cooked meal</MudSelectItem>
+            </MudSelect>
+        </MudItem>
+        <MudItem xs="6" sm="4" md="2">
+            <MudDatePicker @bind-Date="_fromDate" Label="From" Clearable="true"
+                           Variant="Variant.Outlined" Margin="Margin.Dense" />
+        </MudItem>
+        <MudItem xs="6" sm="4" md="2">
+            <MudDatePicker @bind-Date="_throughDate" Label="Through" Clearable="true"
+                           Variant="Variant.Outlined" Margin="Margin.Dense" />
+        </MudItem>
+        <MudItem xs="12" md="2">
+            <div class="d-flex align-center gap-2 flex-wrap">
+                <MudSwitch T="bool" @bind-Value="_includeUndone" Label="Undone" Color="Color.Primary" />
+                <MudButton Variant="Variant.Filled" Color="Color.Primary" OnClick="ReloadAsync">Apply</MudButton>
+            </div>
+        </MudItem>
+    </MudGrid>
+    @if (ItemId is not null)
+    {
+        <div class="d-flex align-center gap-2 mt-2">
+            <MudChip T="string" Size="Size.Small" Color="Color.Primary">Filtered to one inventory lot</MudChip>
+            <MudButton Href="consumption" Variant="Variant.Text" Size="Size.Small">Show all</MudButton>
+        </div>
+    }
+</MudPaper>
+
+@if (_loading)
+{
+    <MudProgressLinear Indeterminate="true" />
+}
+else if (_events.Count == 0)
+{
+    <MudAlert Severity="Severity.Info">No use events match these filters.</MudAlert>
+}
+else
+{
+    @foreach (var consumption in _events)
+    {
+        <MudPaper Class="pa-4 mb-3" Outlined="true">
+            <div class="d-flex justify-space-between align-start gap-3 flex-wrap">
+                <div class="flex-grow-1">
+                    <div class="d-flex align-center gap-2 flex-wrap">
+                        <MudIcon Icon="@KindIcon(consumption.Kind)" Color="@KindColor(consumption.Kind)" />
+                        <MudText Typo="Typo.h6">@consumption.Description</MudText>
+                        <MudChip T="string" Size="Size.Small" Color="@KindColor(consumption.Kind)">
+                            @KindLabel(consumption.Kind)
+                        </MudChip>
+                        @if (consumption.UndoneAt is not null)
+                        {
+                            <MudChip T="string" Size="Size.Small" Color="Color.Default"
+                                     Icon="@Icons.Material.Filled.Undo">Undone</MudChip>
+                        }
+                    </div>
+                    <MudText Typo="Typo.caption" Class="mud-text-secondary d-block mt-1">
+                        @FormatLocal(consumption.ConsumedAt)
+                        @if (!string.IsNullOrWhiteSpace(consumption.MealPlanName))
+                        {
+                            <text> · @consumption.MealPlanName</text>
+                            @if (consumption.PlanDate is { } planDate)
+                            {
+                                <text> · @planDate.ToString("d MMM yyyy", _culture)</text>
+                            }
+                            @if (!string.IsNullOrWhiteSpace(consumption.MealSlot))
+                            {
+                                <text> · @consumption.MealSlot</text>
+                            }
+                        }
+                    </MudText>
+                    <div class="mt-3">
+                        @foreach (var line in consumption.Lines)
+                        {
+                            <div class="d-flex align-center gap-2 flex-wrap py-1">
+                                <MudIcon Icon="@Icons.Material.Filled.Inventory2" Size="Size.Small" />
+                                @if (line.ItemId is { } itemId)
+                                {
+                                    <MudLink Href="@($"items/{itemId}")">@line.ItemName</MudLink>
+                                }
+                                else
+                                {
+                                    <MudText Typo="Typo.body2">@line.ItemName (lot deleted)</MudText>
+                                }
+                                <MudChip T="string" Size="Size.Small">@QuantityLabel(line)</MudChip>
+                                @if (line.ExpiryDate is { } expiry)
+                                {
+                                    <MudText Typo="Typo.caption" Class="mud-text-secondary">
+                                        expiry @expiry.ToString("d MMM yyyy", _culture)
+                                    </MudText>
+                                }
+                            </div>
+                        }
+                    </div>
+                    @if (consumption.UndoneAt is { } undoneAt)
+                    {
+                        <MudText Typo="Typo.caption" Class="mud-text-secondary d-block mt-2">
+                            Restored @FormatLocal(undoneAt)
+                        </MudText>
+                    }
+                    else if (!consumption.CanUndo)
+                    {
+                        <MudText Typo="Typo.caption" Color="Color.Warning" Class="d-block mt-2">
+                            This event cannot be restored automatically because a source stock lot was deleted.
+                        </MudText>
+                    }
+                </div>
+                @if (consumption.CanUndo)
+                {
+                    <MudButton Variant="Variant.Outlined" Color="Color.Warning"
+                               StartIcon="@Icons.Material.Filled.Undo"
+                               Disabled="@(_workingEventId is not null)"
+                               OnClick="@(() => UndoAsync(consumption))">Undo</MudButton>
+                }
+            </div>
+        </MudPaper>
+    }
+}
+
+@code {
+    [SupplyParameterFromQuery(Name = "itemId")] public int? ItemId { get; set; }
+
+    private List<ConsumptionEvent> _events = [];
+    private string? _search;
+    private ConsumptionKind? _kind;
+    private DateTime? _fromDate;
+    private DateTime? _throughDate;
+    private bool _includeUndone;
+    private bool _loading = true;
+    private int? _workingEventId;
+    private System.Globalization.CultureInfo _culture =
+        System.Globalization.CultureInfo.GetCultureInfo("en-GB");
+    private TimeZoneInfo _timeZone = TimeZoneInfo.Utc;
+
+    protected override async Task OnParametersSetAsync()
+    {
+        var regional = await SettingsSvc.GetRegionalOptionsAsync();
+        _culture = System.Globalization.CultureInfo.GetCultureInfo(regional.CultureName);
+        _timeZone = TimeZoneInfo.FindSystemTimeZoneById(regional.TimeZoneId);
+        await ReloadAsync();
+    }
+
+    private async Task ReloadAsync()
+    {
+        _loading = true;
+        try
+        {
+            _events = await ConsumptionSvc.GetHistoryAsync(new ConsumptionHistoryQuery(
+                Search: _search,
+                ItemId: ItemId,
+                Kind: _kind,
+                IncludeUndone: _includeUndone,
+                ConsumedFrom: ToUtcBoundary(_fromDate),
+                ConsumedBefore: ToUtcBoundary(_throughDate?.AddDays(1)),
+                Limit: 300));
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+
+    private async Task UndoAsync(ConsumptionEvent consumption)
+    {
+        var confirmed = await Dialogs.ShowMessageBoxAsync(
+            "Undo use?",
+            $"Restore {string.Join(", ", consumption.Lines.Select(QuantityLabel))} to the exact inventory lot(s)?",
+            yesText: "Restore",
+            cancelText: "Cancel");
+        if (confirmed != true) return;
+
+        _workingEventId = consumption.Id;
+        try
+        {
+            await ConsumptionSvc.UndoAsync(consumption.Id);
+            Snackbar.Add("The exact consumed quantities were restored.", Severity.Success);
+            await ReloadAsync();
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add(ex.Message, Severity.Error);
+        }
+        finally
+        {
+            _workingEventId = null;
+        }
+    }
+
+    private DateTimeOffset? ToUtcBoundary(DateTime? value)
+    {
+        if (value is null) return null;
+        var local = DateTime.SpecifyKind(value.Value.Date, DateTimeKind.Unspecified);
+        return new DateTimeOffset(TimeZoneInfo.ConvertTimeToUtc(local, _timeZone), TimeSpan.Zero);
+    }
+
+    private string FormatLocal(DateTimeOffset value) =>
+        TimeZoneInfo.ConvertTime(value, _timeZone).ToString("g", _culture);
+
+    private static string QuantityLabel(ConsumptionLine line) =>
+        $"{line.Quantity:0.##} {line.Unit}".Trim();
+
+    private static string KindLabel(ConsumptionKind kind) => kind switch
+    {
+        ConsumptionKind.Meal => "Cooked meal",
+        _ => "Manual use"
+    };
+
+    private static string KindIcon(ConsumptionKind kind) => kind switch
+    {
+        ConsumptionKind.Meal => Icons.Material.Filled.Restaurant,
+        _ => Icons.Material.Filled.RemoveCircleOutline
+    };
+
+    private static Color KindColor(ConsumptionKind kind) => kind switch
+    {
+        ConsumptionKind.Meal => Color.Secondary,
+        _ => Color.Primary
+    };
+}

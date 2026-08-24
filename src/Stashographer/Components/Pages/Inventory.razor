@@ -1,5 +1,6 @@
 @page "/inventory"
 @inject InventoryService InventorySvc
+@inject ConsumptionService Consumption
 @inject ContainerService Containers
 @inject IDialogService Dialogs
 @inject ISnackbar Snackbar
@@ -183,6 +184,7 @@ else
                 <div class="d-flex align-center justify-end gap-1" @onclick:stopPropagation="true"
                      @oncontextmenu="@((MouseEventArgs e) => OpenContextMenu(e, context))" @oncontextmenu:preventDefault>
                     <MudIconButton Icon="@Icons.Material.Filled.Remove" Size="Size.Small"
+                                   Disabled="@(context.Quantity < 1)"
                                    OnClick="@(() => Adjust(context, -1))" />
                     <span style="min-width:2.5rem;text-align:center">@context.Quantity.ToString("0.##") @context.Unit</span>
                     <MudIconButton Icon="@Icons.Material.Filled.Add" Size="Size.Small"
@@ -298,7 +300,10 @@ else
 
     private async Task Adjust(Item item, decimal delta)
     {
-        await InventorySvc.AdjustQuantityAsync(item.Id, delta);
+        if (delta < 0)
+            await Consumption.UseItemAsync(item.Id, -delta);
+        else
+            await InventorySvc.AdjustQuantityAsync(item.Id, delta);
         // Reload so the table re-renders: mutating a bound item's property alone does not
         // make MudTable refresh the row.
         await ReloadAsync();
