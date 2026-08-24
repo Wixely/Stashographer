@@ -1,0 +1,132 @@
+<MudDialog Options="@(new DialogOptions { MaxWidth = MaxWidth.Medium, FullWidth = true })">
+    <DialogContent>
+        <MudTextField @bind-Value="_requirement.Name" Label="Requirement"
+                      Placeholder="Milk, RAM sticks…" Variant="Variant.Outlined"
+                      Required="true" Class="mb-3" />
+        <MudGrid Spacing="2" Class="mb-2">
+            <MudItem xs="6">
+                <MudNumericField T="decimal" @bind-Value="_requirement.Quantity"
+                                 Label="Quantity needed" Variant="Variant.Outlined" Min="0.01m" />
+            </MudItem>
+            <MudItem xs="6">
+                <MudTextField @bind-Value="_requirement.Unit" Label="Unit"
+                              Placeholder="each, g, ml…" Variant="Variant.Outlined" />
+            </MudItem>
+        </MudGrid>
+        <MudSwitch T="bool" @bind-Value="_requirement.IsOptional" Label="Optional requirement"
+                   Color="Color.Primary" Class="mb-2" />
+
+        <MudDivider Class="my-3" />
+        <MudText Typo="Typo.subtitle2">What inventory can satisfy this?</MudText>
+        <MudText Typo="Typo.caption" Class="mud-text-secondary d-block mb-2">
+            Generic selectors are combined. Attributes you do not specify—such as Brand—do not restrict substitutes.
+        </MudText>
+        <MudSwitch T="bool" Value="@(_requirement.MatchMode == BomMatchMode.ExplicitCandidates)"
+                   ValueChanged="SetExplicitMode" Label="Use only an explicit substitute list"
+                   Color="Color.Primary" Class="mb-2" />
+        <MudGrid Spacing="2">
+            <MudItem xs="12" sm="6">
+                <MudSelect T="int?" @bind-Value="_requirement.MatchItemKindId" Label="Item kind (optional)"
+                           Variant="Variant.Outlined" Clearable="true"
+                           Disabled="@(_requirement.MatchMode == BomMatchMode.ExplicitCandidates)">
+                    @foreach (var kind in Kinds)
+                    {
+                        <MudSelectItem T="int?" Value="@kind.Id">@kind.Name</MudSelectItem>
+                    }
+                </MudSelect>
+            </MudItem>
+            <MudItem xs="12" sm="6">
+                <MudTextField @bind-Value="_requirement.MatchText" Label="Match words"
+                              Placeholder="Defaults to requirement name" Variant="Variant.Outlined"
+                              Disabled="@(_requirement.MatchMode == BomMatchMode.ExplicitCandidates)"
+                              HelperText="Every word must occur in the item name or attribute values." />
+            </MudItem>
+        </MudGrid>
+
+        @if (_requirement.MatchMode == BomMatchMode.Generic)
+        {
+            <div class="mt-3">
+                <AttributeEditor Attributes="_requirement.RequiredAttributes"
+                                 Title="Required item attributes"
+                                 EmptyText="No attribute restrictions; any brand or variant may match." />
+            </div>
+        }
+        else
+        {
+            <MudText Typo="Typo.caption" Class="mud-text-secondary d-block mt-3">
+                Generic kind, words, and attributes are retained but ignored while explicit mode is active.
+            </MudText>
+        }
+
+        <MudSelect T="int" MultiSelection="true" SelectedValues="_candidates"
+                   SelectedValuesChanged="SetCandidates" Label="Explicit substitutes (optional)"
+                   Variant="Variant.Outlined" Class="mt-3"
+                   Disabled="@(_requirement.MatchMode != BomMatchMode.ExplicitCandidates)"
+                   MultiSelectionTextFunc="@(_ => CandidateNames())">
+            @foreach (var item in Items)
+            {
+                <MudSelectItem T="int" Value="@item.Id">
+                    @item.Name · @item.Quantity.ToString("0.##") @item.Unit
+                </MudSelectItem>
+            }
+        </MudSelect>
+        <MudText Typo="Typo.caption" Class="mud-text-secondary d-block mt-1">
+            Explicit mode remains an allow-list even if an item is later deleted. Units are matched
+            exactly; blank inventory units count as “each”.
+        </MudText>
+    </DialogContent>
+    <DialogActions>
+        <MudButton OnClick="Cancel">Cancel</MudButton>
+        <MudButton Color="Color.Primary" Variant="Variant.Filled" OnClick="Save"
+                   Disabled="@(string.IsNullOrWhiteSpace(_requirement.Name) || _requirement.Quantity <= 0)">
+            Save
+        </MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private IMudDialogInstance Dialog { get; set; } = default!;
+    [Parameter] public BomRequirement Requirement { get; set; } = new();
+    [Parameter] public List<ItemKind> Kinds { get; set; } = new();
+    [Parameter] public List<Item> Items { get; set; } = new();
+
+    private BomRequirement _requirement = new();
+    private IReadOnlyCollection<int> _candidates = new HashSet<int>();
+
+    protected override void OnInitialized()
+    {
+        _requirement = new BomRequirement
+        {
+            Id = Requirement.Id,
+            BomDefinitionId = Requirement.BomDefinitionId,
+            Name = Requirement.Name,
+            Quantity = Requirement.Quantity,
+            Unit = Requirement.Unit,
+            IsOptional = Requirement.IsOptional,
+            MatchMode = Requirement.MatchMode,
+            MatchItemKindId = Requirement.MatchItemKindId,
+            MatchText = Requirement.MatchText,
+            RequiredAttributes = new(Requirement.RequiredAttributes),
+            CandidateItemIds = new(Requirement.CandidateItemIds),
+            SortOrder = Requirement.SortOrder
+        };
+        _candidates = new HashSet<int>(_requirement.CandidateItemIds);
+    }
+
+    private void SetCandidates(IEnumerable<int> values) => _candidates = values.ToHashSet();
+
+    private void SetExplicitMode(bool value) => _requirement.MatchMode = value
+        ? BomMatchMode.ExplicitCandidates
+        : BomMatchMode.Generic;
+
+    private string CandidateNames() => string.Join(", ",
+        Items.Where(item => _candidates.Contains(item.Id)).Select(item => item.Name));
+
+    private void Save()
+    {
+        _requirement.CandidateItemIds = _candidates.ToList();
+        Dialog.Close(DialogResult.Ok(_requirement));
+    }
+
+    private void Cancel() => Dialog.Cancel();
+}

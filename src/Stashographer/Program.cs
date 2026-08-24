@@ -44,6 +44,7 @@ builder.Services.AddScoped<AttributeNameService>();
 builder.Services.AddScoped<CheckoutService>();
 builder.Services.AddScoped<ContainerService>();
 builder.Services.AddScoped<QuickLinksService>();
+builder.Services.AddScoped<BomService>();
 builder.Services.AddScoped<ItemDraftState>();
 builder.Services.AddScoped<SampleDataSeeder>();
 

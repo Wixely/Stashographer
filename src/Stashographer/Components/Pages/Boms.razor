@@ -1,0 +1,241 @@
+@page "/boms"
+@inject BomService BomSvc
+@inject InventoryService Inventory
+@inject IDialogService Dialogs
+@inject ISnackbar Snackbar
+
+<PageTitle>Recipes &amp; builds · Stashographer</PageTitle>
+
+<div class="d-flex justify-space-between align-start gap-2 flex-wrap mb-4">
+    <div>
+        <MudText Typo="Typo.h4">Recipes &amp; builds</MudText>
+        <MudText Typo="Typo.body2" Class="mud-text-secondary">
+            Reusable bills of materials with interchangeable ingredients and parts.
+        </MudText>
+    </div>
+    <MudButton Color="Color.Primary" Variant="Variant.Filled" StartIcon="@Icons.Material.Filled.Add"
+               OnClick="@(() => EditDefinitionAsync(null))">Add recipe or build</MudButton>
+</div>
+
+@if (_evaluations is null)
+{
+    <MudProgressCircular Indeterminate="true" />
+}
+else if (_evaluations.Count == 0)
+{
+    <MudAlert Severity="Severity.Info">
+        Add a recipe or build, then describe what it requires. A requirement can match a generic
+        kind/description or an explicit list of interchangeable inventory items.
+    </MudAlert>
+}
+else
+{
+    <MudGrid Spacing="2">
+        @foreach (var evaluation in _evaluations)
+        {
+            var definition = evaluation.Definition;
+            <MudItem xs="12" lg="6">
+                <MudPaper Class="pa-4 bom-card" Outlined="true">
+                    <div class="d-flex justify-space-between align-start gap-2">
+                        <div>
+                            <div class="d-flex align-center gap-2 flex-wrap">
+                                <MudIcon Icon="@KindIcon(definition.Kind)" Color="Color.Primary" />
+                                <MudText Typo="Typo.h6">@definition.Name</MudText>
+                                <MudChip T="string" Size="Size.Small">@KindLabel(definition.Kind)</MudChip>
+                                @if (evaluation.RequiredCount == 0)
+                                {
+                                    <MudChip T="string" Size="Size.Small" Color="Color.Warning">Needs requirements</MudChip>
+                                }
+                                else if (evaluation.CanMakeOne)
+                                {
+                                    <MudChip T="string" Size="Size.Small" Color="Color.Success"
+                                             Icon="@Icons.Material.Filled.CheckCircle">Ready</MudChip>
+                                }
+                                else
+                                {
+                                    <MudChip T="string" Size="Size.Small" Color="Color.Error">Missing items</MudChip>
+                                }
+                            </div>
+                            @if (!string.IsNullOrWhiteSpace(definition.Description))
+                            {
+                                <MudText Typo="Typo.body2" Class="mud-text-secondary mt-1">
+                                    @definition.Description
+                                </MudText>
+                            }
+                            <MudText Typo="Typo.caption" Class="mud-text-secondary d-block mt-1">
+                                Makes @definition.OutputQuantity.ToString("0.##") @definition.OutputUnit
+                            </MudText>
+                        </div>
+                        <div class="d-flex">
+                            <MudIconButton Icon="@Icons.Material.Filled.Edit" Size="Size.Small"
+                                           OnClick="@(() => EditDefinitionAsync(definition))" />
+                            <MudIconButton Icon="@Icons.Material.Filled.Delete" Size="Size.Small" Color="Color.Error"
+                                           OnClick="@(() => DeleteDefinitionAsync(definition))" />
+                        </div>
+                    </div>
+
+                    <MudDivider Class="my-3" />
+                    @if (evaluation.Requirements.Count == 0)
+                    {
+                        <MudText Typo="Typo.body2" Class="mud-text-secondary mb-2">
+                            No ingredients or parts yet.
+                        </MudText>
+                    }
+                    else
+                    {
+                        <MudList T="BomRequirementAvailability" Dense="true">
+                            @foreach (var availability in evaluation.Requirements)
+                            {
+                                <MudListItem T="BomRequirementAvailability">
+                                    <div class="bom-requirement-row d-flex align-center gap-2">
+                                        <MudIcon Icon="@(availability.IsSatisfied
+                                                           ? Icons.Material.Filled.CheckCircle
+                                                           : Icons.Material.Filled.Cancel)"
+                                                 Color="@(availability.IsSatisfied ? Color.Success : Color.Error)"
+                                                 Size="Size.Small" />
+                                        <div class="bom-requirement-main">
+                                            <MudText Typo="Typo.body2">
+                                                @availability.Requirement.Quantity.ToString("0.##")
+                                                @availability.Requirement.Unit @availability.Requirement.Name
+                                                @if (availability.Requirement.IsOptional)
+                                                {
+                                                    <span class="mud-text-secondary"> (optional)</span>
+                                                }
+                                            </MudText>
+                                            <MudText Typo="Typo.caption" Class="mud-text-secondary">
+                                                @AvailabilityText(availability)
+                                            </MudText>
+                                        </div>
+                                        <MudIconButton Icon="@Icons.Material.Filled.Edit" Size="Size.Small"
+                                                       OnClick="@(() => EditRequirementAsync(definition, availability.Requirement))" />
+                                        <MudIconButton Icon="@Icons.Material.Filled.Delete" Size="Size.Small" Color="Color.Error"
+                                                       OnClick="@(() => DeleteRequirementAsync(availability.Requirement))" />
+                                    </div>
+                                </MudListItem>
+                            }
+                        </MudList>
+                    }
+
+                    <MudButton Variant="Variant.Text" Size="Size.Small" StartIcon="@Icons.Material.Filled.Add"
+                               OnClick="@(() => EditRequirementAsync(definition, null))">
+                        Add requirement
+                    </MudButton>
+                </MudPaper>
+            </MudItem>
+        }
+    </MudGrid>
+}
+
+@code {
+    private List<BomEvaluation>? _evaluations;
+    private List<ItemKind> _kinds = new();
+    private List<Item> _items = new();
+
+    protected override async Task OnInitializedAsync()
+    {
+        _kinds = await Inventory.GetKindsAsync();
+        _items = await Inventory.QueryAsync(new ItemQuery());
+        await ReloadAsync();
+    }
+
+    private async Task ReloadAsync()
+    {
+        var definitions = await BomSvc.GetAllAsync();
+        var evaluations = new List<BomEvaluation>();
+        foreach (var definition in definitions)
+        {
+            var evaluation = await BomSvc.EvaluateAsync(definition.Id);
+            if (evaluation is not null) evaluations.Add(evaluation);
+        }
+        _evaluations = evaluations;
+    }
+
+    private async Task EditDefinitionAsync(BomDefinition? definition)
+    {
+        var parameters = new DialogParameters
+        {
+            ["Definition"] = definition ?? new BomDefinition()
+        };
+        var result = await (await Dialogs.ShowAsync<BomEditDialog>(
+            definition is null ? "New recipe or build" : "Edit recipe or build", parameters)).Result;
+        if (result is { Canceled: false, Data: BomDefinition edited })
+        {
+            try
+            {
+                await BomSvc.SaveDefinitionAsync(edited);
+                await ReloadAsync();
+            }
+            catch (Exception ex)
+            {
+                Snackbar.Add($"Could not save: {ex.Message}", Severity.Error);
+            }
+        }
+    }
+
+    private async Task EditRequirementAsync(BomDefinition definition, BomRequirement? requirement)
+    {
+        var parameters = new DialogParameters
+        {
+            ["Requirement"] = requirement ?? new BomRequirement { BomDefinitionId = definition.Id },
+            ["Kinds"] = _kinds,
+            ["Items"] = _items
+        };
+        var result = await (await Dialogs.ShowAsync<BomRequirementDialog>(
+            requirement is null ? "Add requirement" : "Edit requirement", parameters)).Result;
+        if (result is { Canceled: false, Data: BomRequirement edited })
+        {
+            try
+            {
+                await BomSvc.SaveRequirementAsync(edited);
+                await ReloadAsync();
+            }
+            catch (Exception ex)
+            {
+                Snackbar.Add($"Could not save requirement: {ex.Message}", Severity.Error);
+            }
+        }
+    }
+
+    private async Task DeleteDefinitionAsync(BomDefinition definition)
+    {
+        var yes = await Dialogs.ShowMessageBoxAsync("Delete recipe or build?",
+            $"Delete “{definition.Name}” and all its requirements?", yesText: "Delete", cancelText: "Cancel");
+        if (yes != true) return;
+        await BomSvc.DeleteDefinitionAsync(definition.Id);
+        await ReloadAsync();
+        Snackbar.Add("Recipe or build deleted.", Severity.Success);
+    }
+
+    private async Task DeleteRequirementAsync(BomRequirement requirement)
+    {
+        var yes = await Dialogs.ShowMessageBoxAsync("Delete requirement?",
+            $"Delete “{requirement.Name}” from this recipe or build?",
+            yesText: "Delete", cancelText: "Cancel");
+        if (yes != true) return;
+        await BomSvc.DeleteRequirementAsync(requirement.Id);
+        await ReloadAsync();
+        Snackbar.Add("Requirement deleted.", Severity.Success);
+    }
+
+    private static string AvailabilityText(BomRequirementAvailability availability)
+    {
+        if (availability.MatchingItems.Count == 0) return "No matching inventory";
+        var names = string.Join(", ", availability.MatchingItems.Take(3).Select(item => item.Name));
+        if (availability.MatchingItems.Count > 3) names += $" +{availability.MatchingItems.Count - 3} more";
+        return $"{availability.AvailableQuantity:0.##} available · {names}";
+    }
+
+    private static string KindLabel(BomKind kind) => kind switch
+    {
+        BomKind.Recipe => "Recipe",
+        BomKind.Build => "Build",
+        _ => "BOM"
+    };
+
+    private static string KindIcon(BomKind kind) => kind switch
+    {
+        BomKind.Recipe => Icons.Material.Filled.RestaurantMenu,
+        BomKind.Build => Icons.Material.Filled.Build,
+        _ => Icons.Material.Filled.AccountTree
+    };
+}

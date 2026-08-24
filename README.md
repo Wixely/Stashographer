@@ -59,6 +59,9 @@ Every container gets a printable QR code — scan it to see what's meant to be i
 - **Food expiry workflow** — overdue, today, next-three-day, weekly, and later views use
   the configured local date. Quickly decrement used items and find food whose expiry date
   still needs recording; dated non-food items can be included when useful.
+- **Recipes & builds (BOMs)** — define reusable outputs and their required ingredients or
+  parts. Requirements can use generic kind/text/attribute selectors or a durable explicit
+  allow-list of interchangeable inventory items; allocation avoids double-counting stock.
 - **AI enrichment (optional)** — identify an item from a photo when a barcode won't do, and
   "season" any item with extra detail, via any **OpenAI-protocol** endpoint.
 - **Light / dark themes**, mobile-friendly (MudBlazor).
@@ -156,6 +159,13 @@ date order rather than trusting a model guess. Currency totals are not combined 
 conversion requires an explicit positive exchange rate, so a stale or guessed rate can never
 silently change an inventory metric.
 
+The **Recipes & Builds** page provides the generic BOM foundation used by both food recipes
+and non-food assemblies. A generic requirement combines item kind, match words, and only the
+attributes explicitly selected, so brands remain interchangeable by default. Explicit mode
+uses a persistent substitute allow-list and never broadens itself if a candidate item is later
+deleted. Quantities are allocated across requirements before a BOM is marked ready; units must
+match exactly, with blank inventory units treated as “each”.
+
 > Keep the key out of git. Put it in a `.env` file next to `docker-compose.yml` (already
 > covered by `.gitignore`) and reference it as `${STASH_AI_API_KEY}`.
 
@@ -168,7 +178,7 @@ dependencies only (see [THIRD-PARTY-NOTICES](THIRD-PARTY-NOTICES.md)).
 ## Development
 
 ```bash
-dotnet test                    # 114 tests, no network access required
+dotnet test                    # 119 tests, no network access required
 dotnet build -c Release
 ```
 

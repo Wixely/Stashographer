@@ -1,10 +1,10 @@
 @* Edits an item's flexible key/value attribute bag. *@
 
-<MudText Typo="Typo.subtitle2" Class="mb-1">Attributes</MudText>
+<MudText Typo="Typo.subtitle2" Class="mb-1">@Title</MudText>
 
 @if (Attributes.Count == 0)
 {
-    <MudText Typo="Typo.body2" Class="mud-text-secondary mb-2">No attributes yet.</MudText>
+    <MudText Typo="Typo.body2" Class="mud-text-secondary mb-2">@EmptyText</MudText>
 }
 
 @foreach (var key in Attributes.Keys.ToList())
@@ -37,6 +37,8 @@
     [Parameter] public Dictionary<string, string> Attributes { get; set; } = new();
     [Parameter] public EventCallback<Dictionary<string, string>> AttributesChanged { get; set; }
     [Parameter] public List<string>? Suggestions { get; set; }
+    [Parameter] public string Title { get; set; } = "Attributes";
+    [Parameter] public string EmptyText { get; set; } = "No attributes yet.";
 
     private async Task Notify() => await AttributesChanged.InvokeAsync(Attributes);
 

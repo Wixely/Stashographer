@@ -12,8 +12,12 @@
             Use the most urgent food first and catch missing dates before they become waste.
         </MudText>
     </div>
-    <MudButton Href="scan" Color="Color.Primary" Variant="Variant.Filled"
-               StartIcon="@Icons.Material.Filled.AddAPhoto">Scan food</MudButton>
+    <div class="d-flex gap-2 flex-wrap">
+        <MudButton Href="boms" Variant="Variant.Outlined"
+                   StartIcon="@Icons.Material.Filled.RestaurantMenu">Recipes &amp; builds</MudButton>
+        <MudButton Href="scan" Color="Color.Primary" Variant="Variant.Filled"
+                   StartIcon="@Icons.Material.Filled.AddAPhoto">Scan food</MudButton>
+    </div>
 </div>
 
 @if (_overview is null)

@@ -1,0 +1,53 @@
+<MudDialog>
+    <DialogContent>
+        <MudTextField @bind-Value="_definition.Name" Label="Name" Variant="Variant.Outlined"
+                      Required="true" Class="mb-3" />
+        <MudSelect T="BomKind" @bind-Value="_definition.Kind" Label="Type"
+                   Variant="Variant.Outlined" Class="mb-3">
+            <MudSelectItem Value="BomKind.Recipe">Recipe</MudSelectItem>
+            <MudSelectItem Value="BomKind.Build">Build</MudSelectItem>
+            <MudSelectItem Value="BomKind.Other">Other BOM</MudSelectItem>
+        </MudSelect>
+        <MudTextField @bind-Value="_definition.Description" Label="Description"
+                      Variant="Variant.Outlined" Lines="2" Class="mb-3" />
+        <MudGrid Spacing="2">
+            <MudItem xs="6">
+                <MudNumericField T="decimal" @bind-Value="_definition.OutputQuantity"
+                                 Label="Makes" Variant="Variant.Outlined" Min="0.01m" />
+            </MudItem>
+            <MudItem xs="6">
+                <MudTextField @bind-Value="_definition.OutputUnit" Label="Output unit"
+                              Placeholder="servings, computers…" Variant="Variant.Outlined" />
+            </MudItem>
+        </MudGrid>
+    </DialogContent>
+    <DialogActions>
+        <MudButton OnClick="Cancel">Cancel</MudButton>
+        <MudButton Color="Color.Primary" Variant="Variant.Filled" OnClick="Save"
+                   Disabled="@(string.IsNullOrWhiteSpace(_definition.Name) || _definition.OutputQuantity <= 0)">
+            Save
+        </MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private IMudDialogInstance Dialog { get; set; } = default!;
+    [Parameter] public BomDefinition Definition { get; set; } = new();
+
+    private BomDefinition _definition = new();
+
+    protected override void OnInitialized() => _definition = new BomDefinition
+    {
+        Id = Definition.Id,
+        Name = Definition.Name,
+        Kind = Definition.Kind,
+        Description = Definition.Description,
+        OutputQuantity = Definition.OutputQuantity,
+        OutputUnit = Definition.OutputUnit,
+        CreatedAt = Definition.CreatedAt,
+        UpdatedAt = Definition.UpdatedAt
+    };
+
+    private void Save() => Dialog.Close(DialogResult.Ok(_definition));
+    private void Cancel() => Dialog.Cancel();
+}

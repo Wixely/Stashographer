@@ -1,0 +1,12 @@
+::deep .bom-card {
+    height: 100%;
+}
+
+.bom-requirement-row {
+    width: 100%;
+}
+
+.bom-requirement-main {
+    min-width: 0;
+    flex: 1;
+}
