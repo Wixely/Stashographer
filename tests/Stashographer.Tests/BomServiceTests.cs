@@ -180,4 +180,49 @@ public class BomServiceTests
             CandidateItemIds = [item.Id]
         }, item));
     }
+
+    [Fact]
+    public async Task Reviewed_draft_is_created_with_all_requirements_in_one_operation()
+    {
+        await using var db = await TestDb.CreateAsync();
+        var inventory = new InventoryService(db.Factory);
+        var service = Service(db, inventory);
+
+        var definition = await service.CreateWithRequirementsAsync(new BomDefinition
+        {
+            Name = "Vegetable soup",
+            Kind = BomKind.Recipe,
+            OutputQuantity = 4,
+            OutputUnit = "servings"
+        },
+        [
+            new BomRequirement { Name = "Carrots", Quantity = 3, Unit = "each" },
+            new BomRequirement { Name = "Stock", Quantity = 500, Unit = "ml" }
+        ]);
+
+        var loaded = await service.GetAsync(definition.Id);
+        Assert.NotNull(loaded);
+        Assert.Equal(2, loaded!.Requirements.Count);
+        Assert.Equal([1, 2], loaded.Requirements.Select(requirement => requirement.SortOrder));
+        Assert.All(loaded.Requirements, requirement => Assert.Equal(definition.Id, requirement.BomDefinitionId));
+    }
+
+    [Fact]
+    public async Task Reviewed_draft_rolls_back_definition_when_a_requirement_cannot_be_saved()
+    {
+        await using var db = await TestDb.CreateAsync();
+        var inventory = new InventoryService(db.Factory);
+        var service = Service(db, inventory);
+
+        await Assert.ThrowsAnyAsync<Exception>(() => service.CreateWithRequirementsAsync(
+            new BomDefinition { Name = "Invalid draft", Kind = BomKind.Build },
+            [new BomRequirement
+            {
+                Name = "Missing candidate",
+                MatchMode = BomMatchMode.ExplicitCandidates,
+                CandidateItemIds = [int.MaxValue]
+            }]));
+
+        Assert.Empty(await service.GetAllAsync());
+    }
 }

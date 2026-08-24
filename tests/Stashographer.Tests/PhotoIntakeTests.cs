@@ -45,6 +45,11 @@ public class PhotoIntakeTests
         public Task<AiSuggestion?> EnrichAsync(string n, string? k, IReadOnlyDictionary<string, string> a, CancellationToken ct = default)
             => Task.FromResult<AiSuggestion?>(null);
 
+        public Task<AiBomSuggestion?> SuggestBomAsync(
+            string request, BomKind kind, IReadOnlyList<AiBomInventoryItem> inventory,
+            IReadOnlyList<string> canonicalAttributeNames, CancellationToken ct = default) =>
+            Task.FromResult<AiBomSuggestion?>(null);
+
         public Task<string?> TestConnectionAsync(CancellationToken ct = default)
             => Task.FromResult<string?>(null);
     }

@@ -1,0 +1,225 @@
+@inject IAiEnrichmentService Ai
+@inject AttributeNameService AttributeNames
+
+<MudDialog Options="@(new DialogOptions { MaxWidth = MaxWidth.Large, FullWidth = true })">
+    <DialogContent>
+        @if (_draft is null)
+        {
+            <MudAlert Severity="Severity.Info" Class="mb-3">
+                Describe what you want to make. The agent will use your current inventory as context,
+                but will still include required ingredients or parts you do not own. Nothing is saved
+                until you review and accept the draft.
+            </MudAlert>
+            <MudSelect T="BomKind" @bind-Value="_kind" Label="Type"
+                       Variant="Variant.Outlined" Class="mb-3" Disabled="_generating">
+                <MudSelectItem Value="BomKind.Recipe">Recipe</MudSelectItem>
+                <MudSelectItem Value="BomKind.Build">Build</MudSelectItem>
+                <MudSelectItem Value="BomKind.Other">Other BOM</MudSelectItem>
+            </MudSelect>
+            <MudTextField @bind-Value="_request" Label="What do you want to make?"
+                          Placeholder="For example: a vegetarian chilli for four people"
+                          Variant="Variant.Outlined" Lines="4" AutoFocus="true"
+                          Disabled="_generating" />
+            @if (!string.IsNullOrWhiteSpace(_error))
+            {
+                <MudAlert Severity="Severity.Error" Class="mt-3">@_error</MudAlert>
+            }
+        }
+        else
+        {
+            <MudAlert Severity="Severity.Warning" Class="mb-3">
+                This is an AI-generated draft. Check quantities, units, substitutions, and missing
+                requirements. Saving accepts the reviewed values below; the original prompt is not saved.
+            </MudAlert>
+
+            <MudGrid Spacing="2">
+                <MudItem xs="12" sm="8">
+                    <MudTextField @bind-Value="_draft.Name" Label="Name" Variant="Variant.Outlined"
+                                  Required="true" />
+                </MudItem>
+                <MudItem xs="12" sm="4">
+                    <MudSelect T="BomKind" @bind-Value="_draft.Kind" Label="Type"
+                               Variant="Variant.Outlined">
+                        <MudSelectItem Value="BomKind.Recipe">Recipe</MudSelectItem>
+                        <MudSelectItem Value="BomKind.Build">Build</MudSelectItem>
+                        <MudSelectItem Value="BomKind.Other">Other BOM</MudSelectItem>
+                    </MudSelect>
+                </MudItem>
+                <MudItem xs="12">
+                    <MudTextField @bind-Value="_draft.Description" Label="Description"
+                                  Variant="Variant.Outlined" Lines="2" />
+                </MudItem>
+                <MudItem xs="6">
+                    <MudNumericField T="decimal" @bind-Value="_draft.OutputQuantity"
+                                     Label="Makes" Variant="Variant.Outlined" Min="0.01m" />
+                </MudItem>
+                <MudItem xs="6">
+                    <MudTextField @bind-Value="_draft.OutputUnit" Label="Output unit"
+                                  Placeholder="servings, computers…" Variant="Variant.Outlined" />
+                </MudItem>
+            </MudGrid>
+
+            <div class="d-flex justify-space-between align-center mt-5 mb-2">
+                <div>
+                    <MudText Typo="Typo.h6">Requirements</MudText>
+                    <MudText Typo="Typo.caption" Class="mud-text-secondary">
+                        Generic requirements allow interchangeable brands and variants unless an attribute is required.
+                    </MudText>
+                </div>
+                <MudButton StartIcon="@Icons.Material.Filled.Add" Variant="Variant.Text"
+                           OnClick="AddRequirement">Add</MudButton>
+            </div>
+
+            @for (var index = 0; index < _draft.Requirements.Count; index++)
+            {
+                var requirement = _draft.Requirements[index];
+                <MudPaper @key="requirement" Outlined="true" Class="pa-3 mb-3">
+                    <div class="d-flex justify-space-between align-center mb-2">
+                        <MudText Typo="Typo.subtitle1">Requirement @(index + 1)</MudText>
+                        <MudIconButton Icon="@Icons.Material.Filled.Delete" Color="Color.Error"
+                                       Size="Size.Small" OnClick="@(() => RemoveRequirement(requirement))" />
+                    </div>
+                    <MudGrid Spacing="2">
+                        <MudItem xs="12" sm="6">
+                            <MudTextField @bind-Value="requirement.Name" Label="Ingredient or part"
+                                          Variant="Variant.Outlined" Required="true" />
+                        </MudItem>
+                        <MudItem xs="6" sm="3">
+                            <MudNumericField T="decimal" @bind-Value="requirement.Quantity"
+                                             Label="Quantity" Variant="Variant.Outlined" Min="0.01m" />
+                        </MudItem>
+                        <MudItem xs="6" sm="3">
+                            <MudTextField @bind-Value="requirement.Unit" Label="Unit"
+                                          Placeholder="each, g, ml…" Variant="Variant.Outlined" />
+                        </MudItem>
+                        <MudItem xs="12" sm="6">
+                            <MudSelect T="int?" @bind-Value="requirement.MatchItemKindId"
+                                       Label="Inventory kind (optional)" Variant="Variant.Outlined"
+                                       Clearable="true">
+                                @foreach (var itemKind in Kinds)
+                                {
+                                    <MudSelectItem T="int?" Value="@itemKind.Id">@itemKind.Name</MudSelectItem>
+                                }
+                            </MudSelect>
+                        </MudItem>
+                        <MudItem xs="12" sm="6">
+                            <MudTextField @bind-Value="requirement.MatchText" Label="Match words"
+                                          Placeholder="Defaults to requirement name"
+                                          Variant="Variant.Outlined"
+                                          HelperText="Every word must occur in an item name or attribute value." />
+                        </MudItem>
+                        <MudItem xs="12">
+                            <MudSwitch T="bool" @bind-Value="requirement.IsOptional"
+                                       Label="Optional requirement" Color="Color.Primary" />
+                        </MudItem>
+                    </MudGrid>
+                    <div class="mt-2">
+                        <AttributeEditor Attributes="requirement.RequiredAttributes"
+                                         Suggestions="_canonicalAttributes"
+                                         Title="Required item attributes"
+                                         EmptyText="No attribute restrictions; brands and variants are interchangeable." />
+                    </div>
+                </MudPaper>
+            }
+
+            @if (!string.IsNullOrWhiteSpace(_error))
+            {
+                <MudAlert Severity="Severity.Error" Class="mt-3">@_error</MudAlert>
+            }
+        }
+    </DialogContent>
+    <DialogActions>
+        <MudButton OnClick="Cancel" Disabled="_generating">Cancel</MudButton>
+        @if (_draft is null)
+        {
+            <MudButton Color="Color.Primary" Variant="Variant.Filled" OnClick="GenerateAsync"
+                       Disabled="@(_generating || string.IsNullOrWhiteSpace(_request))"
+                       StartIcon="@Icons.Material.Filled.AutoAwesome">
+                @(_generating ? "Generating…" : "Generate draft")
+            </MudButton>
+        }
+        else
+        {
+            <MudButton Variant="Variant.Text" OnClick="StartOver">Start over</MudButton>
+            <MudButton Color="Color.Primary" Variant="Variant.Filled" OnClick="Accept"
+                       Disabled="@(!CanAccept())" StartIcon="@Icons.Material.Filled.Check">
+                Save reviewed draft
+            </MudButton>
+        }
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private IMudDialogInstance Dialog { get; set; } = default!;
+    [Parameter] public List<ItemKind> Kinds { get; set; } = new();
+    [Parameter] public List<Item> Items { get; set; } = new();
+
+    private BomKind _kind = BomKind.Recipe;
+    private string _request = string.Empty;
+    private AiBomSuggestion? _draft;
+    private List<string> _canonicalAttributes = new();
+    private bool _generating;
+    private string? _error;
+
+    protected override async Task OnInitializedAsync() =>
+        _canonicalAttributes = (await AttributeNames.GetCanonicalNamesAsync()).ToList();
+
+    private async Task GenerateAsync()
+    {
+        if (string.IsNullOrWhiteSpace(_request) || _generating) return;
+        _error = null;
+        _generating = true;
+        try
+        {
+            var kindNames = Kinds.ToDictionary(kind => kind.Id, kind => kind.Name);
+            var inventory = Items
+                .Where(item => item.Quantity > 0)
+                .Select(item => new AiBomInventoryItem(
+                    item.Id,
+                    item.Name,
+                    item.ItemKindId,
+                    kindNames.GetValueOrDefault(item.ItemKindId),
+                    item.Quantity,
+                    item.Unit,
+                    item.Attributes))
+                .ToList();
+            _draft = await Ai.SuggestBomAsync(
+                _request.Trim(), _kind, inventory, _canonicalAttributes);
+            if (_draft is null)
+                _error = "The configured agent did not return a usable draft. Try adding more detail.";
+        }
+        catch (Exception ex)
+        {
+            _error = $"Could not generate a draft: {ex.Message}";
+        }
+        finally
+        {
+            _generating = false;
+        }
+    }
+
+    private void AddRequirement() => _draft?.Requirements.Add(new AiBomRequirementSuggestion());
+
+    private void RemoveRequirement(AiBomRequirementSuggestion requirement) =>
+        _draft?.Requirements.Remove(requirement);
+
+    private bool CanAccept() => _draft is not null
+        && !string.IsNullOrWhiteSpace(_draft.Name)
+        && _draft.OutputQuantity > 0
+        && _draft.Requirements.Count > 0
+        && _draft.Requirements.All(requirement =>
+            !string.IsNullOrWhiteSpace(requirement.Name) && requirement.Quantity > 0);
+
+    private void StartOver()
+    {
+        _draft = null;
+        _error = null;
+    }
+
+    private void Accept()
+    {
+        if (CanAccept()) Dialog.Close(DialogResult.Ok(_draft));
+    }
+
+    private void Cancel() => Dialog.Cancel();
+}

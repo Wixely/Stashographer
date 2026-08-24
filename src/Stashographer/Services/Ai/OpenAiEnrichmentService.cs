@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Microsoft.Extensions.AI;
+using Stashographer.Data.Entities;
 using Stashographer.Services.Inventory;
 
 namespace Stashographer.Services.Ai;
@@ -164,6 +165,47 @@ public class OpenAiEnrichmentService(
         return parsed is null || attributeNames is null
             ? parsed
             : parsed with { Attributes = AttributeNameService.Canonicalize(parsed.Attributes, canonicalNames) };
+    }
+
+    // --- BOM suggestion (text) ----------------------------------------------------
+
+    public async Task<AiBomSuggestion?> SuggestBomAsync(
+        string request, BomKind kind, IReadOnlyList<AiBomInventoryItem> inventory,
+        IReadOnlyList<string> canonicalAttributeNames, CancellationToken ct = default)
+    {
+        var system =
+            "You draft household recipes and bills of materials. Reply with ONLY a JSON object: " +
+            "{\"name\": string, \"description\": string, \"outputQuantity\": number, \"outputUnit\": string, " +
+            "\"requirements\": [{\"name\": string, \"quantity\": number, \"unit\": string or null, " +
+            "\"optional\": boolean, \"matchItemKindId\": number or null, \"matchText\": string, " +
+            "\"requiredAttributes\": {key:value}}]}. " +
+            "Every genuinely required ingredient or part must be present even when current inventory lacks it. " +
+            "Draft generic, interchangeable requirements: matchText should name the underlying ingredient or " +
+            "capability, not a brand. Add a required attribute only when it is functionally essential; never add " +
+            "Brand unless the user explicitly requires that brand. Use only supplied item-kind IDs. Units are not " +
+            "automatically converted, so prefer units already used by matching inventory when practical. " +
+            AttributeRule(canonicalAttributeNames);
+        var compactInventory = inventory.Take(200).Select(item => new
+        {
+            item.Id,
+            item.Name,
+            item.KindId,
+            item.Kind,
+            item.Quantity,
+            item.Unit,
+            item.Attributes
+        });
+        var prompt =
+            $"Requested type: {kind}.\nUser request: {request.Trim()}\n" +
+            $"Current inventory context: {JsonSerializer.Serialize(compactInventory)}\n" +
+            "Create a concise, practical draft. Inventory is context for matching, not a reason to omit missing requirements.";
+        var messages = new List<ChatMessage>
+        {
+            new(ChatRole.System, system),
+            new(ChatRole.User, prompt)
+        };
+        var json = await CompleteJsonAsync(useVision: false, messages, ct);
+        return json is null ? null : ParseBomSuggestion(json, kind);
     }
 
     // --- Connection test ------------------------------------------------------------
@@ -351,10 +393,58 @@ public class OpenAiEnrichmentService(
         }
     }
 
-    private static Dictionary<string, string> GetAttributes(JsonElement root)
+    internal AiBomSuggestion? ParseBomSuggestion(string json, BomKind kind)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(json);
+            var root = doc.RootElement;
+            var name = GetString(root, "name")?.Trim();
+            if (string.IsNullOrWhiteSpace(name)) return null;
+            var suggestion = new AiBomSuggestion
+            {
+                Name = name,
+                Kind = kind,
+                Description = GetString(root, "description"),
+                OutputQuantity = GetPositiveDecimal(root, "outputQuantity") ?? 1,
+                OutputUnit = GetString(root, "outputUnit")
+            };
+            if (!root.TryGetProperty("requirements", out var requirements)
+                || requirements.ValueKind != JsonValueKind.Array) return suggestion;
+            foreach (var element in requirements.EnumerateArray())
+            {
+                var requirementName = GetString(element, "name")?.Trim();
+                if (string.IsNullOrWhiteSpace(requirementName)) continue;
+                suggestion.Requirements.Add(new AiBomRequirementSuggestion
+                {
+                    Name = requirementName,
+                    Quantity = GetPositiveDecimal(element, "quantity") ?? 1,
+                    Unit = GetString(element, "unit"),
+                    IsOptional = element.TryGetProperty("optional", out var optional)
+                                 && optional.ValueKind is JsonValueKind.True,
+                    MatchItemKindId = element.TryGetProperty("matchItemKindId", out var kindId)
+                                      && kindId.ValueKind == JsonValueKind.Number
+                                      && kindId.TryGetInt32(out var parsedKindId)
+                        ? parsedKindId
+                        : null,
+                    MatchText = GetString(element, "matchText") ?? requirementName,
+                    RequiredAttributes = GetAttributes(element, "requiredAttributes")
+                });
+            }
+            return suggestion;
+        }
+        catch (JsonException ex)
+        {
+            logger.LogWarning(ex, "Could not parse BOM suggestion JSON");
+            return null;
+        }
+    }
+
+    private static Dictionary<string, string> GetAttributes(
+        JsonElement root, string property = "attributes")
     {
         var attributes = new Dictionary<string, string>();
-        if (root.TryGetProperty("attributes", out var attrs) && attrs.ValueKind == JsonValueKind.Object)
+        if (root.TryGetProperty(property, out var attrs) && attrs.ValueKind == JsonValueKind.Object)
         {
             foreach (var p in attrs.EnumerateObject())
             {
@@ -364,6 +454,14 @@ public class OpenAiEnrichmentService(
         }
         return attributes;
     }
+
+    private static decimal? GetPositiveDecimal(JsonElement element, string property) =>
+        element.TryGetProperty(property, out var value)
+        && value.ValueKind == JsonValueKind.Number
+        && value.TryGetDecimal(out var parsed)
+        && parsed > 0
+            ? parsed
+            : null;
 
     private static (decimal? Amount, string? Currency) GetPrice(JsonElement root)
     {

@@ -1,3 +1,5 @@
+using Stashographer.Data.Entities;
+
 namespace Stashographer.Services.Ai;
 
 /// <summary>An AI-produced suggestion for an item, used by the "enrich" action.</summary>
@@ -38,6 +40,11 @@ public interface IAiEnrichmentService
     /// <summary>"Season" an existing item with a richer description and suggested attributes.</summary>
     Task<AiSuggestion?> EnrichAsync(
         string name, string? kind, IReadOnlyDictionary<string, string> known, CancellationToken ct = default);
+
+    /// <summary>Drafts a reviewable recipe/build without persisting it.</summary>
+    Task<AiBomSuggestion?> SuggestBomAsync(
+        string request, BomKind kind, IReadOnlyList<AiBomInventoryItem> inventory,
+        IReadOnlyList<string> canonicalAttributeNames, CancellationToken ct = default);
 
     /// <summary>Makes a minimal round-trip to the endpoint. Returns null on success, else the error.</summary>
     Task<string?> TestConnectionAsync(CancellationToken ct = default);

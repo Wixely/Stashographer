@@ -1,6 +1,7 @@
 @page "/boms"
 @inject BomService BomSvc
 @inject InventoryService Inventory
+@inject IAiEnrichmentService Ai
 @inject IDialogService Dialogs
 @inject ISnackbar Snackbar
 
@@ -13,8 +14,16 @@
             Reusable bills of materials with interchangeable ingredients and parts.
         </MudText>
     </div>
-    <MudButton Color="Color.Primary" Variant="Variant.Filled" StartIcon="@Icons.Material.Filled.Add"
-               OnClick="@(() => EditDefinitionAsync(null))">Add recipe or build</MudButton>
+    <div class="d-flex gap-2 flex-wrap">
+        @if (Ai.IsEnabled)
+        {
+            <MudButton Color="Color.Secondary" Variant="Variant.Outlined"
+                       StartIcon="@Icons.Material.Filled.AutoAwesome"
+                       OnClick="GenerateDefinitionAsync">Generate with AI</MudButton>
+        }
+        <MudButton Color="Color.Primary" Variant="Variant.Filled" StartIcon="@Icons.Material.Filled.Add"
+                   OnClick="@(() => EditDefinitionAsync(null))">Add recipe or build</MudButton>
+    </div>
 </div>
 
 @if (_evaluations is null)
@@ -169,6 +178,51 @@ else
             {
                 Snackbar.Add($"Could not save: {ex.Message}", Severity.Error);
             }
+        }
+    }
+
+    private async Task GenerateDefinitionAsync()
+    {
+        var parameters = new DialogParameters
+        {
+            ["Kinds"] = _kinds,
+            ["Items"] = _items
+        };
+        var result = await (await Dialogs.ShowAsync<AiBomGeneratorDialog>(
+            "Generate recipe or build", parameters)).Result;
+        if (result is not { Canceled: false, Data: AiBomSuggestion suggestion }) return;
+
+        try
+        {
+            var definition = new BomDefinition
+            {
+                Name = suggestion.Name,
+                Kind = suggestion.Kind,
+                Description = suggestion.Description,
+                OutputQuantity = suggestion.OutputQuantity,
+                OutputUnit = suggestion.OutputUnit
+            };
+            var validKindIds = _kinds.Select(kind => kind.Id).ToHashSet();
+            var requirements = suggestion.Requirements.Select(requirement => new BomRequirement
+            {
+                Name = requirement.Name,
+                Quantity = requirement.Quantity,
+                Unit = requirement.Unit,
+                IsOptional = requirement.IsOptional,
+                MatchMode = BomMatchMode.Generic,
+                MatchItemKindId = requirement.MatchItemKindId is { } kindId && validKindIds.Contains(kindId)
+                    ? kindId
+                    : null,
+                MatchText = requirement.MatchText,
+                RequiredAttributes = new(requirement.RequiredAttributes)
+            }).ToList();
+            await BomSvc.CreateWithRequirementsAsync(definition, requirements);
+            await ReloadAsync();
+            Snackbar.Add($"{KindLabel(definition.Kind)} saved after review.", Severity.Success);
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Could not save the reviewed draft: {ex.Message}", Severity.Error);
         }
     }
 

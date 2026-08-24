@@ -1,5 +1,6 @@
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging.Abstractions;
+using Stashographer.Data.Entities;
 using Stashographer.Services.Ai;
 
 namespace Stashographer.Tests;
@@ -117,5 +118,35 @@ public class VisionParsingTests
 
         var medium = svc.ParsePick("""{"matchedItemId":3,"confidence":"medium"}""");
         Assert.Equal(MatchConfidence.Medium, medium!.Confidence);
+    }
+
+    [Fact]
+    public void Bom_suggestion_parses_reviewable_requirements_and_safe_defaults()
+    {
+        var suggestion = Service().ParseBomSuggestion("""
+            {
+              "name":"Vegetable curry",
+              "description":"Serves four",
+              "outputQuantity":4,
+              "outputUnit":"servings",
+              "requirements":[
+                {"name":"Chickpeas","quantity":2,"unit":"cans","optional":false,
+                 "matchItemKindId":7,"matchText":"chickpeas",
+                 "requiredAttributes":{"Form":"canned"}},
+                {"name":"Coriander","quantity":-4,"unit":"g","optional":true},
+                {"name":" ","quantity":10}
+              ]
+            }
+            """, BomKind.Recipe);
+
+        Assert.NotNull(suggestion);
+        Assert.Equal(BomKind.Recipe, suggestion!.Kind);
+        Assert.Equal(4, suggestion.OutputQuantity);
+        Assert.Equal("servings", suggestion.OutputUnit);
+        Assert.Equal(2, suggestion.Requirements.Count);
+        Assert.Equal(7, suggestion.Requirements[0].MatchItemKindId);
+        Assert.Equal("canned", suggestion.Requirements[0].RequiredAttributes["Form"]);
+        Assert.True(suggestion.Requirements[1].IsOptional);
+        Assert.Equal(1, suggestion.Requirements[1].Quantity);
     }
 }

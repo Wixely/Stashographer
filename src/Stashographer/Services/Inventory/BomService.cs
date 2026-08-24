@@ -61,13 +61,7 @@ public sealed class BomService(
     public async Task<BomDefinition> SaveDefinitionAsync(
         BomDefinition definition, CancellationToken ct = default)
     {
-        definition.Name = definition.Name.Trim();
-        if (definition.Name.Length == 0)
-            throw new InvalidOperationException("Enter a name for the recipe or build.");
-        if (definition.OutputQuantity <= 0)
-            throw new InvalidOperationException("Output quantity must be greater than zero.");
-        definition.Description = Clean(definition.Description);
-        definition.OutputUnit = Clean(definition.OutputUnit);
+        PrepareDefinition(definition);
         var now = DateTimeOffset.UtcNow;
         using var conn = await db.OpenAsync(ct);
         if (definition.Id == 0)
@@ -97,14 +91,7 @@ public sealed class BomService(
     public async Task<BomRequirement> SaveRequirementAsync(
         BomRequirement requirement, CancellationToken ct = default)
     {
-        requirement.Name = requirement.Name.Trim();
-        if (requirement.Name.Length == 0) throw new InvalidOperationException("Enter a requirement name.");
-        if (requirement.Quantity <= 0) throw new InvalidOperationException("Required quantity must be greater than zero.");
-        requirement.Unit = Clean(requirement.Unit);
-        requirement.MatchText = Clean(requirement.MatchText) ?? requirement.Name;
-        requirement.RequiredAttributes = await attributeNames.CanonicalizeAsync(
-            requirement.RequiredAttributes, requirement.MatchItemKindId, ct: ct);
-        requirement.CandidateItemIds = requirement.CandidateItemIds.Distinct().Order().ToList();
+        await PrepareRequirementAsync(requirement, ct);
 
         using var conn = await db.OpenAsync(ct);
         using var tx = conn.BeginTransaction();
@@ -147,6 +134,51 @@ public sealed class BomService(
             new { now = DateTimeOffset.UtcNow, id = requirement.BomDefinitionId }, tx);
         tx.Commit();
         return requirement;
+    }
+
+    /// <summary>Atomically creates a reviewed definition and all of its requirements.</summary>
+    public async Task<BomDefinition> CreateWithRequirementsAsync(
+        BomDefinition definition, IReadOnlyList<BomRequirement> requirements,
+        CancellationToken ct = default)
+    {
+        if (definition.Id != 0) throw new InvalidOperationException("The generated draft has already been saved.");
+        PrepareDefinition(definition);
+        foreach (var requirement in requirements) await PrepareRequirementAsync(requirement, ct);
+
+        var now = DateTimeOffset.UtcNow;
+        definition.CreatedAt = now;
+        definition.UpdatedAt = now;
+        using var conn = await db.OpenAsync(ct);
+        using var tx = conn.BeginTransaction();
+        definition.Id = await conn.ExecuteScalarAsync<int>("""
+            INSERT INTO BomDefinitions
+                (Name, Kind, Description, OutputQuantity, OutputUnit, CreatedAt, UpdatedAt)
+            VALUES (@Name, @Kind, @Description, @OutputQuantity, @OutputUnit, @CreatedAt, @UpdatedAt);
+            SELECT last_insert_rowid();
+            """, definition, tx);
+        for (var index = 0; index < requirements.Count; index++)
+        {
+            var requirement = requirements[index];
+            requirement.BomDefinitionId = definition.Id;
+            requirement.SortOrder = index + 1;
+            requirement.Id = await conn.ExecuteScalarAsync<int>("""
+                INSERT INTO BomRequirements
+                    (BomDefinitionId, Name, Quantity, Unit, IsOptional, MatchMode, MatchItemKindId,
+                     MatchText, RequiredAttributesJson, SortOrder)
+                VALUES (@BomDefinitionId, @Name, @Quantity, @Unit, @IsOptional, @MatchMode, @MatchItemKindId,
+                        @MatchText, @RequiredAttributesJson, @SortOrder);
+                SELECT last_insert_rowid();
+                """, ToParameters(requirement), tx);
+            foreach (var itemId in requirement.CandidateItemIds)
+                await conn.ExecuteAsync("""
+                    INSERT INTO BomRequirementCandidates (RequirementId, ItemId)
+                    VALUES (@requirementId, @itemId);
+                    """, new { requirementId = requirement.Id, itemId }, tx);
+        }
+        tx.Commit();
+        definition.Requirements = requirements.ToList();
+        definition.RequirementCount = requirements.Count;
+        return definition;
     }
 
     public async Task DeleteDefinitionAsync(int id, CancellationToken ct = default)
@@ -293,6 +325,30 @@ public sealed class BomService(
         RequiredAttributesJson = JsonSerializer.Serialize(requirement.RequiredAttributes, Json),
         requirement.SortOrder
     };
+
+    private static void PrepareDefinition(BomDefinition definition)
+    {
+        definition.Name = definition.Name.Trim();
+        if (definition.Name.Length == 0)
+            throw new InvalidOperationException("Enter a name for the recipe or build.");
+        if (definition.OutputQuantity <= 0)
+            throw new InvalidOperationException("Output quantity must be greater than zero.");
+        definition.Description = Clean(definition.Description);
+        definition.OutputUnit = Clean(definition.OutputUnit);
+    }
+
+    private async Task PrepareRequirementAsync(BomRequirement requirement, CancellationToken ct)
+    {
+        requirement.Name = requirement.Name.Trim();
+        if (requirement.Name.Length == 0) throw new InvalidOperationException("Enter a requirement name.");
+        if (requirement.Quantity <= 0)
+            throw new InvalidOperationException("Required quantity must be greater than zero.");
+        requirement.Unit = Clean(requirement.Unit);
+        requirement.MatchText = Clean(requirement.MatchText) ?? requirement.Name;
+        requirement.RequiredAttributes = await attributeNames.CanonicalizeAsync(
+            requirement.RequiredAttributes, requirement.MatchItemKindId, ct: ct);
+        requirement.CandidateItemIds = requirement.CandidateItemIds.Distinct().Order().ToList();
+    }
 
     private static BomRequirement Map(RequirementRow row, List<int> candidates) => new()
     {

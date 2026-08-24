@@ -62,6 +62,8 @@ Every container gets a printable QR code — scan it to see what's meant to be i
 - **Recipes & builds (BOMs)** — define reusable outputs and their required ingredients or
   parts. Requirements can use generic kind/text/attribute selectors or a durable explicit
   allow-list of interchangeable inventory items; allocation avoids double-counting stock.
+  A configured AI agent can draft the complete requirement list from a natural-language
+  request and current inventory context, with an editable review before anything is saved.
 - **AI enrichment (optional)** — identify an item from a photo when a barcode won't do, and
   "season" any item with extra detail, via any **OpenAI-protocol** endpoint.
 - **Light / dark themes**, mobile-friendly (MudBlazor).
@@ -164,7 +166,10 @@ and non-food assemblies. A generic requirement combines item kind, match words, 
 attributes explicitly selected, so brands remain interchangeable by default. Explicit mode
 uses a persistent substitute allow-list and never broadens itself if a candidate item is later
 deleted. Quantities are allocated across requirements before a BOM is marked ready; units must
-match exactly, with blank inventory units treated as “each”.
+match exactly, with blank inventory units treated as “each”. AI-generated recipes and builds
+are kept as transient drafts: users can edit every output and requirement, add or remove parts,
+and only persist the complete definition after explicit acceptance. The accepted definition and
+requirements are written atomically so a partial draft cannot be left behind.
 
 > Keep the key out of git. Put it in a `.env` file next to `docker-compose.yml` (already
 > covered by `.gitignore`) and reference it as `${STASH_AI_API_KEY}`.
@@ -178,7 +183,7 @@ dependencies only (see [THIRD-PARTY-NOTICES](THIRD-PARTY-NOTICES.md)).
 ## Development
 
 ```bash
-dotnet test                    # 119 tests, no network access required
+dotnet test                    # 122 tests, no network access required
 dotnet build -c Release
 ```
 
