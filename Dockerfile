@@ -9,6 +9,9 @@ RUN dotnet restore src/Stashographer/Stashographer.csproj
 
 COPY src/ src/
 RUN dotnet publish src/Stashographer/Stashographer.csproj -c Release -o /app --no-restore
+# .NET 10 ships the Blazor bootstrap scripts as publish-time static assets. Fail the
+# image build immediately if restore/publish ever drops them again.
+RUN test -f /app/wwwroot/_framework/blazor.web.js
 
 # --- Runtime -------------------------------------------------------------------
 FROM mcr.microsoft.com/dotnet/aspnet:10.0 AS runtime

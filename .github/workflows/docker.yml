@@ -71,7 +71,8 @@ jobs:
           IMAGE=$(echo "${{ steps.meta.outputs.tags }}" | head -n1)
           docker run -d --name stash -p 8080:8080 "$IMAGE"
           for i in $(seq 1 30); do
-            if curl -fsS http://localhost:8080/health >/dev/null 2>&1; then
+            if curl -fsS http://localhost:8080/health >/dev/null 2>&1 \
+              && curl -fsS http://localhost:8080/_framework/blazor.web.js >/dev/null 2>&1; then
               echo "healthy after ${i}s"; docker rm -f stash; exit 0
             fi
             sleep 1
