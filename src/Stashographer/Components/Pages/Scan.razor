@@ -4,7 +4,6 @@
 @inject IAiEnrichmentService Ai
 @inject PhotoIntakeService Intake
 @inject InventoryService Inventory
-@inject ImageService Images
 @inject ItemDraftState Draft
 @inject IntakeQueueService Queue
 @inject SettingsService SettingsSvc
@@ -33,7 +32,9 @@
 
 <MudGrid>
     <MudItem xs="12" md="6">
-        <ScanControl OnCode="OnCode" />
+        <ScanControl OnCode="OnCode"
+                     QueueBarcodePhotos="_intakeOptions.QueueEnabled"
+                     OnBarcodeQueued="OnBarcodeQueued" />
 
         <MudPaper Class="pa-4 mt-3" Outlined="true">
             <div class="d-flex justify-space-between align-center mb-2">
@@ -41,7 +42,7 @@
                 @if (Ai.IsEnabled)
                 {
                     <MudSwitch T="bool" @bind-Value="_multiMode" Label="Split into individual items"
-                               Color="Color.Primary" Size="Size.Small" />
+                               Color="Color.Primary" Size="Size.Small" Disabled="_busy" />
                 }
             </div>
             <MudText Typo="Typo.caption" Class="mud-text-secondary d-block mb-2">
@@ -52,11 +53,23 @@
                     : "The photo is attached to a new item for you to fill in. Enable AI in Settings to identify and count items automatically.")
             </MudText>
 
-            <InputFile id="scan-photo-camera" OnChange="OnIntakePhotoChange" hidden accept="image/*" capture="environment" />
-            <InputFile id="scan-photo-upload" OnChange="OnIntakePhotoChange" hidden accept="image/*" />
-            <InputFile id="scan-receipt-upload" OnChange="OnReceiptPhotoChange" hidden accept="image/*" capture="environment" />
-            <InputFile @key="_clipboardInputKey" id="scan-photo-clipboard"
-                       OnChange="OnClipboardPhotoChange" hidden accept="image/*" />
+            <ResilientImageInput Id="scan-photo-camera" OwnerKey="scan:camera"
+                                 Kind="@PhotoUploadKind" MultipleItems="_multiMode"
+                                 Capture="environment" UploadStarted="OnPhotoUploadStarted"
+                                 UploadCompleted="OnIntakePhotoUploaded" UploadFailed="OnUploadFailed" />
+            <ResilientImageInput Id="scan-photo-upload" OwnerKey="scan:library"
+                                 Kind="@PhotoUploadKind" MultipleItems="_multiMode"
+                                 UploadStarted="OnPhotoUploadStarted"
+                                 UploadCompleted="OnIntakePhotoUploaded" UploadFailed="OnUploadFailed" />
+            <ResilientImageInput Id="scan-receipt-upload" OwnerKey="scan:receipt"
+                                 Kind="BrowserUploadKind.QueuedReceipt" Capture="environment"
+                                 UploadStarted="OnReceiptUploadStarted"
+                                 UploadCompleted="OnReceiptPhotoUploaded" UploadFailed="OnUploadFailed" />
+            <ResilientImageInput Id="scan-photo-clipboard" OwnerKey="scan:clipboard"
+                                 Kind="@PhotoUploadKind" MultipleItems="_multiMode"
+                                 CompletesClipboardQueue="true"
+                                 UploadStarted="OnPhotoUploadStarted"
+                                 UploadCompleted="OnIntakePhotoUploaded" UploadFailed="OnUploadFailed" />
             <div class="d-flex gap-2 flex-wrap">
                 <MudButton HtmlTag="label" for="scan-photo-camera" Variant="Variant.Filled" Color="Color.Primary"
                            StartIcon="@Icons.Material.Filled.PhotoCamera" Disabled="_busy">Take photo</MudButton>
@@ -129,6 +142,13 @@
                 }
                 else
                 {
+                    @if (_pendingIntake.Proposal.Action == IntakeAction.IncrementExisting)
+                    {
+                        <MudAlert Severity="Severity.Info" Dense="true" Class="mb-2">
+                            This appears to be another @_pendingIntake.Proposal.IncrementBy.ToString("0.##")
+                            of @_pendingIntake.Proposal.MatchedItemName. Confirm before changing its quantity.
+                        </MudAlert>
+                    }
                     @if (_pendingIntake.Proposal.Action == IntakeAction.CreateStockLot)
                     {
                         <MudAlert Severity="Severity.Info" Dense="true" Class="mb-2">
@@ -152,12 +172,13 @@
                     }
                     <div class="d-flex gap-2 mt-3">
                         <MudButton Color="Color.Primary" Variant="Variant.Filled" StartIcon="@Icons.Material.Filled.Add"
-                                   OnClick="@(_pendingIntake.Proposal.Action == IntakeAction.CreateStockLot
-                                                 ? ApplyLotAsync
-                                                 : ApplyCreateAsync)">
-                            @(_pendingIntake.Proposal.Action == IntakeAction.CreateStockLot
-                                ? "Add as separate expiry lot"
-                                : "Add to inventory")
+                                   OnClick="ApplyProposedAsync">
+                            @(_pendingIntake.Proposal.Action switch
+                            {
+                                IntakeAction.IncrementExisting => "Add another copy",
+                                IntakeAction.CreateStockLot => "Add as separate expiry lot",
+                                _ => "Add to inventory"
+                            })
                         </MudButton>
                         <MudButton Variant="Variant.Outlined" StartIcon="@Icons.Material.Filled.Edit"
                                    OnClick="EditIntakeDraft">Edit first</MudButton>
@@ -229,8 +250,10 @@
     private IntakeApplied? _lastApplied;
     private IntakeOptions _intakeOptions = new();
     private int _queuedCount;
-    private int _clipboardInputKey;
     private bool _clipboardInteropEnabled;
+    private BrowserUploadKind PhotoUploadKind => _intakeOptions.QueueEnabled
+        ? BrowserUploadKind.QueuedPhoto
+        : BrowserUploadKind.Image;
 
     protected override async Task OnInitializedAsync()
     {
@@ -264,6 +287,11 @@
         StateHasChanged();
         _result = await Lookup.LookupAsync(code);
         _busy = false;
+    }
+
+    private async Task OnBarcodeQueued(string _)
+    {
+        await RefreshQueueCountAsync();
     }
 
     private void EditDraft()
@@ -300,78 +328,70 @@
 
     // --- Photo intake path -----------------------------------------------------------
 
-    private async Task OnIntakePhotoChange(InputFileChangeEventArgs e) => await OnIntakePhoto(e.File);
-
-    private async Task OnReceiptPhotoChange(InputFileChangeEventArgs e)
+    private Task OnPhotoUploadStarted(string _)
     {
-        var file = e.File;
+        ClearIntake();
+        _result = null;
+        _busy = true;
+        _busyText = _intakeOptions.QueueEnabled ? "Saving to queue…" : "Uploading photo…";
+        return Task.CompletedTask;
+    }
+
+    private Task OnReceiptUploadStarted(string _)
+    {
         ClearIntake();
         _result = null;
         _busy = true;
         _busyText = "Saving receipt…";
-        StateHasChanged();
-        try
-        {
-            await using var upload = file.OpenReadStream(20 * 1024 * 1024);
-            await Queue.EnqueueReceiptAsync(upload, file.ContentType, file.Name);
-            await RefreshQueueCountAsync();
-            if (_intakeOptions.QueueEnabled)
-                Snackbar.Add("Receipt queued for matching to this session's items.", Severity.Success);
-            else
-                Nav.NavigateTo("queue");
-        }
-        catch (Exception ex)
-        {
-            Snackbar.Add($"Couldn't queue receipt: {ex.Message}", Severity.Error);
-        }
-        finally
-        {
-            _busy = false;
-        }
+        return Task.CompletedTask;
     }
 
-    private async Task OnClipboardPhotoChange(InputFileChangeEventArgs e)
+    private async Task OnReceiptPhotoUploaded(BrowserUploadResult upload)
     {
-        try
+        _busy = false;
+        if (upload.QueueItemId is null)
         {
-            await OnIntakePhoto(e.File);
-        }
-        finally
-        {
-            // InputFile retains its last browser file list. Replacing it and acknowledging
-            // the client queue guarantees that pasting the same image again raises a change.
-            _clipboardInputKey++;
-            await JS.InvokeVoidAsync("stashClipboardImages.complete");
-        }
-    }
-
-    private async Task OnIntakePhoto(IBrowserFile? file)
-    {
-        if (file is null) return;
-        ClearIntake();
-        _result = null;
-
-        if (_intakeOptions.QueueEnabled)
-        {
-            _busy = true;
-            _busyText = "Saving to queue…";
-            StateHasChanged();
-            try
-            {
-                await using var upload = file.OpenReadStream(20 * 1024 * 1024);
-                await Queue.EnqueuePhotoAsync(upload, file.ContentType, file.Name, _multiMode);
-                await RefreshQueueCountAsync();
-                Snackbar.Add(_multiMode
-                    ? "Photo queued — detected items will be split into individual crops."
-                    : "Photo queued — ready for the next item.", Severity.Success);
-            }
-            catch (Exception ex)
-            {
-                Snackbar.Add($"Couldn't queue photo: {ex.Message}", Severity.Error);
-            }
-            finally { _busy = false; }
+            Snackbar.Add("The receipt upload did not create a queue entry.", Severity.Error);
             return;
         }
+        await RefreshQueueCountAsync();
+        if (_intakeOptions.QueueEnabled)
+            Snackbar.Add("Receipt queued for matching to this session's items.", Severity.Success);
+        else
+            Nav.NavigateTo("queue");
+    }
+
+    private async Task OnIntakePhotoUploaded(BrowserUploadResult upload)
+    {
+        if (upload.Kind == BrowserUploadKind.QueuedPhoto)
+        {
+            _busy = false;
+            await RefreshQueueCountAsync();
+            Snackbar.Add(_multiMode
+                ? "Photo queued — detected items will be split into individual crops."
+                : "Photo queued — ready for the next item.", Severity.Success);
+            return;
+        }
+        if (upload.ImageId is not { } imageId)
+        {
+            _busy = false;
+            Snackbar.Add("The uploaded image was not stored.", Severity.Error);
+            return;
+        }
+        await OnIntakePhoto(imageId);
+    }
+
+    private Task OnUploadFailed(BrowserUploadFailure failure)
+    {
+        _busy = false;
+        Snackbar.Add(failure.Message, failure.Retryable ? Severity.Warning : Severity.Error);
+        return Task.CompletedTask;
+    }
+
+    private async Task OnIntakePhoto(int imageId)
+    {
+        ClearIntake();
+        _result = null;
 
         // Without AI, the photo still comes in: sanitize/store it and hand the user a
         // new-item draft with the photo attached.
@@ -382,9 +402,7 @@
             StateHasChanged();
             try
             {
-                await using var upload = file.OpenReadStream(20 * 1024 * 1024);
-                var stored = await Images.SaveAsync(upload, file.ContentType, file.Name);
-                Draft.Set(new Item { Name = string.Empty, ItemKindId = 7, ImageId = stored.Id });
+                Draft.Set(new Item { Name = string.Empty, ItemKindId = 7, ImageId = imageId });
                 Nav.NavigateTo("items/new");
             }
             catch (Exception ex)
@@ -400,38 +418,16 @@
         StateHasChanged();
         try
         {
-            await using var stream = file.OpenReadStream(20 * 1024 * 1024);
             if (_multiMode)
             {
-                _multiResults = await Intake.ProcessMultiAsync(stream, file.ContentType);
+                _multiResults = await Intake.ProcessMultiStoredAsync(imageId);
                 if (_multiResults.Count == 0)
                     Snackbar.Add("No items detected in the photo.", Severity.Warning);
             }
             else
             {
-                var intake = await Intake.ProcessSingleAsync(stream, file.ContentType);
-                if (intake.Proposal.Action == IntakeAction.IncrementExisting)
-                {
-                    // Fully automatic: apply immediately, offer Undo.
-                    var applied = await Intake.ApplyAsync(intake);
-                    _lastApplied = applied;
-                    Snackbar.Add($"+{applied.By:0.##} {applied.ItemName}", Severity.Success, config =>
-                    {
-                        config.Action = "Undo";
-                        config.ActionColor = Color.Inherit;
-                        config.VisibleStateDuration = 8000;
-                        config.OnClick = async _ =>
-                        {
-                            await Intake.UndoAsync(applied);
-                            _lastApplied = null;
-                            await InvokeAsync(StateHasChanged);
-                        };
-                    });
-                }
-                else
-                {
-                    _pendingIntake = intake; // picker or create card
-                }
+                var intake = await Intake.ProcessStoredAsync(imageId);
+                _pendingIntake = intake; // every queue-disabled photo requires confirmation
             }
         }
         catch (Exception ex)
@@ -462,6 +458,22 @@
         _lastApplied = applied;
         _pendingIntake = null;
         Snackbar.Add($"Added {applied.By:0.##} {applied.ItemName} as a separate expiry lot.", Severity.Success);
+    }
+
+    private Task ApplyProposedAsync() => _pendingIntake?.Proposal.Action switch
+    {
+        IntakeAction.IncrementExisting => ApplyMatchedAsync(),
+        IntakeAction.CreateStockLot => ApplyLotAsync(),
+        _ => ApplyCreateAsync()
+    } ?? Task.CompletedTask;
+
+    private async Task ApplyMatchedAsync()
+    {
+        if (_pendingIntake is null) return;
+        var applied = await Intake.ApplyAsync(_pendingIntake);
+        _lastApplied = applied;
+        _pendingIntake = null;
+        Snackbar.Add($"+{applied.By:0.##} {applied.ItemName}", Severity.Success);
     }
 
     private async Task ApplyCreateAsync()

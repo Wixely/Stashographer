@@ -1,7 +1,13 @@
 using System.Net;
+using System.Net.Http.Headers;
 using System.Text.RegularExpressions;
+using System.Text.Json;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
+using Microsoft.Extensions.DependencyInjection;
+using SixLabors.ImageSharp;
+using SixLabors.ImageSharp.PixelFormats;
+using Stashographer.Services.Intake;
 using Stashographer.Services.Security;
 
 namespace Stashographer.Tests;
@@ -133,11 +139,79 @@ public sealed partial class AdminApplicationTests : IAsyncLifetime
             statuses);
     }
 
+    [Fact]
+    public async Task Browser_photo_upload_is_antiforgery_protected_and_idempotently_queued()
+    {
+        using var client = CreateClient();
+        var page = await client.GetStringAsync("/scan");
+        var antiforgery = AntiforgeryToken(page);
+        var token = Guid.NewGuid().ToString();
+        byte[] png;
+        using (var image = new Image<Rgba32>(32, 24, new Rgba32(20, 80, 140)))
+        await using (var output = new MemoryStream())
+        {
+            await image.SaveAsPngAsync(output);
+            png = output.ToArray();
+        }
+
+        using (var unprotected = BrowserUploadForm(png, token, antiforgery: null))
+        using (var rejected = await client.PostAsync("/browser-uploads", unprotected))
+            Assert.Equal(HttpStatusCode.BadRequest, rejected.StatusCode);
+
+        int queueItemId;
+        using (var form = BrowserUploadForm(png, token, antiforgery))
+        using (var response = await client.PostAsync("/browser-uploads", form))
+        {
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+            using var json = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+            Assert.Equal("QueuedPhoto", json.RootElement.GetProperty("kind").GetString());
+            Assert.True(json.RootElement.GetProperty("imageId").GetInt32() > 0);
+            queueItemId = json.RootElement.GetProperty("queueItemId").GetInt32();
+        }
+
+        // A lost HTTP response can cause the browser to repeat the same request. The token
+        // must return the original durable receipt without creating another queue entry.
+        using (var retryForm = BrowserUploadForm(png, token, antiforgery))
+        using (var retry = await client.PostAsync("/browser-uploads", retryForm))
+        {
+            Assert.Equal(HttpStatusCode.OK, retry.StatusCode);
+            using var json = JsonDocument.Parse(await retry.Content.ReadAsStringAsync());
+            Assert.Equal(queueItemId, json.RootElement.GetProperty("queueItemId").GetInt32());
+        }
+
+        using (var recovered = await client.GetAsync($"/browser-uploads/{token}"))
+        {
+            Assert.Equal(HttpStatusCode.OK, recovered.StatusCode);
+            using var json = JsonDocument.Parse(await recovered.Content.ReadAsStringAsync());
+            Assert.Equal(queueItemId, json.RootElement.GetProperty("queueItemId").GetInt32());
+        }
+
+        await using var scope = _factory.Services.CreateAsyncScope();
+        var queue = scope.ServiceProvider.GetRequiredService<IntakeQueueService>();
+        Assert.Equal(queueItemId, Assert.Single(
+            await queue.GetOpenAsync(), item => item.BrowserUploadToken == token).Id);
+    }
+
     private HttpClient CreateClient() => _factory.CreateClient(new WebApplicationFactoryClientOptions
     {
         AllowAutoRedirect = false,
         HandleCookies = true
     });
+
+    private static MultipartFormDataContent BrowserUploadForm(
+        byte[] bytes, string token, string? antiforgery)
+    {
+        var form = new MultipartFormDataContent();
+        if (antiforgery is not null)
+            form.Add(new StringContent(antiforgery), "__RequestVerificationToken");
+        form.Add(new StringContent(token), "token");
+        form.Add(new StringContent("QueuedPhoto"), "kind");
+        form.Add(new StringContent("false"), "multipleItems");
+        var file = new ByteArrayContent(bytes);
+        file.Headers.ContentType = new MediaTypeHeaderValue("image/png");
+        form.Add(file, "photo", "mobile-camera.png");
+        return form;
+    }
 
     private static string AntiforgeryToken(string html)
     {

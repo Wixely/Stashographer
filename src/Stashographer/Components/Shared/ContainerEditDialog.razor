@@ -3,7 +3,8 @@
 <MudDialog>
     <DialogContent>
         <div class="d-flex justify-center mb-3">
-            <ImagePicker @bind-ImageId="_container.ImageId" Label="Add container photo" Width="200px" Height="180px" />
+            <ImagePicker @bind-ImageId="_container.ImageId" Label="Add container photo"
+                         Width="200px" Height="180px" UploadKey="@($"container:{_container.Id}")" />
         </div>
         <MudTextField @bind-Value="_container.Name" Label="Name" Variant="Variant.Outlined"
                       Required="true" Class="mb-3" />

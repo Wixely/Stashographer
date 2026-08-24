@@ -120,7 +120,8 @@ else
             {
                 <MudPaper Class="pa-4 mb-3 d-flex justify-center" Outlined="true">
                     <ImagePicker @bind-ImageId="_item.ImageId" @bind-FallbackUrl="_item.ThumbnailUrl"
-                                 Label="Add item photo" Width="220px" Height="200px" />
+                                 Label="Add item photo" Width="220px" Height="200px"
+                                 UploadKey="@($"item-primary:{_item.Id}")" />
                 </MudPaper>
             }
             else

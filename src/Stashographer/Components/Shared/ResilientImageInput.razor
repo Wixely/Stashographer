@@ -1,0 +1,68 @@
+@implements IAsyncDisposable
+@inject IJSRuntime JS
+
+<input id="@Id" type="file" hidden accept="@Accept" capture="@Capture" />
+
+@code {
+    [Parameter, EditorRequired] public string Id { get; set; } = string.Empty;
+    [Parameter, EditorRequired] public string OwnerKey { get; set; } = string.Empty;
+    [Parameter] public BrowserUploadKind Kind { get; set; } = BrowserUploadKind.Image;
+    [Parameter] public bool MultipleItems { get; set; } = true;
+    [Parameter] public bool CompletesClipboardQueue { get; set; }
+    [Parameter] public string Accept { get; set; } = "image/*";
+    [Parameter] public string? Capture { get; set; }
+    [Parameter] public EventCallback<string> UploadStarted { get; set; }
+    [Parameter] public EventCallback<BrowserUploadResult> UploadCompleted { get; set; }
+    [Parameter] public EventCallback<BrowserUploadFailure> UploadFailed { get; set; }
+
+    private DotNetObjectReference<ResilientImageInput>? _self;
+    private string? _registeredId;
+    private string? _registeredSignature;
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        var signature = $"{Id}|{OwnerKey}|{Kind}|{MultipleItems}|{CompletesClipboardQueue}";
+        if (_registeredSignature == signature) return;
+        _self ??= DotNetObjectReference.Create(this);
+        if (_registeredId is not null && _registeredId != Id)
+            await JS.InvokeVoidAsync("stashResilientUpload.unregister", _registeredId);
+        var registered = await JS.InvokeAsync<bool>(
+            "stashResilientUpload.register",
+            Id,
+            OwnerKey,
+            Kind.ToString(),
+            MultipleItems,
+            CompletesClipboardQueue,
+            _self);
+        if (registered)
+        {
+            _registeredId = Id;
+            _registeredSignature = signature;
+        }
+    }
+
+    [JSInvokable]
+    public Task OnBrowserUploadStarted(string fileName) => UploadStarted.InvokeAsync(fileName);
+
+    [JSInvokable]
+    public Task OnBrowserUploadCompleted(BrowserUploadResult result) =>
+        UploadCompleted.InvokeAsync(result);
+
+    [JSInvokable]
+    public Task OnBrowserUploadFailed(string message, bool retryable) =>
+        UploadFailed.InvokeAsync(new BrowserUploadFailure(message, retryable));
+
+    public ValueTask RetryAsync() =>
+        JS.InvokeVoidAsync("stashResilientUpload.retry", OwnerKey);
+
+    public async ValueTask DisposeAsync()
+    {
+        try
+        {
+            if (_registeredId is not null)
+                await JS.InvokeVoidAsync("stashResilientUpload.unregister", _registeredId);
+        }
+        catch { /* The circuit/page may already be gone. The durable receipt remains. */ }
+        _self?.Dispose();
+    }
+}

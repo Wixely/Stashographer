@@ -27,6 +27,7 @@ public class IntakeQueueItem
     public int SessionId { get; set; }
     public IntakeSourceType SourceType { get; set; }
     public string? SourceCode { get; set; }
+    public string? BrowserUploadToken { get; set; }
     public int? ImageId { get; set; }
     public bool IsMultiPhoto { get; set; }
     public IntakeQueueStatus Status { get; set; }

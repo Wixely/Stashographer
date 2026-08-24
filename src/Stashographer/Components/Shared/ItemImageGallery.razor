@@ -19,11 +19,15 @@
                     <MudSelectItem Value="@role">@RoleLabel(role)</MudSelectItem>
                 }
             </MudSelect>
-            <MudButton HtmlTag="label" for="item-gallery-upload" Variant="Variant.Outlined"
+            <MudButton HtmlTag="label" for="@UploadInputId" Variant="Variant.Outlined"
                        StartIcon="@Icons.Material.Filled.AddPhotoAlternate" Disabled="_busy">
                 Add image
             </MudButton>
-            <InputFile id="item-gallery-upload" hidden accept="image/*" OnChange="AddImageAsync" />
+            <ResilientImageInput Id="@UploadInputId" OwnerKey="@($"item-gallery:{ItemId}")"
+                                 Kind="BrowserUploadKind.Image"
+                                 UploadStarted="OnUploadStarted"
+                                 UploadCompleted="AddImageAsync"
+                                 UploadFailed="OnUploadFailed" />
         </div>
     </div>
 
@@ -103,20 +107,24 @@
     private ItemImageRole _newRole = ItemImageRole.Front;
     private bool _loading = true;
     private bool _busy;
+    private string UploadInputId => $"item-gallery-upload-{ItemId}";
 
     protected override async Task OnParametersSetAsync() => await ReloadAsync();
 
-    private async Task AddImageAsync(InputFileChangeEventArgs e)
+    private Task OnUploadStarted(string _)
     {
-        var file = e.File;
-        if (file is null) return;
         _busy = true;
+        return Task.CompletedTask;
+    }
+
+    private async Task AddImageAsync(BrowserUploadResult upload)
+    {
         try
         {
-            await using var stream = file.OpenReadStream(20 * 1024 * 1024);
-            var image = await Images.SaveAsync(stream, file.ContentType, file.Name);
-            var linked = await Inventory.AttachImageAsync(ItemId, image.Id, _newRole);
-            if (linked.IsPrimary) await PrimaryImageChanged.InvokeAsync(image.Id);
+            if (upload.ImageId is not { } imageId)
+                throw new InvalidOperationException("The uploaded image was not stored.");
+            var linked = await Inventory.AttachImageAsync(ItemId, imageId, _newRole);
+            if (linked.IsPrimary) await PrimaryImageChanged.InvokeAsync(imageId);
             await ReloadAsync();
             Snackbar.Add("Image attached without changing quantity.", Severity.Success);
         }
@@ -125,6 +133,13 @@
             Snackbar.Add($"Couldn't attach image: {ex.Message}", Severity.Error);
         }
         finally { _busy = false; }
+    }
+
+    private Task OnUploadFailed(BrowserUploadFailure failure)
+    {
+        _busy = false;
+        Snackbar.Add(failure.Message, failure.Retryable ? Severity.Warning : Severity.Error);
+        return Task.CompletedTask;
     }
 
     private async Task ChangeRoleAsync(ItemImage link, ItemImageRole role)

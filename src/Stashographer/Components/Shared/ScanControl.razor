@@ -1,7 +1,6 @@
 @* Camera barcode scanner + manual entry. Raises OnCode with whatever code is captured. *@
 @implements IAsyncDisposable
 @inject IJSRuntime JS
-@inject BarcodeImageDecoder BarcodeDecoder
 @inject ISnackbar Snackbar
 
 <MudPaper Class="pa-4" Elevation="0" Outlined="true">
@@ -20,8 +19,14 @@
             <div class="d-flex gap-2 flex-wrap justify-center">
                 <MudButton Color="Color.Primary" Variant="Variant.Filled" StartIcon="@Icons.Material.Filled.CameraAlt"
                            OnClick="StartAsync">Live scan</MudButton>
-                <InputFile @key="_barcodePhotoInputKey" id="barcode-photo-capture" hidden accept="image/*"
-                           capture="environment" OnChange="OnBarcodePhotoAsync" />
+                <ResilientImageInput Id="barcode-photo-capture" OwnerKey="scan:barcode-photo"
+                                     Kind="@(QueueBarcodePhotos
+                                                ? BrowserUploadKind.QueuedBarcode
+                                                : BrowserUploadKind.Barcode)"
+                                     Capture="environment"
+                                     UploadStarted="OnBarcodeUploadStarted"
+                                     UploadCompleted="OnBarcodePhotoUploaded"
+                                     UploadFailed="OnBarcodeUploadFailed" />
                 <MudButton HtmlTag="label" for="barcode-photo-capture" Color="Color.Primary"
                            Variant="Variant.Outlined" StartIcon="@Icons.Material.Filled.PhotoCamera"
                            Disabled="_decodingPhoto">
@@ -50,12 +55,13 @@
 
 @code {
     [Parameter] public EventCallback<string> OnCode { get; set; }
+    [Parameter] public EventCallback<string> OnBarcodeQueued { get; set; }
+    [Parameter] public bool QueueBarcodePhotos { get; set; }
 
     private ElementReference _video;
     private bool _scanning;
     private string? _cameraFailure;
     private bool _decodingPhoto;
-    private int _barcodePhotoInputKey;
     private string _manual = string.Empty;
     private MudTextField<string>? _manualField;
     private DotNetObjectReference<ScanControl>? _selfRef;
@@ -112,31 +118,39 @@
         if (e.Key is "Enter") await SubmitManual();
     }
 
-    private async Task OnBarcodePhotoAsync(InputFileChangeEventArgs e)
+    private Task OnBarcodeUploadStarted(string _)
     {
         _decodingPhoto = true;
-        try
-        {
-            await using var stream = e.File.OpenReadStream(20 * 1024 * 1024);
-            var code = await BarcodeDecoder.DecodeAsync(stream);
-            if (code is null)
-            {
-                Snackbar.Add("No barcode was found. Move closer, avoid glare, and try again.", Severity.Warning);
-                return;
-            }
+        return Task.CompletedTask;
+    }
 
+    private async Task OnBarcodePhotoUploaded(BrowserUploadResult upload)
+    {
+        _decodingPhoto = false;
+        var code = upload.Code;
+        if (code is null)
+        {
+            Snackbar.Add("No barcode was found. Move closer, avoid glare, and try again.", Severity.Warning);
+            return;
+        }
+
+        if (upload.Kind == BrowserUploadKind.QueuedBarcode)
+        {
+            Snackbar.Add($"Queued barcode {code} — ready for the next scan.", Severity.Success);
+            await OnBarcodeQueued.InvokeAsync(code);
+        }
+        else
+        {
             Snackbar.Add($"Read barcode {code}.", Severity.Success);
             await OnCode.InvokeAsync(code);
         }
-        catch (Exception ex)
-        {
-            Snackbar.Add($"Couldn't read barcode photo: {ex.Message}", Severity.Error);
-        }
-        finally
-        {
-            _decodingPhoto = false;
-            _barcodePhotoInputKey++;
-        }
+    }
+
+    private Task OnBarcodeUploadFailed(BrowserUploadFailure failure)
+    {
+        _decodingPhoto = false;
+        Snackbar.Add(failure.Message, failure.Retryable ? Severity.Warning : Severity.Error);
+        return Task.CompletedTask;
     }
 
     public async ValueTask DisposeAsync()

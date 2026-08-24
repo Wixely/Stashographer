@@ -65,6 +65,12 @@ builder.Services.AddRateLimiter(options =>
         limiter.QueueLimit = 0;
         limiter.AutoReplenishment = true;
     });
+    options.AddConcurrencyLimiter("browser-uploads", limiter =>
+    {
+        limiter.PermitLimit = 4;
+        limiter.QueueLimit = 8;
+        limiter.QueueProcessingOrder = QueueProcessingOrder.OldestFirst;
+    });
     options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
 });
 builder.Services.AddSingleton<AdminPasswordValidator>();
@@ -116,6 +122,7 @@ builder.Services.AddHttpClient(nameof(ImageService), c =>
     c.Timeout = TimeSpan.FromSeconds(15); // remote image fetches must not hang item saves
 });
 builder.Services.AddScoped<ImageService>();
+builder.Services.AddScoped<BrowserUploadService>();
 
 // --- Sample/test data (development) -------------------------------------------
 var sampleData = builder.Configuration.GetSection(SampleDataOptions.SectionName).Get<SampleDataOptions>()
@@ -199,6 +206,7 @@ app.MapPost("/auth/logout", async (HttpContext context, IAntiforgery antiforgery
 
 app.MapAutomationApi();
 app.MapMcp("/mcp").DisableAntiforgery();
+app.MapBrowserUploads();
 
 app.MapStaticAssets();
 app.MapRazorComponents<App>()

@@ -44,7 +44,8 @@ Every container gets a printable QR code — scan it to see what's meant to be i
   can be captured without waiting. A photo containing several objects is split by default
   into individual, focused crops and queue entries. A sequential worker uses earlier session
   items as context, and the review queue presents every suggestion for item-by-item acceptance
-  or correction.
+  or correction. Mobile file and camera selections upload through a circuit-independent HTTP
+  path, so suspending the browser picker cannot strand the photo during a Blazor reconnect.
 - **Automatic photo framing** — AI bounding boxes produce a focused, square-ish crop for each
   detected object. Explicit single-item captures crop around the dominant object and fall back
   to the original photo when no reliable bound is available.
@@ -267,7 +268,7 @@ dependencies only (see [THIRD-PARTY-NOTICES](THIRD-PARTY-NOTICES.md)).
 ## Development
 
 ```bash
-dotnet test                    # 161 tests, no network access required
+dotnet test                    # 162 tests, no network access required
 dotnet build -c Release
 ```
 

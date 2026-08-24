@@ -24,7 +24,11 @@
         @* Do not set capture here: several mobile browsers interpret it as "camera only",
            which makes an existing photo impossible to choose. The Scan page exposes a
            separate, explicit camera input when direct capture is wanted. *@
-        <InputFile accept="image/*" OnChange="OnFileAsync" style="display:none" />
+        <ResilientImageInput Id="@_inputId" OwnerKey="@EffectiveUploadKey"
+                             Kind="BrowserUploadKind.Image"
+                             UploadStarted="OnUploadStarted"
+                             UploadCompleted="OnUploadCompleted"
+                             UploadFailed="OnUploadFailed" />
     </label>
 
     <div class="d-flex gap-1 mt-1 justify-center">
@@ -65,27 +69,36 @@
     [Parameter] public string Width { get; set; } = "180px";
     [Parameter] public string Height { get; set; } = "160px";
     [Parameter] public int PreviewWidth { get; set; } = 360;
+    [Parameter] public string? UploadKey { get; set; }
 
     private bool _busy;
     private bool _showUrl;
     private string _url = string.Empty;
+    private readonly string _inputId = $"image-picker-{Guid.NewGuid():N}";
+    private string EffectiveUploadKey => UploadKey ?? $"image-picker:{Label}";
 
-    private async Task OnFileAsync(InputFileChangeEventArgs e)
+    private Task OnUploadStarted(string _)
     {
-        var file = e.File;
-        if (file is null) return;
         _busy = true;
+        return Task.CompletedTask;
+    }
+
+    private async Task OnUploadCompleted(BrowserUploadResult upload)
+    {
         try
         {
-            await using var stream = file.OpenReadStream(20 * 1024 * 1024);
-            var image = await Images.SaveAsync(stream, file.ContentType, file.Name);
-            await SetImage(image.Id);
-        }
-        catch (Exception ex)
-        {
-            Snackbar.Add($"Couldn't add photo: {ex.Message}", Severity.Error);
+            if (upload.ImageId is not { } imageId)
+                throw new InvalidOperationException("The uploaded image was not stored.");
+            await SetImage(imageId);
         }
         finally { _busy = false; }
+    }
+
+    private Task OnUploadFailed(BrowserUploadFailure failure)
+    {
+        _busy = false;
+        Snackbar.Add(failure.Message, failure.Retryable ? Severity.Warning : Severity.Error);
+        return Task.CompletedTask;
     }
 
     private async Task FetchUrlAsync()

@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Dapper;
+using Microsoft.Data.Sqlite;
 using Stashographer.Data;
 using Stashographer.Data.Entities;
 using Stashographer.Services.Ai;
@@ -31,41 +32,68 @@ public class IntakeQueueService(
 {
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
 
-    public async Task<IntakeQueueItem> EnqueueBarcodeAsync(string code, CancellationToken ct = default)
+    public Task<IntakeQueueItem> EnqueueBarcodeAsync(string code, CancellationToken ct = default) =>
+        EnqueueBarcodeCoreAsync(code, null, ct);
+
+    public Task<IntakeQueueItem> EnqueueBarcodeFromBrowserAsync(
+        string code, string browserUploadToken, CancellationToken ct = default) =>
+        EnqueueBarcodeCoreAsync(code, browserUploadToken, ct);
+
+    private async Task<IntakeQueueItem> EnqueueBarcodeCoreAsync(
+        string code, string? browserUploadToken, CancellationToken ct)
     {
         code = code.Trim();
         if (code.Length == 0) throw new ArgumentException("A barcode or ISBN is required.", nameof(code));
+        if (browserUploadToken is not null
+            && await GetByBrowserUploadTokenAsync(browserUploadToken, ct) is { } existing)
+            return existing;
 
         var item = new IntakeQueueItem
         {
             SessionId = await GetOrCreateActiveSessionIdAsync(ct),
             SourceType = IntakeSourceType.Barcode,
             SourceCode = code,
+            BrowserUploadToken = browserUploadToken,
             Status = IntakeQueueStatus.Pending,
             Draft = new Item { Name = string.Empty, Code = code, ItemKindId = 7 },
             CreatedAt = DateTimeOffset.UtcNow
         };
-        item.Id = await InsertAsync(item, ct);
+        item.Id = await InsertIdempotentlyAsync(item, ct);
         signal.Pulse();
         return item;
     }
 
-    public async Task<IntakeQueueItem> EnqueuePhotoAsync(
+    public Task<IntakeQueueItem> EnqueuePhotoAsync(
         Stream content, string mediaType, string? originalName, bool multipleItems = true,
-        CancellationToken ct = default)
+        CancellationToken ct = default) =>
+        EnqueuePhotoCoreAsync(content, mediaType, originalName, multipleItems, null, ct);
+
+    public Task<IntakeQueueItem> EnqueuePhotoFromBrowserAsync(
+        Stream content, string mediaType, string? originalName, bool multipleItems,
+        string browserUploadToken, CancellationToken ct = default) =>
+        EnqueuePhotoCoreAsync(
+            content, mediaType, originalName, multipleItems, browserUploadToken, ct);
+
+    private async Task<IntakeQueueItem> EnqueuePhotoCoreAsync(
+        Stream content, string mediaType, string? originalName, bool multipleItems,
+        string? browserUploadToken, CancellationToken ct)
     {
+        if (browserUploadToken is not null
+            && await GetByBrowserUploadTokenAsync(browserUploadToken, ct) is { } existing)
+            return existing;
         var stored = await images.SaveAsync(content, mediaType, originalName, null, ct);
         var item = new IntakeQueueItem
         {
             SessionId = await GetOrCreateActiveSessionIdAsync(ct),
             SourceType = IntakeSourceType.Photo,
+            BrowserUploadToken = browserUploadToken,
             ImageId = stored.Id,
             IsMultiPhoto = multipleItems,
             Status = IntakeQueueStatus.Pending,
             Draft = new Item { Name = string.Empty, ItemKindId = 7, ImageId = stored.Id },
             CreatedAt = DateTimeOffset.UtcNow
         };
-        item.Id = await InsertAsync(item, ct);
+        item.Id = await InsertIdempotentlyAsync(item, ct);
         signal.Pulse();
         return item;
     }
@@ -74,20 +102,34 @@ public class IntakeQueueService(
     /// Queues a receipt as enrichment evidence for earlier items in the active session.
     /// Receipt processing and acceptance never change inventory quantities.
     /// </summary>
-    public async Task<IntakeQueueItem> EnqueueReceiptAsync(
-        Stream content, string mediaType, string? originalName, CancellationToken ct = default)
+    public Task<IntakeQueueItem> EnqueueReceiptAsync(
+        Stream content, string mediaType, string? originalName, CancellationToken ct = default) =>
+        EnqueueReceiptCoreAsync(content, mediaType, originalName, null, ct);
+
+    public Task<IntakeQueueItem> EnqueueReceiptFromBrowserAsync(
+        Stream content, string mediaType, string? originalName, string browserUploadToken,
+        CancellationToken ct = default) =>
+        EnqueueReceiptCoreAsync(content, mediaType, originalName, browserUploadToken, ct);
+
+    private async Task<IntakeQueueItem> EnqueueReceiptCoreAsync(
+        Stream content, string mediaType, string? originalName, string? browserUploadToken,
+        CancellationToken ct)
     {
+        if (browserUploadToken is not null
+            && await GetByBrowserUploadTokenAsync(browserUploadToken, ct) is { } existing)
+            return existing;
         var stored = await images.SaveAsync(content, mediaType, originalName, null, ct);
         var item = new IntakeQueueItem
         {
             SessionId = await GetOrCreateActiveSessionIdAsync(ct),
             SourceType = IntakeSourceType.Receipt,
+            BrowserUploadToken = browserUploadToken,
             ImageId = stored.Id,
             Status = IntakeQueueStatus.Pending,
             Draft = new Item { Name = string.Empty, ItemKindId = 7 },
             CreatedAt = DateTimeOffset.UtcNow
         };
-        item.Id = await InsertAsync(item, ct);
+        item.Id = await InsertIdempotentlyAsync(item, ct);
         signal.Pulse();
         return item;
     }
@@ -1036,10 +1078,10 @@ public class IntakeQueueService(
         using var conn = await db.OpenAsync(ct);
         return await conn.ExecuteScalarAsync<int>("""
             INSERT INTO IntakeQueueItems
-                (SessionId, SourceType, SourceCode, ImageId, IsMultiPhoto, Status, DraftJson,
+                (SessionId, SourceType, SourceCode, BrowserUploadToken, ImageId, IsMultiPhoto, Status, DraftJson,
                  ProposalAction, IncrementBy, CreatedAt, ProcessedAt)
             VALUES
-                (@SessionId, @SourceType, @SourceCode, @ImageId, @IsMultiPhoto, @Status, @DraftJson,
+                (@SessionId, @SourceType, @SourceCode, @BrowserUploadToken, @ImageId, @IsMultiPhoto, @Status, @DraftJson,
                  @ProposalAction, @IncrementBy, @CreatedAt, @ProcessedAt);
             SELECT last_insert_rowid();
             """, new
@@ -1047,6 +1089,7 @@ public class IntakeQueueService(
             item.SessionId,
             SourceType = (int)item.SourceType,
             item.SourceCode,
+            item.BrowserUploadToken,
             item.ImageId,
             IsMultiPhoto = item.IsMultiPhoto ? 1 : 0,
             Status = (int)item.Status,
@@ -1056,6 +1099,30 @@ public class IntakeQueueService(
             CreatedAt = item.CreatedAt.ToString("O"),
             ProcessedAt = item.ProcessedAt?.ToString("O")
         });
+    }
+
+    private async Task<int> InsertIdempotentlyAsync(IntakeQueueItem item, CancellationToken ct)
+    {
+        try
+        {
+            return await InsertAsync(item, ct);
+        }
+        catch (SqliteException ex) when (ex.SqliteErrorCode == 19
+                                         && item.BrowserUploadToken is not null)
+        {
+            var existing = await GetByBrowserUploadTokenAsync(item.BrowserUploadToken, ct);
+            if (existing is not null) return existing.Id;
+            throw;
+        }
+    }
+
+    private async Task<IntakeQueueItem?> GetByBrowserUploadTokenAsync(
+        string token, CancellationToken ct)
+    {
+        using var conn = await db.OpenAsync(ct);
+        var row = await conn.QuerySingleOrDefaultAsync<QueueRow>(
+            QueueSelect + " WHERE q.BrowserUploadToken = @token", new { token });
+        return row is null ? null : Map(row);
     }
 
     private static int KindId(string? kind) => kind switch
@@ -1116,6 +1183,7 @@ public class IntakeQueueService(
         SessionId = row.SessionId,
         SourceType = (IntakeSourceType)row.SourceType,
         SourceCode = row.SourceCode,
+        BrowserUploadToken = row.BrowserUploadToken,
         ImageId = row.ImageId,
         IsMultiPhoto = row.IsMultiPhoto,
         Status = (IntakeQueueStatus)row.Status,
@@ -1149,7 +1217,8 @@ public class IntakeQueueService(
         string.IsNullOrWhiteSpace(value) ? null : DateTimeOffset.Parse(value);
 
     private const string QueueSelect = """
-        SELECT q.Id, q.SessionId, q.SourceType, q.SourceCode, q.ImageId, q.IsMultiPhoto, q.Status,
+        SELECT q.Id, q.SessionId, q.SourceType, q.SourceCode, q.BrowserUploadToken,
+               q.ImageId, q.IsMultiPhoto, q.Status,
                q.DraftJson, q.ReceiptJson, q.ProposalAction, q.MatchedItemId, q.MatchedItemName,
                q.MatchedQueueItemId, q.CaptureRelationship, q.RelationshipConfidence,
                q.RelationshipReason, q.SuggestedImageRole,
@@ -1164,6 +1233,7 @@ public class IntakeQueueService(
         public int SessionId { get; set; }
         public int SourceType { get; set; }
         public string? SourceCode { get; set; }
+        public string? BrowserUploadToken { get; set; }
         public int? ImageId { get; set; }
         public bool IsMultiPhoto { get; set; }
         public int Status { get; set; }

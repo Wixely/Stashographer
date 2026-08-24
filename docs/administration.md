@@ -32,3 +32,12 @@ This administrator gate also protects API and MCP activation and credential cont
 MCP clients use their own rotatable bearer credentials; the browser administrator cookie is
 never reused as an automation credential. See [API and MCP automation](automation.md) for the
 two-stage activation model and supported operations.
+
+## Browser image uploads
+
+Camera and library selections use a same-origin multipart endpoint instead of carrying image
+bytes over the Blazor Server SignalR circuit. This allows mobile browsers to suspend the page
+while their system picker is open without losing the selected file. Each request requires the
+page's antiforgery token, is concurrency-limited, validates the encoded size and decoded image
+dimensions, strips metadata, and uses a random idempotency token. Completed receipts remain
+recoverable across reconnects, while retries cannot create duplicate intake entries.

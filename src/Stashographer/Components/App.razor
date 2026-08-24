@@ -15,8 +15,12 @@
 </head>
 
 <body>
+    <form id="stash-upload-antiforgery" hidden>
+        <AntiforgeryToken />
+    </form>
     <Routes @rendermode="InteractiveServer" />
     <ReconnectModal />
+    <script src="js/resilient-upload.js"></script>
     <script src="@Assets["_framework/blazor.web.js"]"></script>
     <script src="_content/MudBlazor/MudBlazor.min.js"></script>
     <script src="js/scanner.js"></script>
