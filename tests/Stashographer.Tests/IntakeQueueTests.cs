@@ -284,6 +284,97 @@ public class IntakeQueueTests
         Assert.Equal(new DateOnly(2027, 1, 2), updated!.ExpiryDate);
     }
 
+    [Fact]
+    public async Task Same_physical_item_photo_waits_for_review_and_attaches_without_incrementing()
+    {
+        await using var harness = await Harness.CreateAsync();
+        harness.Ai.Identification = new VisionIdentification
+        {
+            Name = "Blue Note record",
+            Kind = "Media",
+            Attributes = new() { ["Format"] = "LP" }
+        };
+        await using var frontPhoto = await PhotoAsync(20);
+        var front = await harness.Queue.EnqueuePhotoAsync(
+            frontPhoto, "image/png", "front.png", multipleItems: false);
+        await harness.Queue.ProcessAsync(
+            front.Id, new IntakeOptions { RequireReview = false }, aiEnabled: true);
+
+        var acceptedFront = (await harness.Queue.GetAsync(front.Id))!;
+        Assert.Equal(IntakeQueueStatus.Accepted, acceptedFront.Status);
+        var itemId = acceptedFront.AppliedItemId!.Value;
+        Assert.Equal(1, (await harness.Inventory.GetAsync(itemId))!.Quantity);
+
+        harness.Ai.Identification = harness.Ai.Identification with
+        {
+            Attributes = new() { ["Format"] = "LP", ["Catalogue number"] = "BST 84123" }
+        };
+        harness.Ai.RelationshipPick = new CaptureRelationshipPick(
+            front.Id,
+            CaptureRelationship.SamePhysicalItem,
+            MatchConfidence.High,
+            ItemImageRole.Back,
+            "Matching sleeve wear and label placement.");
+        await using var backPhoto = await PhotoAsync(80);
+        var back = await harness.Queue.EnqueuePhotoAsync(
+            backPhoto, "image/png", "back.png", multipleItems: false);
+        await harness.Queue.ProcessAsync(
+            back.Id, new IntakeOptions { RequireReview = false }, aiEnabled: true);
+
+        var proposedBack = (await harness.Queue.GetAsync(back.Id))!;
+        Assert.Equal(IntakeQueueStatus.ReadyForReview, proposedBack.Status);
+        Assert.Equal(IntakeAction.AttachImage, proposedBack.ProposalAction);
+        Assert.Equal(front.Id, proposedBack.MatchedQueueItemId);
+        Assert.Equal(itemId, proposedBack.MatchedItemId);
+        Assert.Equal(0, proposedBack.IncrementBy);
+        Assert.Equal(ItemImageRole.Back, proposedBack.SuggestedImageRole);
+        Assert.Contains(harness.Ai.LastCaptureCandidates, candidate => candidate.QueueItemId == front.Id);
+        Assert.Equal(1, (await harness.Inventory.GetAsync(itemId))!.Quantity);
+
+        var applied = await harness.Queue.AcceptImageAttachmentAsync(
+            back.Id, proposedBack.Draft, ItemImageRole.Back);
+
+        Assert.Equal(IntakeAction.AttachImage, applied.Action);
+        var updated = (await harness.Inventory.GetAsync(itemId))!;
+        Assert.Equal(1, updated.Quantity);
+        Assert.Equal("BST 84123", updated.Attributes["Catalogue number"]);
+        var images = await harness.Inventory.GetImagesAsync(itemId);
+        Assert.Equal(2, images.Count);
+        Assert.Contains(images, image => image.ImageId == proposedBack.ImageId
+                                         && image.Role == ItemImageRole.Back);
+    }
+
+    [Fact]
+    public async Task Uncertain_recent_same_product_cannot_auto_increment_quantity()
+    {
+        await using var harness = await Harness.CreateAsync();
+        harness.Ai.Identification = new VisionIdentification { Name = "Identical mug", Kind = "Other" };
+        await using var firstPhoto = await PhotoAsync(10);
+        var first = await harness.Queue.EnqueuePhotoAsync(
+            firstPhoto, "image/png", "one.png", multipleItems: false);
+        await harness.Queue.ProcessAsync(
+            first.Id, new IntakeOptions { RequireReview = false }, aiEnabled: true);
+        var itemId = (await harness.Queue.GetAsync(first.Id))!.AppliedItemId!.Value;
+
+        harness.Ai.RelationshipPick = new CaptureRelationshipPick(
+            first.Id,
+            CaptureRelationship.Uncertain,
+            MatchConfidence.Low,
+            ItemImageRole.Detail,
+            "No instance-specific marks are visible.");
+        await using var secondPhoto = await PhotoAsync(30);
+        var second = await harness.Queue.EnqueuePhotoAsync(
+            secondPhoto, "image/png", "two.png", multipleItems: false);
+        await harness.Queue.ProcessAsync(
+            second.Id, new IntakeOptions { RequireReview = false }, aiEnabled: true);
+
+        var review = (await harness.Queue.GetAsync(second.Id))!;
+        Assert.Equal(IntakeQueueStatus.ReadyForReview, review.Status);
+        Assert.Equal(IntakeAction.ChooseCandidate, review.ProposalAction);
+        Assert.Equal(CaptureRelationship.Uncertain, review.CaptureRelationship);
+        Assert.Equal(1, (await harness.Inventory.GetAsync(itemId))!.Quantity);
+    }
+
     private sealed class Harness : IAsyncDisposable
     {
         public required TestDb Db { get; init; }
@@ -336,6 +427,9 @@ public class IntakeQueueTests
         public bool IsEnabled => true;
         public VisionIdentification? Identification { get; set; }
         public List<DetectedBox> Boxes { get; set; } = new();
+        public CaptureRelationshipPick? RelationshipPick { get; set; }
+        public IReadOnlyList<CaptureMatchCandidate> LastCaptureCandidates { get; private set; }
+            = Array.Empty<CaptureMatchCandidate>();
         public string? LastIntakeContext { get; private set; }
 
         public Task<VisionIdentification?> IdentifyItemAsync(
@@ -355,6 +449,14 @@ public class IntakeQueueTests
             byte[] image, string mediaType, VisionIdentification identification,
             IReadOnlyList<MatchCandidate> candidates, CancellationToken ct = default) =>
             Task.FromResult<MatchPick?>(null);
+
+        public Task<CaptureRelationshipPick?> ClassifyCaptureRelationshipAsync(
+            byte[] image, string mediaType, VisionIdentification identification,
+            IReadOnlyList<CaptureMatchCandidate> recentCaptures, CancellationToken ct = default)
+        {
+            LastCaptureCandidates = recentCaptures;
+            return Task.FromResult(RelationshipPick);
+        }
 
         public Task<AiSuggestion?> EnrichAsync(
             string name, string? kind, IReadOnlyDictionary<string, string> known,
@@ -381,9 +483,9 @@ public class IntakeQueueTests
         public HttpClient CreateClient(string name) => new();
     }
 
-    private static async Task<MemoryStream> PhotoAsync()
+    private static async Task<MemoryStream> PhotoAsync(byte seed = 20)
     {
-        using var image = new Image<Rgba32>(64, 64, new Rgba32(20, 80, 120));
+        using var image = new Image<Rgba32>(64, 64, new Rgba32(seed, 80, 120));
         var stream = new MemoryStream();
         await image.SaveAsPngAsync(stream);
         stream.Position = 0;

@@ -227,7 +227,7 @@ public class IntakeQueueService(
             {
                 foreach (var entry in processedIds.Where(x =>
                              !string.IsNullOrWhiteSpace(x.Capture.Draft.Name)
-                             && x.Capture.Action != IntakeAction.ChooseCandidate))
+                             && x.Capture.Action is not (IntakeAction.ChooseCandidate or IntakeAction.AttachImage)))
                 {
                     await AcceptAsync(entry.Id, entry.Capture.Draft,
                         entry.Capture.Action == IntakeAction.IncrementExisting
@@ -313,8 +313,21 @@ public class IntakeQueueService(
             });
     }
 
-    public async Task<IntakeApplied> AcceptAsync(
-        int id, Item draft, int? matchedItemId, CancellationToken ct = default)
+    public Task<IntakeApplied> AcceptAsync(
+        int id, Item draft, int? matchedItemId, CancellationToken ct = default) =>
+        AcceptCoreAsync(id, draft, matchedItemId, null, null, ct);
+
+    public Task<IntakeApplied> AcceptImageAttachmentAsync(
+        int id, Item draft, ItemImageRole imageRole, CancellationToken ct = default) =>
+        AcceptCoreAsync(id, draft, null, imageRole, IntakeAction.AttachImage, ct);
+
+    public Task<IntakeApplied> AcceptAdditionalCopyAsync(
+        int id, Item draft, CancellationToken ct = default) =>
+        AcceptCoreAsync(id, draft, null, null, IntakeAction.IncrementExisting, ct);
+
+    private async Task<IntakeApplied> AcceptCoreAsync(
+        int id, Item draft, int? matchedItemId, ItemImageRole? imageRole,
+        IntakeAction? actionOverride, CancellationToken ct)
     {
         var queued = await GetAsync(id) ?? throw new InvalidOperationException("Queue item was not found.");
         if (queued.Status == IntakeQueueStatus.Accepted)
@@ -323,16 +336,48 @@ public class IntakeQueueService(
             throw new InvalidOperationException("This queue item was rejected.");
 
         IntakeApplied applied;
-        if (matchedItemId is { } existingId)
+        var incrementTargetId = matchedItemId;
+        if (actionOverride == IntakeAction.IncrementExisting)
         {
-            var existing = await inventory.GetAsync(existingId)
+            incrementTargetId ??= queued.MatchedItemId
+                                  ?? await GetAppliedItemIdAsync(queued.MatchedQueueItemId, ct);
+            if (incrementTargetId is null)
+                throw new InvalidOperationException(
+                    "Accept the earlier capture first, then mark this as another copy.");
+        }
+        var reviewedAction = actionOverride ?? queued.ProposalAction;
+        if (reviewedAction == IntakeAction.AttachImage)
+        {
+            if (queued.MatchedQueueItemId is null && queued.MatchedItemId is null && matchedItemId is null)
+                throw new InvalidOperationException("No earlier capture is available for this image.");
+            var existingId = matchedItemId ?? queued.MatchedItemId
+                ?? await GetAppliedItemIdAsync(queued.MatchedQueueItemId, ct)
+                ?? throw new InvalidOperationException(
+                    "Accept the earlier capture first, then accept this additional view.");
+            var existing = await inventory.GetAsync(existingId, ct)
+                ?? throw new InvalidOperationException("The matched inventory item no longer exists.");
+            if (MergeMissingMetadata(existing, draft))
+                await inventory.SaveAsync(existing, ct);
+            var imageId = queued.ImageId ?? draft.ImageId
+                ?? throw new InvalidOperationException("This queue item has no stored image to attach.");
+            await inventory.AttachImageAsync(
+                existingId, imageId, imageRole ?? queued.SuggestedImageRole ?? ItemImageRole.Detail,
+                ct: ct);
+            applied = new IntakeApplied(IntakeAction.AttachImage, existingId, existing.Name, 0);
+        }
+        else if (incrementTargetId is { } existingId)
+        {
+            var existing = await inventory.GetAsync(existingId, ct)
                 ?? throw new InvalidOperationException("The selected inventory item no longer exists.");
             if (SpecialAttributeCatalog.MergeMissing(existing, draft))
                 await inventory.SaveAsync(existing, ct);
-            await inventory.AdjustQuantityAsync(existingId, queued.IncrementBy, ct);
+            var incrementBy = actionOverride == IntakeAction.IncrementExisting && queued.IncrementBy <= 0
+                ? Math.Max(1, draft.Quantity)
+                : queued.IncrementBy;
+            await inventory.AdjustQuantityAsync(existingId, incrementBy, ct);
             if (draft.LocationId is not null || draft.ContainerId is not null)
                 await inventory.MoveItemsAsync([existingId], draft.LocationId, draft.ContainerId, ct);
-            applied = new IntakeApplied(IntakeAction.IncrementExisting, existingId, existing.Name, queued.IncrementBy);
+            applied = new IntakeApplied(IntakeAction.IncrementExisting, existingId, existing.Name, incrementBy);
         }
         else
         {
@@ -408,7 +453,9 @@ public class IntakeQueueService(
         if (queued.ImageId is not { } imageId)
             throw new InvalidOperationException("Queued photo has no stored image.");
 
-        var recent = await GetRecentDraftsAsync(queued, Math.Clamp(contextCount, 0, 25), ct);
+        var recentCount = Math.Clamp(contextCount, 0, 25);
+        var recent = await GetRecentDraftsAsync(queued, recentCount, ct);
+        var recentCaptures = await GetRecentPhotoCapturesAsync(queued, recentCount, ct);
         string? context = null;
         if (recent.Count > 0)
         {
@@ -419,13 +466,116 @@ public class IntakeQueueService(
         var results = queued.IsMultiPhoto
             ? await photoIntake.ProcessMultiStoredAsync(imageId, context, ct)
             : new List<IntakeResult> { await photoIntake.ProcessStoredAsync(imageId, context, ct) };
-        return results.Select(result => new ProcessedCapture(
+        var processed = new List<ProcessedCapture>();
+        foreach (var result in results)
+        {
+            var relationship = await photoIntake.ClassifyCaptureRelationshipAsync(
+                result, recentCaptures, ct);
+            var recentCapture = relationship?.QueueItemId is { } queueItemId
+                ? recentCaptures.FirstOrDefault(candidate => candidate.QueueItemId == queueItemId)
+                : FindSameProductCapture(result, recentCaptures);
+
+            var action = result.Proposal.Action;
+            var matchedItemId = result.Proposal.MatchedItemId;
+            var matchedName = result.Proposal.MatchedItemName;
+            var incrementBy = result.Proposal.IncrementBy;
+            var captureRelationship = relationship?.Relationship;
+            var confidence = relationship?.Confidence;
+            var reason = relationship?.Reason;
+            var suggestedRole = relationship?.SuggestedRole;
+
+            if (recentCapture is not null
+                && relationship is
+                {
+                    Relationship: CaptureRelationship.SamePhysicalItem,
+                    Confidence: MatchConfidence.Medium or MatchConfidence.High
+                })
+            {
+                action = IntakeAction.AttachImage;
+                matchedItemId = recentCapture.InventoryItemId;
+                matchedName = recentCapture.Name;
+                incrementBy = 0;
+            }
+            else if (recentCapture is not null
+                     && IsSameProduct(result, recentCapture)
+                     && relationship is not
+                     {
+                         Relationship: CaptureRelationship.AnotherInstance or CaptureRelationship.DifferentItem,
+                         Confidence: MatchConfidence.Medium or MatchConfidence.High
+                     })
+            {
+                // Product-level similarity must not become an automatic quantity change when
+                // the model could not establish whether this is the same physical instance.
+                action = IntakeAction.ChooseCandidate;
+                matchedItemId = null;
+                matchedName = recentCapture.Name;
+                captureRelationship ??= CaptureRelationship.Uncertain;
+                confidence ??= MatchConfidence.None;
+                reason ??= "Could not verify whether this is another view or another copy.";
+            }
+
+            processed.Add(new ProcessedCapture(
                 result.Proposal.Draft,
-                result.Proposal.Action,
-                result.Proposal.MatchedItemId,
-                result.Proposal.MatchedItemName,
-                result.Proposal.IncrementBy))
-            .ToList();
+                action,
+                matchedItemId,
+                matchedName,
+                incrementBy,
+                recentCapture?.QueueItemId,
+                captureRelationship,
+                confidence,
+                reason,
+                suggestedRole));
+        }
+        return processed;
+    }
+
+    private async Task<List<RecentCaptureCandidate>> GetRecentPhotoCapturesAsync(
+        IntakeQueueItem queued, int count, CancellationToken ct)
+    {
+        if (count <= 0) return [];
+        using var conn = await db.OpenAsync(ct);
+        var rows = await conn.QueryAsync<RecentCaptureRow>("""
+            SELECT Id AS QueueItemId, AppliedItemId AS InventoryItemId, ImageId, DraftJson
+            FROM IntakeQueueItems
+            WHERE SessionId = @sessionId AND Id < @id AND SourceType = @photo
+              AND ImageId IS NOT NULL AND DraftJson IS NOT NULL
+              AND Status IN (@ready, @accepted)
+            ORDER BY Id DESC LIMIT @count;
+            """, new
+        {
+            sessionId = queued.SessionId,
+            id = queued.Id,
+            photo = (int)IntakeSourceType.Photo,
+            count,
+            ready = (int)IntakeQueueStatus.ReadyForReview,
+            accepted = (int)IntakeQueueStatus.Accepted
+        });
+        return rows.Select(row =>
+        {
+            var draft = DeserializeDraft(row.DraftJson);
+            return new RecentCaptureCandidate(
+                row.QueueItemId,
+                row.InventoryItemId,
+                draft.Name,
+                draft.Code,
+                draft.Attributes,
+                row.ImageId);
+        }).ToList();
+    }
+
+    private static RecentCaptureCandidate? FindSameProductCapture(
+        IntakeResult result, IReadOnlyList<RecentCaptureCandidate> recentCaptures) =>
+        recentCaptures.FirstOrDefault(candidate => IsSameProduct(result, candidate));
+
+    private static bool IsSameProduct(IntakeResult result, RecentCaptureCandidate candidate)
+    {
+        var identification = result.Identification;
+        if (!string.IsNullOrWhiteSpace(identification?.Barcode)
+            && string.Equals(identification.Barcode, candidate.Code, StringComparison.OrdinalIgnoreCase))
+            return true;
+        return !string.IsNullOrWhiteSpace(identification?.Name)
+               && InventoryService.NormalizeName(identification.Name)
+               == InventoryService.NormalizeName(candidate.Name);
     }
 
     private async Task<List<Item>> GetRecentDraftsAsync(
@@ -490,6 +640,11 @@ public class IntakeQueueService(
                 IsMultiPhoto = 0,
                 ProposalAction = @Action, MatchedItemId = @MatchedId,
                 MatchedItemName = @MatchedName, IncrementBy = @IncrementBy,
+                MatchedQueueItemId = @MatchedQueueItemId,
+                CaptureRelationship = @CaptureRelationship,
+                RelationshipConfidence = @RelationshipConfidence,
+                RelationshipReason = @RelationshipReason,
+                SuggestedImageRole = @SuggestedImageRole,
                 ProcessedAt = @Now, Error = NULL
             WHERE Id = @Id;
             """, new
@@ -502,6 +657,11 @@ public class IntakeQueueService(
             MatchedId = processed.MatchedItemId,
             MatchedName = processed.MatchedItemName,
             IncrementBy = processed.IncrementBy,
+            processed.MatchedQueueItemId,
+            CaptureRelationship = processed.CaptureRelationship is { } relationship ? (int)relationship : (int?)null,
+            RelationshipConfidence = processed.RelationshipConfidence is { } confidence ? (int)confidence : (int?)null,
+            processed.RelationshipReason,
+            SuggestedImageRole = processed.SuggestedImageRole is { } role ? (int)role : (int?)null,
             Now = DateTimeOffset.UtcNow.ToString("O")
         });
     }
@@ -513,10 +673,14 @@ public class IntakeQueueService(
         return await conn.ExecuteScalarAsync<int>("""
             INSERT INTO IntakeQueueItems
                 (SessionId, SourceType, ImageId, IsMultiPhoto, Status, DraftJson, ProposalAction,
-                 MatchedItemId, MatchedItemName, IncrementBy, CreatedAt, ProcessedAt)
+                 MatchedItemId, MatchedItemName, MatchedQueueItemId, CaptureRelationship,
+                 RelationshipConfidence, RelationshipReason, SuggestedImageRole,
+                 IncrementBy, CreatedAt, ProcessedAt)
             VALUES
                 (@SessionId, @SourceType, @ImageId, 0, @Status, @Draft, @Action,
-                 @MatchedId, @MatchedName, @IncrementBy, @CreatedAt, @ProcessedAt);
+                 @MatchedId, @MatchedName, @MatchedQueueItemId, @CaptureRelationship,
+                 @RelationshipConfidence, @RelationshipReason, @SuggestedImageRole,
+                 @IncrementBy, @CreatedAt, @ProcessedAt);
             SELECT last_insert_rowid();
             """, new
         {
@@ -528,6 +692,11 @@ public class IntakeQueueService(
             Action = (int)processed.Action,
             MatchedId = processed.MatchedItemId,
             MatchedName = processed.MatchedItemName,
+            processed.MatchedQueueItemId,
+            CaptureRelationship = processed.CaptureRelationship is { } relationship ? (int)relationship : (int?)null,
+            RelationshipConfidence = processed.RelationshipConfidence is { } confidence ? (int)confidence : (int?)null,
+            processed.RelationshipReason,
+            SuggestedImageRole = processed.SuggestedImageRole is { } role ? (int)role : (int?)null,
             IncrementBy = processed.IncrementBy,
             CreatedAt = source.CreatedAt.ToString("O"),
             ProcessedAt = DateTimeOffset.UtcNow.ToString("O")
@@ -555,6 +724,50 @@ public class IntakeQueueService(
         await conn.ExecuteAsync(
             "UPDATE IntakeQueueItems SET Status = @pending, ProcessingStartedAt = NULL WHERE Id = @id",
             new { id, pending = (int)IntakeQueueStatus.Pending });
+    }
+
+    private async Task<int?> GetAppliedItemIdAsync(int? queueItemId, CancellationToken ct)
+    {
+        if (queueItemId is null) return null;
+        using var conn = await db.OpenAsync(ct);
+        return await conn.QuerySingleOrDefaultAsync<int?>(
+            "SELECT AppliedItemId FROM IntakeQueueItems WHERE Id = @queueItemId",
+            new { queueItemId });
+    }
+
+    private static bool MergeMissingMetadata(Item target, Item observed)
+    {
+        var changed = SpecialAttributeCatalog.MergeMissing(target, observed);
+        if (string.IsNullOrWhiteSpace(target.Description) && !string.IsNullOrWhiteSpace(observed.Description))
+        {
+            target.Description = observed.Description;
+            changed = true;
+        }
+        if (string.IsNullOrWhiteSpace(target.Code) && !string.IsNullOrWhiteSpace(observed.Code))
+        {
+            target.Code = observed.Code;
+            changed = true;
+        }
+        if (string.IsNullOrWhiteSpace(target.Unit) && !string.IsNullOrWhiteSpace(observed.Unit))
+        {
+            target.Unit = observed.Unit;
+            changed = true;
+        }
+        if (string.IsNullOrWhiteSpace(target.Notes) && !string.IsNullOrWhiteSpace(observed.Notes))
+        {
+            target.Notes = observed.Notes;
+            changed = true;
+        }
+        foreach (var (name, value) in observed.Attributes)
+        {
+            if (string.IsNullOrWhiteSpace(name) || string.IsNullOrWhiteSpace(value)
+                || target.Attributes.Keys.Any(existing =>
+                    string.Equals(existing, name, StringComparison.OrdinalIgnoreCase)))
+                continue;
+            target.Attributes[name] = value;
+            changed = true;
+        }
+        return changed;
     }
 
     private async Task<int> GetOrCreateActiveSessionIdAsync(CancellationToken ct)
@@ -644,6 +857,15 @@ public class IntakeQueueService(
         ProposalAction = row.ProposalAction is { } action ? (IntakeAction)action : null,
         MatchedItemId = row.MatchedItemId,
         MatchedItemName = row.MatchedItemName,
+        MatchedQueueItemId = row.MatchedQueueItemId,
+        CaptureRelationship = row.CaptureRelationship is { } relationship
+            ? (CaptureRelationship)relationship
+            : null,
+        RelationshipConfidence = row.RelationshipConfidence is { } confidence
+            ? (MatchConfidence)confidence
+            : null,
+        RelationshipReason = row.RelationshipReason,
+        SuggestedImageRole = row.SuggestedImageRole is { } role ? (ItemImageRole)role : null,
         IncrementBy = row.IncrementBy,
         AppliedItemId = row.AppliedItemId,
         Error = row.Error,
@@ -662,6 +884,8 @@ public class IntakeQueueService(
     private const string QueueSelect = """
         SELECT q.Id, q.SessionId, q.SourceType, q.SourceCode, q.ImageId, q.IsMultiPhoto, q.Status,
                q.DraftJson, q.ProposalAction, q.MatchedItemId, q.MatchedItemName,
+               q.MatchedQueueItemId, q.CaptureRelationship, q.RelationshipConfidence,
+               q.RelationshipReason, q.SuggestedImageRole,
                q.IncrementBy, q.AppliedItemId, q.Error, q.CreatedAt,
                q.ProcessingStartedAt, q.ProcessedAt, q.ReviewedAt
         FROM IntakeQueueItems q
@@ -680,6 +904,11 @@ public class IntakeQueueService(
         public int? ProposalAction { get; set; }
         public int? MatchedItemId { get; set; }
         public string? MatchedItemName { get; set; }
+        public int? MatchedQueueItemId { get; set; }
+        public int? CaptureRelationship { get; set; }
+        public int? RelationshipConfidence { get; set; }
+        public string? RelationshipReason { get; set; }
+        public int? SuggestedImageRole { get; set; }
         public decimal IncrementBy { get; set; }
         public int? AppliedItemId { get; set; }
         public string? Error { get; set; }
@@ -696,10 +925,23 @@ public class IntakeQueueService(
         public string? EndedAt { get; set; }
     }
 
+    private sealed class RecentCaptureRow
+    {
+        public int QueueItemId { get; set; }
+        public int? InventoryItemId { get; set; }
+        public int ImageId { get; set; }
+        public string DraftJson { get; set; } = string.Empty;
+    }
+
     private record ProcessedCapture(
         Item Draft,
         IntakeAction Action,
         int? MatchedItemId,
         string? MatchedItemName,
-        decimal IncrementBy);
+        decimal IncrementBy,
+        int? MatchedQueueItemId = null,
+        CaptureRelationship? CaptureRelationship = null,
+        MatchConfidence? RelationshipConfidence = null,
+        string? RelationshipReason = null,
+        ItemImageRole? SuggestedImageRole = null);
 }

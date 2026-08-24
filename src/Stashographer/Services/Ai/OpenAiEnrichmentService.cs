@@ -136,6 +136,58 @@ public class OpenAiEnrichmentService(
         return json is null ? null : ParsePick(json);
     }
 
+    // --- Exact physical capture relationship -------------------------------------
+
+    public async Task<CaptureRelationshipPick?> ClassifyCaptureRelationshipAsync(
+        byte[] image,
+        string mediaType,
+        VisionIdentification identification,
+        IReadOnlyList<CaptureMatchCandidate> recentCaptures,
+        CancellationToken ct = default)
+    {
+        if (recentCaptures.Count == 0) return null;
+        const string system =
+            "You compare consecutive household inventory photos. Decide whether the new photo is another view " +
+            "of the exact same physical object captured moments ago, not merely the same product or model. " +
+            "Matching name, barcode, packaging design, brand, colour, or model is not enough to prove the same " +
+            "physical instance. Use viewpoint continuity and instance-specific evidence such as the same wear, " +
+            "marks, serial, label placement, folds, contents, or surrounding context. Choose another_instance " +
+            "when a separate copy is visible or likely. Use uncertain whenever instance identity is not supported. " +
+            "Reply ONLY as JSON: {\"queueItemId\": number or null, " +
+            "\"relationship\":\"same_physical\"|\"another_instance\"|\"different\"|\"uncertain\", " +
+            "\"confidence\":\"high\"|\"medium\"|\"low\", " +
+            "\"suggestedRole\":\"front\"|\"back\"|\"detail\"|\"label\"|\"receipt\"|\"other\", " +
+            "\"reason\": string of at most 20 words}.";
+
+        var candidateList = recentCaptures.Select(candidate => new
+        {
+            queueItemId = candidate.QueueItemId,
+            candidate.Name,
+            candidate.Attributes
+        });
+        var contents = new List<AIContent>
+        {
+            new TextContent(
+                $"New photo identification: {JsonSerializer.Serialize(identification)}. " +
+                $"Recent capture candidates, newest first: {JsonSerializer.Serialize(candidateList)}."),
+            new TextContent("New photo:"),
+            new DataContent(image, mediaType)
+        };
+        foreach (var candidate in recentCaptures.Take(6))
+        {
+            contents.Add(new TextContent($"Recent queue item {candidate.QueueItemId}:"));
+            contents.Add(new DataContent(candidate.Thumbnail, candidate.ThumbnailMediaType));
+        }
+
+        var messages = new List<ChatMessage>
+        {
+            new(ChatRole.System, system),
+            new(ChatRole.User, contents)
+        };
+        var json = await CompleteJsonAsync(useVision: true, messages, ct);
+        return json is null ? null : ParseCaptureRelationship(json);
+    }
+
     // --- Enrich (text) ------------------------------------------------------------
 
     public async Task<AiSuggestion?> EnrichAsync(
@@ -389,6 +441,55 @@ public class OpenAiEnrichmentService(
         catch (JsonException ex)
         {
             logger.LogWarning(ex, "Could not parse suggestion JSON");
+            return null;
+        }
+    }
+
+    internal CaptureRelationshipPick? ParseCaptureRelationship(string json)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(json);
+            var root = doc.RootElement;
+            int? queueItemId = root.TryGetProperty("queueItemId", out var idElement)
+                               && idElement.ValueKind == JsonValueKind.Number
+                               && idElement.TryGetInt32(out var id)
+                ? id
+                : null;
+            var relationship = GetString(root, "relationship")?.Trim().ToLowerInvariant() switch
+            {
+                "same_physical" => CaptureRelationship.SamePhysicalItem,
+                "another_instance" => CaptureRelationship.AnotherInstance,
+                "different" => CaptureRelationship.DifferentItem,
+                _ => CaptureRelationship.Uncertain
+            };
+            var confidence = GetString(root, "confidence")?.Trim().ToLowerInvariant() switch
+            {
+                "high" => MatchConfidence.High,
+                "medium" => MatchConfidence.Medium,
+                "low" => MatchConfidence.Low,
+                _ => MatchConfidence.None
+            };
+            var role = GetString(root, "suggestedRole")?.Trim().ToLowerInvariant() switch
+            {
+                "front" => ItemImageRole.Front,
+                "back" => ItemImageRole.Back,
+                "label" => ItemImageRole.Label,
+                "receipt" => ItemImageRole.Receipt,
+                "other" => ItemImageRole.Other,
+                _ => ItemImageRole.Detail
+            };
+            var reason = GetString(root, "reason")?.Trim();
+            return new CaptureRelationshipPick(
+                queueItemId,
+                relationship,
+                queueItemId is null ? MatchConfidence.None : confidence,
+                role,
+                string.IsNullOrWhiteSpace(reason) ? null : reason);
+        }
+        catch (JsonException ex)
+        {
+            logger.LogWarning(ex, "Could not parse capture relationship JSON");
             return null;
         }
     }

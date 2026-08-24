@@ -51,6 +51,10 @@ Every container gets a printable QR code — scan it to see what's meant to be i
 - **Multi-view item images** — attach front, back, label, detail, and shared receipt images
   without changing quantity. AI crops retain their source-image relationship and exact crop
   region, so the untouched original remains available when a crop needs correcting.
+- **Same-object capture safety** — the vision agent compares each photo with recent session
+  captures using instance-specific evidence such as wear, labels, and surrounding context.
+  Confident additional views become zero-quantity image attachments; uncertain same-product
+  photos cannot auto-increment and require an explicit “same item” or “another copy” choice.
 - **Locations & containers** — put items in a room or inside a box/shelf/drawer/bin. Each
   container gets a **printable QR code**; scan it to see what's (meant to be) inside.
 - **Fast placement** — queue review remembers recent location/container targets, while the
@@ -212,7 +216,7 @@ dependencies only (see [THIRD-PARTY-NOTICES](THIRD-PARTY-NOTICES.md)).
 ## Development
 
 ```bash
-dotnet test                    # 137 tests, no network access required
+dotnet test                    # 140 tests, no network access required
 dotnet build -c Release
 ```
 

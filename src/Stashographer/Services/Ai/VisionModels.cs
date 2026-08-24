@@ -1,3 +1,5 @@
+using Stashographer.Data.Entities;
+
 namespace Stashographer.Services.Ai;
 
 public sealed record AiRegionalContext(
@@ -64,3 +66,37 @@ public record MatchCandidate(
     IReadOnlyDictionary<string, string> Attributes,
     byte[]? Thumbnail,
     string? ThumbnailMediaType);
+
+public enum CaptureRelationship
+{
+    DifferentItem,
+    SamePhysicalItem,
+    AnotherInstance,
+    Uncertain
+}
+
+/// <summary>
+/// The model's conservative verdict about whether a recent photo depicts the exact same
+/// physical object, rather than merely another unit of the same product.
+/// </summary>
+public sealed record CaptureRelationshipPick(
+    int? QueueItemId,
+    CaptureRelationship Relationship,
+    MatchConfidence Confidence,
+    ItemImageRole SuggestedRole,
+    string? Reason);
+
+public sealed record CaptureMatchCandidate(
+    int QueueItemId,
+    string Name,
+    IReadOnlyDictionary<string, string> Attributes,
+    byte[] Thumbnail,
+    string ThumbnailMediaType);
+
+public sealed record RecentCaptureCandidate(
+    int QueueItemId,
+    int? InventoryItemId,
+    string Name,
+    string? Code,
+    IReadOnlyDictionary<string, string> Attributes,
+    int ImageId);

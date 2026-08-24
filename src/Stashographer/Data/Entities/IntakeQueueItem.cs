@@ -33,6 +33,11 @@ public class IntakeQueueItem
     public IntakeAction? ProposalAction { get; set; }
     public int? MatchedItemId { get; set; }
     public string? MatchedItemName { get; set; }
+    public int? MatchedQueueItemId { get; set; }
+    public CaptureRelationship? CaptureRelationship { get; set; }
+    public MatchConfidence? RelationshipConfidence { get; set; }
+    public string? RelationshipReason { get; set; }
+    public ItemImageRole? SuggestedImageRole { get; set; }
     public decimal IncrementBy { get; set; } = 1;
     public int? AppliedItemId { get; set; }
     public string? Error { get; set; }

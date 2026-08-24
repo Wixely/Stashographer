@@ -129,6 +129,36 @@ else
                     </MudItem>
 
                     <MudItem xs="12" md="8">
+                        @if (queued.ProposalAction == IntakeAction.AttachImage)
+                        {
+                            <MudAlert Severity="Severity.Success" Class="mb-3">
+                                <MudText Typo="Typo.subtitle2">Another view of @queued.MatchedItemName</MudText>
+                                <MudText Typo="Typo.body2">
+                                    The agent believes this is the same physical item. Accepting attaches the photo;
+                                    quantity stays unchanged.
+                                </MudText>
+                                @if (!string.IsNullOrWhiteSpace(queued.RelationshipReason))
+                                {
+                                    <MudText Typo="Typo.caption">
+                                        @ConfidenceLabel(queued.RelationshipConfidence): @queued.RelationshipReason
+                                    </MudText>
+                                }
+                            </MudAlert>
+                        }
+                        else if (queued.CaptureRelationship == CaptureRelationship.Uncertain
+                                 && queued.MatchedQueueItemId is not null)
+                        {
+                            <MudAlert Severity="Severity.Warning" Class="mb-3">
+                                The photo resembles the recent capture “@queued.MatchedItemName”, but the agent
+                                could not prove whether it is another view or another physical copy. Choose explicitly below;
+                                this result cannot be accepted automatically.
+                                @if (!string.IsNullOrWhiteSpace(queued.RelationshipReason))
+                                {
+                                    <div class="mt-1">@queued.RelationshipReason</div>
+                                }
+                            </MudAlert>
+                        }
+
                         <MudTextField @bind-Value="queued.Draft.Name" Label="Name" Variant="Variant.Outlined"
                                       Required="true" Class="mb-2" />
                         <MudGrid>
@@ -142,7 +172,8 @@ else
                             </MudItem>
                             <MudItem xs="6" sm="3">
                                 <MudNumericField @bind-Value="queued.Draft.Quantity" Label="Quantity"
-                                                 Variant="Variant.Outlined" Min="0" />
+                                                 Variant="Variant.Outlined" Min="0"
+                                                 Disabled="@(queued.ProposalAction == IntakeAction.AttachImage)" />
                             </MudItem>
                             <MudItem xs="6" sm="3">
                                 <MudTextField @bind-Value="queued.Draft.Unit" Label="Unit" Variant="Variant.Outlined" />
@@ -153,9 +184,24 @@ else
                         <MudTextField @bind-Value="queued.Draft.Description" Label="Description"
                                       Variant="Variant.Outlined" Lines="2" Class="mt-2" />
 
-                        <PlacementPicker Locations="_locations" Class="mt-1"
-                                         @bind-LocationId="_locationId"
-                                         @bind-ContainerId="_containerId" />
+                        @if (queued.ProposalAction != IntakeAction.AttachImage)
+                        {
+                            <PlacementPicker Locations="_locations" Class="mt-1"
+                                             @bind-LocationId="_locationId"
+                                             @bind-ContainerId="_containerId" />
+                        }
+
+                        @if (queued.ProposalAction == IntakeAction.AttachImage
+                             || queued.CaptureRelationship == CaptureRelationship.Uncertain)
+                        {
+                            <MudSelect T="ItemImageRole" @bind-Value="_imageRole" Label="Photo role"
+                                       Variant="Variant.Outlined" Class="mt-2">
+                                @foreach (var role in Enum.GetValues<ItemImageRole>())
+                                {
+                                    <MudSelectItem Value="@role">@ImageRoleLabel(role)</MudSelectItem>
+                                }
+                            </MudSelect>
+                        }
 
                         <div class="mt-3">
                             <SpecialAttributeEditor Item="queued.Draft" DefaultCurrency="_defaultCurrency" />
@@ -163,7 +209,7 @@ else
                             <AttributeEditor Attributes="queued.Draft.Attributes" Suggestions="SuggestionsForKind(queued.Draft.ItemKindId)" />
                         </div>
 
-                        @if (_candidates.Count > 0)
+                        @if (_candidates.Count > 0 && queued.ProposalAction != IntakeAction.AttachImage)
                         {
                             <MudSelect @bind-Value="_matchedItemId" T="int?" Label="Inventory action"
                                        Variant="Variant.Outlined" Class="mt-3" Clearable="true"
@@ -181,14 +227,36 @@ else
                         <div class="d-flex gap-2 flex-wrap mt-4">
                             <MudButton Color="Color.Success" Variant="Variant.Filled"
                                        StartIcon="@Icons.Material.Filled.Check"
-                                       Disabled="@(_working || (_matchedItemId is null && string.IsNullOrWhiteSpace(queued.Draft.Name)))"
-                                       OnClick="AcceptCurrentAsync">Accept item</MudButton>
+                                       Disabled="@(_working || (queued.ProposalAction != IntakeAction.AttachImage
+                                                                && _matchedItemId is null
+                                                                && string.IsNullOrWhiteSpace(queued.Draft.Name)))"
+                                       OnClick="AcceptCurrentAsync">
+                                @(queued.ProposalAction == IntakeAction.AttachImage ? "Accept additional view" : "Accept item")
+                            </MudButton>
+                            @if (queued.ProposalAction == IntakeAction.AttachImage)
+                            {
+                                <MudButton Color="Color.Warning" Variant="Variant.Outlined"
+                                           StartIcon="@Icons.Material.Filled.Add"
+                                           Disabled="_working" OnClick="AcceptCurrentAsCopyAsync">
+                                    This is another copy (+@Math.Max(1, queued.Draft.Quantity).ToString("0.##"))
+                                </MudButton>
+                            }
+                            else if (queued.CaptureRelationship == CaptureRelationship.Uncertain
+                                     && queued.MatchedQueueItemId is not null)
+                            {
+                                <MudButton Color="Color.Primary" Variant="Variant.Outlined"
+                                           StartIcon="@Icons.Material.Filled.AddPhotoAlternate"
+                                           Disabled="_working" OnClick="AcceptCurrentAsViewAsync">
+                                    Same item — attach photo (no count)
+                                </MudButton>
+                            }
                             <MudButton Color="Color.Error" Variant="Variant.Outlined"
                                        StartIcon="@Icons.Material.Filled.Close" Disabled="_working"
                                        OnClick="RejectCurrentAsync">Reject</MudButton>
                         </div>
 
-                        @if (RememberedLocation is not null || RememberedContainer is not null)
+                        @if (queued.ProposalAction != IntakeAction.AttachImage
+                             && (RememberedLocation is not null || RememberedContainer is not null))
                         {
                             <MudDivider Class="my-4" />
                             <MudText Typo="Typo.subtitle2" Class="mb-2">Quick add current item</MudText>
@@ -241,6 +309,7 @@ else
     private int? _containerId;
     private int? _rememberedLocationId;
     private int? _rememberedContainerId;
+    private ItemImageRole _imageRole = ItemImageRole.Detail;
     private bool _loading = true;
     private bool _working;
     private string _defaultCurrency = "GBP";
@@ -291,6 +360,7 @@ else
             || current.ProposalAction == IntakeAction.ChooseCandidate
                 ? current.MatchedItemId
                 : null;
+        _imageRole = current.SuggestedImageRole ?? ItemImageRole.Detail;
     }
 
     private async Task ProcessCurrentAsync()
@@ -317,10 +387,10 @@ else
         {
             current.Draft.ContainerId = containerId;
             current.Draft.LocationId = containerId is null ? locationId : null;
-            var applied = await IntakeQueue.AcceptAsync(current.Id, current.Draft, _matchedItemId);
-            Snackbar.Add(applied.Action == IntakeAction.IncrementExisting
-                ? $"Added {applied.By:0.##} to {applied.ItemName}."
-                : $"Added {applied.ItemName} to inventory.", Severity.Success);
+            var applied = current.ProposalAction == IntakeAction.AttachImage
+                ? await IntakeQueue.AcceptImageAttachmentAsync(current.Id, current.Draft, _imageRole)
+                : await IntakeQueue.AcceptAsync(current.Id, current.Draft, _matchedItemId);
+            ShowAccepted(applied);
             await LoadRememberedDestinationsAsync();
             await LoadAsync(false);
         }
@@ -330,6 +400,47 @@ else
         }
         finally { _working = false; }
     }
+
+    private async Task AcceptCurrentAsViewAsync()
+    {
+        if (Current is not { } current) return;
+        _working = true;
+        try
+        {
+            var applied = await IntakeQueue.AcceptImageAttachmentAsync(current.Id, current.Draft, _imageRole);
+            ShowAccepted(applied);
+            await LoadAsync(false);
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add(ex.Message, Severity.Error);
+        }
+        finally { _working = false; }
+    }
+
+    private async Task AcceptCurrentAsCopyAsync()
+    {
+        if (Current is not { } current) return;
+        _working = true;
+        try
+        {
+            var applied = await IntakeQueue.AcceptAdditionalCopyAsync(current.Id, current.Draft);
+            ShowAccepted(applied);
+            await LoadAsync(false);
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add(ex.Message, Severity.Error);
+        }
+        finally { _working = false; }
+    }
+
+    private void ShowAccepted(IntakeApplied applied) => Snackbar.Add(applied.Action switch
+    {
+        IntakeAction.AttachImage => $"Attached a {ImageRoleLabel(_imageRole).ToLowerInvariant()} image to {applied.ItemName}. Quantity was not changed.",
+        IntakeAction.IncrementExisting => $"Added {applied.By:0.##} to {applied.ItemName}.",
+        _ => $"Added {applied.ItemName} to inventory."
+    }, Severity.Success);
 
     private async Task RejectCurrentAsync()
     {
@@ -415,6 +526,24 @@ else
 
     private List<string>? SuggestionsForKind(int kindId) =>
         _kinds.FirstOrDefault(x => x.Id == kindId)?.SuggestedAttributes;
+
+    private static string ConfidenceLabel(MatchConfidence? confidence) => confidence switch
+    {
+        MatchConfidence.High => "High confidence",
+        MatchConfidence.Medium => "Medium confidence",
+        MatchConfidence.Low => "Low confidence",
+        _ => "Unverified"
+    };
+
+    private static string ImageRoleLabel(ItemImageRole role) => role switch
+    {
+        ItemImageRole.Front => "Front",
+        ItemImageRole.Back => "Back",
+        ItemImageRole.Detail => "Detail",
+        ItemImageRole.Label => "Label",
+        ItemImageRole.Receipt => "Receipt",
+        _ => "Other"
+    };
 
     private static string StatusLabel(IntakeQueueStatus status) => status switch
     {

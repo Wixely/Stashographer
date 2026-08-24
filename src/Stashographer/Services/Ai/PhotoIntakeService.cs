@@ -7,14 +7,17 @@ namespace Stashographer.Services.Ai;
 
 public enum IntakeAction
 {
-    /// <summary>High confidence: increment the matched item (auto-applied by the UI).</summary>
+    /// <summary>High confidence product match: add another physical instance.</summary>
     IncrementExisting,
 
     /// <summary>Ambiguous: the user should pick between candidates (or create new).</summary>
     ChooseCandidate,
 
     /// <summary>No match: create a new item from the AI-filled draft.</summary>
-    CreateNew
+    CreateNew,
+
+    /// <summary>Another view of the same physical object: attach its image without changing quantity.</summary>
+    AttachImage
 }
 
 /// <summary>The pipeline's verdict for one photographed item.</summary>
@@ -398,5 +401,43 @@ public class PhotoIntakeService(
             result.Add(new MatchCandidate(c.Id, c.Name, c.Attributes, thumb, thumbType));
         }
         return result;
+    }
+
+    /// <summary>
+    /// Compares a processed capture with recent same-session photos. The model is deliberately
+    /// given instance-level evidence and its selected queue id is validated before use.
+    /// </summary>
+    public async Task<CaptureRelationshipPick?> ClassifyCaptureRelationshipAsync(
+        IntakeResult result,
+        IReadOnlyList<RecentCaptureCandidate> recentCaptures,
+        CancellationToken ct = default)
+    {
+        if (!ai.IsEnabled || result.Identification is null || recentCaptures.Count == 0)
+            return null;
+
+        var stored = await images.GetAsync(result.ImageId, ct);
+        var bytes = await images.ReadOriginalBytesAsync(result.ImageId, ct);
+        if (stored is null || bytes is null) return null;
+
+        var candidates = new List<CaptureMatchCandidate>();
+        foreach (var recent in recentCaptures.Take(6))
+        {
+            var thumbnail = await images.GetThumbnailAsync(recent.ImageId, ThumbnailWidthForMatching, ct);
+            if (thumbnail is null) continue;
+            candidates.Add(new CaptureMatchCandidate(
+                recent.QueueItemId,
+                recent.Name,
+                recent.Attributes,
+                thumbnail.Value.Bytes,
+                thumbnail.Value.ContentType));
+        }
+        if (candidates.Count == 0) return null;
+
+        var pick = await ai.ClassifyCaptureRelationshipAsync(
+            bytes, stored.ContentType, result.Identification, candidates, ct);
+        return pick?.QueueItemId is { } selected
+               && candidates.Any(candidate => candidate.QueueItemId == selected)
+            ? pick
+            : null;
     }
 }

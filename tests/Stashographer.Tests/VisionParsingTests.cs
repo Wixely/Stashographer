@@ -121,6 +121,22 @@ public class VisionParsingTests
     }
 
     [Fact]
+    public void Capture_relationship_parses_exact_instance_verdict_and_image_role()
+    {
+        var pick = Service().ParseCaptureRelationship("""
+            {"queueItemId":42,"relationship":"same_physical","confidence":"high",
+             "suggestedRole":"back","reason":"Same corner wear and serial label."}
+            """);
+
+        Assert.NotNull(pick);
+        Assert.Equal(42, pick!.QueueItemId);
+        Assert.Equal(CaptureRelationship.SamePhysicalItem, pick.Relationship);
+        Assert.Equal(MatchConfidence.High, pick.Confidence);
+        Assert.Equal(ItemImageRole.Back, pick.SuggestedRole);
+        Assert.Equal("Same corner wear and serial label.", pick.Reason);
+    }
+
+    [Fact]
     public void Bom_suggestion_parses_reviewable_requirements_and_safe_defaults()
     {
         var suggestion = Service().ParseBomSuggestion("""

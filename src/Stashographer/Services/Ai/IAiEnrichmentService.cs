@@ -37,6 +37,17 @@ public interface IAiEnrichmentService
         byte[] image, string mediaType, VisionIdentification identification,
         IReadOnlyList<MatchCandidate> candidates, CancellationToken ct = default);
 
+    /// <summary>
+    /// Distinguishes another view of the exact same recently captured object from another
+    /// physical copy of the same product. Product identity alone is insufficient.
+    /// </summary>
+    Task<CaptureRelationshipPick?> ClassifyCaptureRelationshipAsync(
+        byte[] image,
+        string mediaType,
+        VisionIdentification identification,
+        IReadOnlyList<CaptureMatchCandidate> recentCaptures,
+        CancellationToken ct = default);
+
     /// <summary>"Season" an existing item with a richer description and suggested attributes.</summary>
     Task<AiSuggestion?> EnrichAsync(
         string name, string? kind, IReadOnlyDictionary<string, string> known, CancellationToken ct = default);
