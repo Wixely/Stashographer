@@ -1,3 +1,8 @@
+using Microsoft.AspNetCore.Authentication;
+using Microsoft.AspNetCore.Authentication.Cookies;
+using Microsoft.AspNetCore.Antiforgery;
+using Microsoft.AspNetCore.DataProtection;
+using Microsoft.AspNetCore.RateLimiting;
 using MudBlazor.Services;
 using Stashographer.Components;
 using Stashographer.Data;
@@ -8,6 +13,8 @@ using Stashographer.Services.Images;
 using Stashographer.Services.Inventory;
 using Stashographer.Services.Intake;
 using Stashographer.Services.Lookup;
+using Stashographer.Services.Security;
+using System.Threading.RateLimiting;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -15,6 +22,46 @@ var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddRazorComponents()
     .AddInteractiveServerComponents();
 builder.Services.AddMudServices();
+builder.Services.AddCascadingAuthenticationState();
+builder.Services.AddAuthentication(CookieAuthenticationDefaults.AuthenticationScheme)
+    .AddCookie(options =>
+    {
+        options.Cookie.Name = "stashographer.admin";
+        options.Cookie.HttpOnly = true;
+        options.Cookie.SameSite = SameSiteMode.Strict;
+        options.Cookie.SecurePolicy = CookieSecurePolicy.SameAsRequest;
+        options.ExpireTimeSpan = TimeSpan.FromHours(12);
+        options.LoginPath = "/admin/login";
+        options.SlidingExpiration = true;
+        options.Events.OnValidatePrincipal = async context =>
+        {
+            var validator = context.HttpContext.RequestServices.GetRequiredService<AdminPasswordValidator>();
+            if (!validator.IsCurrent(context.Principal))
+            {
+                context.RejectPrincipal();
+                await context.HttpContext.SignOutAsync();
+            }
+        };
+    });
+builder.Services.AddAuthorization();
+builder.Services.AddAntiforgery();
+builder.Services.AddDataProtection()
+    .SetApplicationName("Stashographer")
+    .PersistKeysToFileSystem(new DirectoryInfo(Path.GetFullPath(
+        builder.Configuration["Stashographer:DataProtectionKeysPath"] ?? "App_Data/keys",
+        builder.Environment.ContentRootPath)));
+builder.Services.AddRateLimiter(options =>
+{
+    options.AddFixedWindowLimiter("admin-login", limiter =>
+    {
+        limiter.PermitLimit = 5;
+        limiter.Window = TimeSpan.FromMinutes(1);
+        limiter.QueueLimit = 0;
+        limiter.AutoReplenishment = true;
+    });
+    options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
+});
+builder.Services.AddSingleton<AdminPasswordValidator>();
 
 // --- Persistence: Dapper over SQLite (provider seam for Postgres in phase 2) ---
 DapperConfig.Register();
@@ -76,6 +123,9 @@ builder.Services.AddHostedService<IntakeQueueWorker>();
 
 var app = builder.Build();
 
+// Fail fast instead of exposing an unprotected configuration page after a deployment mistake.
+_ = app.Services.GetRequiredService<AdminPasswordValidator>();
+
 // --- Apply hand-written SQL migrations at startup -----------------------------
 await app.Services.GetRequiredService<MigrationRunner>().MigrateAsync();
 
@@ -101,7 +151,35 @@ if (!app.Environment.IsDevelopment())
 }
 app.UseStatusCodePagesWithReExecute("/not-found", createScopeForStatusCodePages: true);
 app.UseHttpsRedirection();
+app.UseAuthentication();
+app.UseAuthorization();
 app.UseAntiforgery();
+app.UseRateLimiter();
+
+app.MapPost("/auth/login", async (
+    HttpContext context,
+    IAntiforgery antiforgery,
+    AdminPasswordValidator passwords) =>
+{
+    await antiforgery.ValidateRequestAsync(context);
+    var form = await context.Request.ReadFormAsync();
+    var password = form["password"].ToString();
+    var returnUrl = NormalizeReturnUrl(form["returnUrl"].ToString());
+
+    if (!passwords.IsValid(password))
+        return Results.LocalRedirect(
+            $"/admin/login?invalid=true&returnUrl={Uri.EscapeDataString(returnUrl)}");
+
+    await context.SignInAsync(passwords.CreatePrincipal());
+    return Results.LocalRedirect(returnUrl);
+}).RequireRateLimiting("admin-login");
+
+app.MapPost("/auth/logout", async (HttpContext context, IAntiforgery antiforgery) =>
+{
+    await antiforgery.ValidateRequestAsync(context);
+    await context.SignOutAsync();
+    return Results.LocalRedirect("/");
+}).RequireAuthorization();
 
 app.MapStaticAssets();
 app.MapRazorComponents<App>()
@@ -135,6 +213,16 @@ app.MapGet("/img/{id:int}", async (int id, int? w, ImageService images, HttpCont
 });
 
 app.Run();
+
+static string NormalizeReturnUrl(string? value)
+{
+    if (string.IsNullOrWhiteSpace(value)
+        || !value.StartsWith("/", StringComparison.Ordinal)
+        || value.StartsWith("//", StringComparison.Ordinal))
+        return "/settings";
+
+    return value;
+}
 
 /// <summary>Exposed so integration tests can reference the app's entry assembly.</summary>
 public partial class Program;

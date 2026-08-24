@@ -11,7 +11,8 @@
       "stopAtEntry": false,
       "env": {
         "ASPNETCORE_ENVIRONMENT": "Development",
-        "ASPNETCORE_URLS": "http://0.0.0.0:5207"
+        "ASPNETCORE_URLS": "http://0.0.0.0:5207",
+        "STASHOGRAPHER_ADMIN_PASSWORD": "admin"
       },
       "serverReadyAction": {
         "action": "openExternally",

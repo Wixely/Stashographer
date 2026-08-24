@@ -22,6 +22,10 @@ LABEL org.opencontainers.image.title="Stashographer" \
 # SQLite database and image files live on a mounted volume so data survives restarts.
 ENV ConnectionStrings__Default="Data Source=/data/stashographer.db"
 ENV Images__RootPath="/data/images"
+ENV Stashographer__DataProtectionKeysPath="/data/keys"
+# Household-friendly default matching Daybreak. Override this at runtime when stronger
+# protection is required; the plaintext value is never stored in SQLite or logs.
+ENV STASHOGRAPHER_ADMIN_PASSWORD="admin"
 
 # curl is not in the base image and is needed for a healthcheck that proves the app
 # actually serves — `dotnet --info` would only prove the runtime unpacked.

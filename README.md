@@ -10,7 +10,8 @@ Stashographer auto-fills the details from free public APIs — or, optionally, a
 model — then tracks quantity, where each thing lives (room → container), expiry dates, and
 who currently has it on loan.
 
-Self-hosted, single container, SQLite on a volume. No account, no cloud, no telemetry.
+Self-hosted, single container, SQLite on a volume. No cloud account and no telemetry; one local
+administrator password protects configuration.
 
 ## Screenshots
 
@@ -78,13 +79,15 @@ docker compose up -d --build
 
 Then open <http://localhost:8080>. A sample [`docker-compose.yml`](docker-compose.yml) is
 included — the database and images live on the `stash-data` volume, so `docker compose down`
-keeps your data.
+keeps your data. Settings use the convenience administrator password `admin`; set
+`STASHOGRAPHER_ADMIN_PASSWORD` in `.env` to replace it.
 
 ### Docker
 
 ```bash
 docker build -t stashographer .
-docker run -d -p 8080:8080 -v stash-data:/data stashographer
+docker run -d -p 8080:8080 -v stash-data:/data \
+  -e STASHOGRAPHER_ADMIN_PASSWORD=replace-me stashographer
 ```
 
 The image runs unprivileged (UID 1654) and exposes a `/health` endpoint used by its
@@ -99,6 +102,16 @@ dotnet run --project src/Stashographer
 
 Migrations apply automatically on startup and the SQLite file (`stashographer.db`) is created
 next to the app. Open the printed URL.
+
+## Administrator access
+
+Household inventory workflows remain directly available. **Settings** requires an administrator
+session, using `STASHOGRAPHER_ADMIN_PASSWORD`; the checked-in development and Docker convenience
+default is `admin`. Sign-in uses a rate-limited, antiforgery-protected form and a 12-hour
+HTTP-only, same-site cookie (marked Secure when served over HTTPS). Set a private runtime value
+before treating it as a security boundary. Changing the password and restarting invalidates
+existing sessions. See
+[`docs/administration.md`](docs/administration.md) for deployment and cookie-key details.
 
 ## Enable AI (optional)
 
@@ -183,7 +196,7 @@ dependencies only (see [THIRD-PARTY-NOTICES](THIRD-PARTY-NOTICES.md)).
 ## Development
 
 ```bash
-dotnet test                    # 122 tests, no network access required
+dotnet test                    # 128 tests, no network access required
 dotnet build -c Release
 ```
 

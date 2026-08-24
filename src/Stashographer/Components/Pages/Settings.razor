@@ -1,4 +1,5 @@
 @page "/settings"
+@attribute [Authorize]
 @inject IAiClientProvider AiClients
 @inject IAiEnrichmentService Ai
 @inject SettingsService SettingsSvc
@@ -10,7 +11,17 @@
 
 <PageTitle>Settings · Stashographer</PageTitle>
 
-<MudText Typo="Typo.h4" Class="mb-4">Settings</MudText>
+<div class="d-flex justify-space-between align-center gap-2 flex-wrap mb-4">
+    <div>
+        <MudText Typo="Typo.h4">Settings</MudText>
+        <MudText Typo="Typo.body2" Class="mud-text-secondary">Administrator configuration</MudText>
+    </div>
+    <form method="post" action="/auth/logout">
+        <AntiforgeryToken />
+        <MudButton ButtonType="ButtonType.Submit" Variant="Variant.Outlined"
+                   StartIcon="@Icons.Material.Filled.Logout">Sign out</MudButton>
+    </form>
+</div>
 
 <MudPaper Class="pa-4 mb-3" Outlined="true">
     <div class="d-flex justify-space-between align-center mb-2">

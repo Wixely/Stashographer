@@ -1,0 +1,43 @@
+@page "/admin/login"
+@attribute [AllowAnonymous]
+
+<PageTitle>Administrator sign in · Stashographer</PageTitle>
+
+<MudPaper Class="admin-login-card pa-5 mx-auto" Outlined="true">
+    <MudIcon Icon="@Icons.Material.Filled.AdminPanelSettings" Color="Color.Primary"
+             Size="Size.Large" Class="mb-2" />
+    <MudText Typo="Typo.h4" GutterBottom="true">Administrator sign in</MudText>
+    <MudText Typo="Typo.body1" Class="mud-text-secondary mb-4">
+        Enter the Stashographer administration password to change application settings.
+    </MudText>
+    @if (Invalid)
+    {
+        <MudAlert Severity="Severity.Error" Class="mb-3" Dense="true">
+            That password was not accepted.
+        </MudAlert>
+    }
+    <form method="post" action="/auth/login" class="admin-login-form">
+        <AntiforgeryToken />
+        <input type="hidden" name="returnUrl" value="@ReturnUrl" />
+        <label for="admin-password">Password</label>
+        <input id="admin-password" name="password" type="password"
+               autocomplete="current-password" required autofocus />
+        <MudButton ButtonType="ButtonType.Submit" Color="Color.Primary" Variant="Variant.Filled"
+                   StartIcon="@Icons.Material.Filled.Login" FullWidth="true">
+            Sign in
+        </MudButton>
+    </form>
+    <MudLink Href="/" Class="d-block mt-4">Return home</MudLink>
+</MudPaper>
+
+@code {
+    [SupplyParameterFromQuery(Name = "invalid")]
+    public bool Invalid { get; set; }
+
+    [SupplyParameterFromQuery(Name = "returnUrl")]
+    public string? RequestedReturnUrl { get; set; }
+
+    private string ReturnUrl => string.IsNullOrWhiteSpace(RequestedReturnUrl)
+        ? "/settings"
+        : RequestedReturnUrl;
+}

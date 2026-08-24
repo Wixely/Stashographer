@@ -20,6 +20,8 @@ services:
       # The database and images both live under /data, which is the volume below.
       ConnectionStrings__Default: "Data Source=/data/stashographer.db"
       Images__RootPath: "/data/images"
+      Stashographer__DataProtectionKeysPath: "/data/keys"
+      STASHOGRAPHER_ADMIN_PASSWORD: "${STASHOGRAPHER_ADMIN_PASSWORD:-admin}"
 
       # --- AI enrichment (optional) --------------------------------------------
       # Leave these out entirely to run without AI; every non-AI feature works.
