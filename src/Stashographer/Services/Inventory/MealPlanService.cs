@@ -14,7 +14,10 @@ public sealed record ConsumptionApplied(
 /// Persists reviewed meal plans and applies explicit, reversible FEFO consumption events.
 /// Merely generating or saving a plan never changes inventory quantities.
 /// </summary>
-public sealed class MealPlanService(IDbConnectionFactory db, BomService boms)
+public sealed class MealPlanService(
+    IDbConnectionFactory db,
+    BomService boms,
+    InventoryService inventory)
 {
     public async Task<List<MealPlan>> GetAllAsync(CancellationToken ct = default)
     {
@@ -119,6 +122,59 @@ public sealed class MealPlanService(IDbConnectionFactory db, BomService boms)
         return plan;
     }
 
+    /// <summary>
+    /// Projects each plan independently against one inventory snapshot. Requirements from all
+    /// planned meals in a plan share a single global allocation, preventing false readiness when
+    /// two meals need the same stock. The projection never writes to inventory.
+    /// </summary>
+    public async Task<List<MealPlanProjection>> GetProjectionsAsync(
+        IReadOnlyList<MealPlan> plans, CancellationToken ct = default)
+    {
+        if (plans.Count == 0) return [];
+        var active = (await inventory.QueryAsync(new ItemQuery(), ct))
+            .Where(item => item.Quantity > 0 && !item.IsCheckedOut)
+            .ToList();
+        var recipeIds = plans
+            .SelectMany(plan => plan.Entries)
+            .Where(entry => entry.Status == MealPlanEntryStatus.Planned)
+            .Select(entry => entry.BomDefinitionId)
+            .OfType<int>()
+            .Distinct()
+            .ToList();
+        var recipes = new Dictionary<int, BomDefinition>();
+        foreach (var recipeId in recipeIds)
+        {
+            var recipe = await boms.GetAsync(recipeId, ct);
+            if (recipe is not null) recipes[recipeId] = recipe;
+        }
+
+        return plans.Select(plan => Project(plan, active, recipes)).ToList();
+    }
+
+    /// <summary>Projects an editable draft so stock conflicts can be reviewed before saving.</summary>
+    public async Task<MealPlanProjection> GetDraftProjectionAsync(
+        MealPlanDraft draft, CancellationToken ct = default)
+    {
+        PrepareDraft(draft);
+        var transient = new MealPlan
+        {
+            Name = draft.Name,
+            StartDate = draft.StartDate,
+            EndDate = draft.EndDate,
+            Entries = draft.Entries.Select((entry, index) => new MealPlanEntry
+            {
+                Id = index + 1,
+                PlanDate = entry.PlanDate,
+                MealSlot = entry.MealSlot,
+                BomDefinitionId = entry.BomDefinitionId,
+                OutputQuantity = entry.OutputQuantity,
+                Reason = entry.Reason,
+                Status = MealPlanEntryStatus.Planned
+            }).ToList()
+        };
+        return (await GetProjectionsAsync([transient], ct)).Single();
+    }
+
     public async Task<BomAllocation?> GetAllocationAsync(
         MealPlanEntry entry, CancellationToken ct = default) =>
         entry.BomDefinitionId is { } recipeId
@@ -126,7 +182,9 @@ public sealed class MealPlanService(IDbConnectionFactory db, BomService boms)
             : null;
 
     public async Task<ConsumptionApplied> CookAsync(
-        int mealPlanEntryId, CancellationToken ct = default)
+        int mealPlanEntryId,
+        bool prioritizeThisMeal = false,
+        CancellationToken ct = default)
     {
         MealPlanEntry entry;
         using (var conn = await db.OpenAsync(ct))
@@ -142,8 +200,20 @@ public sealed class MealPlanService(IDbConnectionFactory db, BomService boms)
             throw new InvalidOperationException("This meal was already marked cooked.");
         if (entry.BomDefinitionId is null)
             throw new InvalidOperationException("The source recipe no longer exists.");
-        var allocation = await GetAllocationAsync(entry, ct)
-            ?? throw new InvalidOperationException("The source recipe no longer exists.");
+        BomAllocation? allocation;
+        if (prioritizeThisMeal)
+        {
+            allocation = await GetAllocationAsync(entry, ct);
+        }
+        else
+        {
+            var plan = (await GetAllAsync(ct)).SingleOrDefault(candidate => candidate.Id == entry.MealPlanId)
+                ?? throw new InvalidOperationException("The meal plan no longer exists.");
+            allocation = (await GetProjectionsAsync([plan], ct)).Single().Entries
+                .SingleOrDefault(candidate => candidate.MealPlanEntryId == entry.Id)?.Allocation;
+        }
+        if (allocation is null)
+            throw new InvalidOperationException("The source recipe no longer exists.");
         if (!allocation.CanMake)
         {
             var missing = string.Join(", ", allocation.Shortfalls.Select(shortfall =>
@@ -296,4 +366,175 @@ public sealed class MealPlanService(IDbConnectionFactory db, BomService boms)
 
     private static string? Clean(string? value) =>
         string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+
+    private static MealPlanProjection Project(
+        MealPlan plan,
+        IReadOnlyList<Item> inventorySnapshot,
+        IReadOnlyDictionary<int, BomDefinition> recipes)
+    {
+        var planned = plan.Entries
+            .Where(entry => entry.Status == MealPlanEntryStatus.Planned)
+            .OrderBy(entry => entry.PlanDate)
+            .ThenBy(entry => entry.MealSlot, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(entry => entry.Id)
+            .ToList();
+        var projections = new List<MealPlanEntryProjection>();
+        var requirementMap = new Dictionary<int, ProjectedRequirement>();
+        var requirementCosts = new Dictionary<int, int>();
+        var combined = new BomDefinition
+        {
+            Name = plan.Name,
+            Kind = BomKind.Recipe,
+            OutputQuantity = 1
+        };
+        var syntheticRequirementId = 0;
+        for (var entryIndex = 0; entryIndex < planned.Count; entryIndex++)
+        {
+            var entry = planned[entryIndex];
+            if (entry.BomDefinitionId is not { } recipeId
+                || !recipes.TryGetValue(recipeId, out var recipe))
+            {
+                projections.Add(new MealPlanEntryProjection(entry.Id, null));
+                continue;
+            }
+
+            var required = recipe.Requirements.Where(requirement => !requirement.IsOptional).ToList();
+            if (required.Count == 0)
+            {
+                projections.Add(new MealPlanEntryProjection(
+                    entry.Id,
+                    new BomAllocation(recipe, entry.OutputQuantity, [],
+                    [
+                        new BomRequirementShortfall(0, "Recipe requirements", 1, 0, null)
+                    ])));
+                continue;
+            }
+
+            var scale = entry.OutputQuantity / recipe.OutputQuantity;
+            foreach (var requirement in required)
+            {
+                var syntheticId = ++syntheticRequirementId;
+                combined.Requirements.Add(CloneRequirement(requirement, syntheticId, requirement.Quantity * scale));
+                requirementMap[syntheticId] = new ProjectedRequirement(entry, requirement);
+                var priority = (long)entryIndex * (inventorySnapshot.Count + 1L);
+                requirementCosts[syntheticId] = (int)Math.Min(int.MaxValue / 4, priority);
+            }
+        }
+
+        var combinedAllocation = combined.Requirements.Count == 0
+            ? null
+            : BomService.Allocate(combined, 1, CloneInventory(inventorySnapshot), requirementCosts);
+        foreach (var entry in planned.Where(entry =>
+                     projections.All(projection => projection.MealPlanEntryId != entry.Id)))
+        {
+            var recipe = recipes[entry.BomDefinitionId!.Value];
+            var syntheticIds = requirementMap
+                .Where(pair => pair.Value.Entry.Id == entry.Id)
+                .Select(pair => pair.Key)
+                .ToHashSet();
+            var lines = combinedAllocation!.Lines
+                .Where(line => syntheticIds.Contains(line.RequirementId))
+                .Select(line =>
+                {
+                    var original = requirementMap[line.RequirementId].Requirement;
+                    return line with
+                    {
+                        RequirementId = original.Id,
+                        RequirementName = original.Name
+                    };
+                })
+                .ToList();
+            var shortfalls = combinedAllocation.Shortfalls
+                .Where(shortfall => syntheticIds.Contains(shortfall.RequirementId))
+                .Select(shortfall =>
+                {
+                    var original = requirementMap[shortfall.RequirementId].Requirement;
+                    return shortfall with
+                    {
+                        RequirementId = original.Id,
+                        RequirementName = original.Name,
+                        Unit = original.Unit
+                    };
+                })
+                .ToList();
+            projections.Add(new MealPlanEntryProjection(
+                entry.Id,
+                new BomAllocation(recipe, entry.OutputQuantity, lines, shortfalls)));
+        }
+
+        projections = projections
+            .OrderBy(projection => planned.FindIndex(entry => entry.Id == projection.MealPlanEntryId))
+            .ToList();
+        var shopping = BuildShoppingList(planned, projections);
+        return new MealPlanProjection(plan.Id, projections, shopping);
+    }
+
+    private static List<MealPlanShoppingLine> BuildShoppingList(
+        IReadOnlyList<MealPlanEntry> entries,
+        IReadOnlyList<MealPlanEntryProjection> projections)
+    {
+        var entryMap = entries.ToDictionary(entry => entry.Id);
+        return projections
+            .Where(projection => projection.Allocation is not null)
+            .SelectMany(projection => projection.Allocation!.Shortfalls.Select(shortfall => new
+            {
+                Entry = entryMap[projection.MealPlanEntryId],
+                RecipeName = string.IsNullOrWhiteSpace(entryMap[projection.MealPlanEntryId].RecipeName)
+                    ? projection.Allocation.Definition.Name
+                    : entryMap[projection.MealPlanEntryId].RecipeName,
+                Shortfall = shortfall,
+                Missing = shortfall.RequiredQuantity - shortfall.AllocatedQuantity
+            }))
+            .GroupBy(row => new
+            {
+                Name = InventoryService.NormalizeName(row.Shortfall.RequirementName),
+                Unit = InventoryService.NormalizeName(row.Shortfall.Unit)
+            })
+            .Select(group => new MealPlanShoppingLine(
+                group.First().Shortfall.RequirementName,
+                group.Sum(row => row.Missing),
+                group.First().Shortfall.Unit,
+                group.GroupBy(row => row.Entry.Id)
+                    .Select(need => new MealPlanShoppingNeed(
+                        need.Key,
+                        need.First().Entry.PlanDate,
+                        need.First().RecipeName,
+                        need.Sum(row => row.Missing)))
+                    .OrderBy(need => need.PlanDate)
+                    .ThenBy(need => need.MealPlanEntryId)
+                    .ToList()))
+            .OrderBy(line => line.Name, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+
+    private static BomRequirement CloneRequirement(
+        BomRequirement source, int id, decimal quantity) => new()
+    {
+        Id = id,
+        Name = source.Name,
+        Quantity = quantity,
+        Unit = source.Unit,
+        MatchMode = source.MatchMode,
+        MatchItemKindId = source.MatchItemKindId,
+        MatchText = source.MatchText,
+        RequiredAttributes = new Dictionary<string, string>(source.RequiredAttributes),
+        CandidateItemIds = [.. source.CandidateItemIds],
+        SortOrder = source.SortOrder
+    };
+
+    private static List<Item> CloneInventory(IReadOnlyList<Item> source) => source.Select(item => new Item
+    {
+        Id = item.Id,
+        Name = item.Name,
+        ItemKindId = item.ItemKindId,
+        Quantity = item.Quantity,
+        Unit = item.Unit,
+        ExpiryDate = item.ExpiryDate,
+        Attributes = new Dictionary<string, string>(item.Attributes),
+        IsCheckedOut = item.IsCheckedOut
+    }).ToList();
+
+    private sealed record ProjectedRequirement(
+        MealPlanEntry Entry,
+        BomRequirement Requirement);
 }

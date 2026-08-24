@@ -78,3 +78,30 @@ public sealed class MealPlanEntryDraft
     public decimal OutputQuantity { get; set; } = 1;
     public string? Reason { get; set; }
 }
+
+/// <summary>A deterministic, non-reserving stock projection for every planned meal.</summary>
+public sealed record MealPlanProjection(
+    int MealPlanId,
+    IReadOnlyList<MealPlanEntryProjection> Entries,
+    IReadOnlyList<MealPlanShoppingLine> ShoppingList)
+{
+    public bool CanSupplyAll => Entries.All(entry => entry.Allocation?.CanMake == true);
+    public int UnavailableRecipeCount => Entries.Count(entry => entry.Allocation is null);
+}
+
+public sealed record MealPlanEntryProjection(
+    int MealPlanEntryId,
+    BomAllocation? Allocation);
+
+/// <summary>An aggregated ingredient gap, with its contributing meals retained for review.</summary>
+public sealed record MealPlanShoppingLine(
+    string Name,
+    decimal Quantity,
+    string? Unit,
+    IReadOnlyList<MealPlanShoppingNeed> Needs);
+
+public sealed record MealPlanShoppingNeed(
+    int MealPlanEntryId,
+    DateOnly PlanDate,
+    string RecipeName,
+    decimal Quantity);

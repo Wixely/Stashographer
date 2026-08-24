@@ -11,7 +11,7 @@ public class MealPlanServiceTests
         await using var db = await TestDb.CreateAsync();
         var inventory = new InventoryService(db.Factory);
         var boms = BomService(db, inventory);
-        var meals = new MealPlanService(db.Factory, boms);
+        var meals = new MealPlanService(db.Factory, boms, inventory);
         var early = await inventory.SaveAsync(new Item
         {
             Name = "Early beans",
@@ -85,7 +85,7 @@ public class MealPlanServiceTests
         await using var db = await TestDb.CreateAsync();
         var inventory = new InventoryService(db.Factory);
         var boms = BomService(db, inventory);
-        var meals = new MealPlanService(db.Factory, boms);
+        var meals = new MealPlanService(db.Factory, boms, inventory);
         var first = await inventory.SaveAsync(new Item
         {
             Name = "First tin",
@@ -115,7 +115,7 @@ public class MealPlanServiceTests
         await using var db = await TestDb.CreateAsync();
         var inventory = new InventoryService(db.Factory);
         var boms = BomService(db, inventory);
-        var meals = new MealPlanService(db.Factory, boms);
+        var meals = new MealPlanService(db.Factory, boms, inventory);
         var item = await inventory.SaveAsync(new Item
         {
             Name = "Dinner tin",
@@ -133,11 +133,122 @@ public class MealPlanServiceTests
         Assert.Empty(await meals.GetAllAsync());
     }
 
+    [Fact]
+    public async Task Whole_plan_projection_reassigns_interchangeable_stock_to_avoid_a_false_conflict()
+    {
+        await using var db = await TestDb.CreateAsync();
+        var inventory = new InventoryService(db.Factory);
+        var boms = BomService(db, inventory);
+        var meals = new MealPlanService(db.Factory, boms, inventory);
+        var earlySpecific = await inventory.SaveAsync(new Item
+        {
+            Name = "Specific yoghurt",
+            ItemKindId = 1,
+            Quantity = 1,
+            ExpiryDate = new DateOnly(2026, 8, 25)
+        });
+        var laterFlexible = await inventory.SaveAsync(new Item
+        {
+            Name = "Flexible yoghurt",
+            ItemKindId = 1,
+            Quantity = 1,
+            ExpiryDate = new DateOnly(2026, 8, 30)
+        });
+        var flexibleRecipe = await RecipeAsync(
+            boms, "Flexible snack", 1, [earlySpecific.Id, laterFlexible.Id]);
+        var specificRecipe = await RecipeAsync(
+            boms, "Specific snack", 1, [earlySpecific.Id]);
+        var plan = await meals.SaveReviewedAsync(new MealPlanDraft
+        {
+            Name = "Two snacks",
+            StartDate = new DateOnly(2026, 8, 24),
+            EndDate = new DateOnly(2026, 8, 25),
+            Entries =
+            [
+                Entry(new DateOnly(2026, 8, 24), flexibleRecipe.Id),
+                Entry(new DateOnly(2026, 8, 25), specificRecipe.Id)
+            ]
+        });
+
+        var projection = Assert.Single(await meals.GetProjectionsAsync([plan]));
+
+        Assert.True(projection.CanSupplyAll);
+        Assert.Empty(projection.ShoppingList);
+        var flexible = projection.Entries.Single(entry =>
+            entry.MealPlanEntryId == plan.Entries[0].Id).Allocation!;
+        var specific = projection.Entries.Single(entry =>
+            entry.MealPlanEntryId == plan.Entries[1].Id).Allocation!;
+        Assert.Equal(laterFlexible.Id, Assert.Single(flexible.Lines).ItemId);
+        Assert.Equal(earlySpecific.Id, Assert.Single(specific.Lines).ItemId);
+        Assert.Equal(1, (await inventory.GetAsync(earlySpecific.Id))!.Quantity);
+        Assert.Equal(1, (await inventory.GetAsync(laterFlexible.Id))!.Quantity);
+
+        await meals.CookAsync(plan.Entries[0].Id);
+        Assert.Equal(1, (await inventory.GetAsync(earlySpecific.Id))!.Quantity);
+        Assert.Equal(0, (await inventory.GetAsync(laterFlexible.Id))!.Quantity);
+        await meals.CookAsync(plan.Entries[1].Id);
+        Assert.Equal(0, (await inventory.GetAsync(earlySpecific.Id))!.Quantity);
+    }
+
+    [Fact]
+    public async Task Whole_plan_projection_prioritizes_earlier_meals_and_aggregates_true_shopping_gap()
+    {
+        await using var db = await TestDb.CreateAsync();
+        var inventory = new InventoryService(db.Factory);
+        var boms = BomService(db, inventory);
+        var meals = new MealPlanService(db.Factory, boms, inventory);
+        var beans = await inventory.SaveAsync(new Item
+        {
+            Name = "Beans",
+            ItemKindId = 1,
+            Quantity = 2,
+            Unit = "each"
+        });
+        var recipe = await RecipeAsync(boms, "Bean dinner", 2, [beans.Id], "each", "Beans");
+        var draft = new MealPlanDraft
+        {
+            Name = "Three dinners",
+            StartDate = new DateOnly(2026, 8, 24),
+            EndDate = new DateOnly(2026, 8, 26),
+            Entries =
+            [
+                Entry(new DateOnly(2026, 8, 24), recipe.Id),
+                Entry(new DateOnly(2026, 8, 25), recipe.Id),
+                Entry(new DateOnly(2026, 8, 26), recipe.Id)
+            ]
+        };
+
+        var draftProjection = await meals.GetDraftProjectionAsync(draft);
+
+        Assert.False(draftProjection.CanSupplyAll);
+        Assert.True(draftProjection.Entries[0].Allocation!.CanMake);
+        Assert.False(draftProjection.Entries[1].Allocation!.CanMake);
+        Assert.False(draftProjection.Entries[2].Allocation!.CanMake);
+        var shopping = Assert.Single(draftProjection.ShoppingList);
+        Assert.Equal("Beans", shopping.Name);
+        Assert.Equal("each", shopping.Unit);
+        Assert.Equal(4, shopping.Quantity);
+        Assert.Equal(2, shopping.Needs.Count);
+        Assert.All(shopping.Needs, need => Assert.Equal("Bean dinner", need.RecipeName));
+        Assert.Equal(2, (await inventory.GetAsync(beans.Id))!.Quantity);
+
+        var plan = await meals.SaveReviewedAsync(draft);
+        await Assert.ThrowsAsync<InvalidOperationException>(() => meals.CookAsync(plan.Entries[1].Id));
+        Assert.Equal(2, (await inventory.GetAsync(beans.Id))!.Quantity);
+        await meals.CookAsync(plan.Entries[1].Id, prioritizeThisMeal: true);
+        Assert.Equal(0, (await inventory.GetAsync(beans.Id))!.Quantity);
+    }
+
     private static BomService BomService(TestDb db, InventoryService inventory) =>
         new(db.Factory, inventory, new AttributeNameService(db.Factory));
 
     private static async Task<BomDefinition> RecipeAsync(
-        BomService boms, string name, decimal quantity, List<int> candidates)
+        BomService boms,
+        string name,
+        decimal quantity,
+        List<int> candidates,
+        string? unit = null,
+        string requirementName = "Ingredient")
     {
         var recipe = await boms.SaveDefinitionAsync(new BomDefinition
         {
@@ -149,8 +260,9 @@ public class MealPlanServiceTests
         await boms.SaveRequirementAsync(new BomRequirement
         {
             BomDefinitionId = recipe.Id,
-            Name = "Ingredient",
+            Name = requirementName,
             Quantity = quantity,
+            Unit = unit,
             MatchMode = BomMatchMode.ExplicitCandidates,
             CandidateItemIds = candidates
         });
@@ -172,5 +284,13 @@ public class MealPlanServiceTests
                 OutputQuantity = 1
             }
         ]
+    };
+
+    private static MealPlanEntryDraft Entry(DateOnly date, int recipeId) => new()
+    {
+        PlanDate = date,
+        MealSlot = "Dinner",
+        BomDefinitionId = recipeId,
+        OutputQuantity = 1
     };
 }

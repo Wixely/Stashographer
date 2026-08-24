@@ -79,7 +79,9 @@ Every container gets a printable QR code — scan it to see what's meant to be i
 - **Expiry-aware meal plans** — manually plan from saved recipes or have the configured AI
   agent draft a reviewable plan that prioritizes dated food. Plans never reserve or change
   stock. Marking a meal cooked explicitly consumes exact lots earliest-expiry-first, records
-  the event, and supports restoring those same lots with Undo.
+  the event, and supports restoring those same lots with Undo. A deterministic whole-plan
+  budget prevents meals from double-counting ingredients and derives an aggregate shopping
+  list with the meal and date responsible for each gap.
 - **AI enrichment (optional)** — identify an item from a photo when a barcode won't do, and
   "season" any item with extra detail, via any **OpenAI-protocol** endpoint.
 - **Agent API & MCP (optional)** — deployment-gated, administrator-activated automation can
@@ -226,13 +228,19 @@ requirements are written atomically so a partial draft cannot be left behind.
 
 The **Meal Plans** page uses those saved recipes. The configured agent receives only currently
 makeable recipe IDs, matching dated inventory, and regional context; its response is an editable
-draft and cannot mutate inventory. Saving remains inert and does not reserve ingredients because
-later intake or another meal may change availability. Each meal therefore shows a fresh exact-lot
-allocation. **Mark cooked** asks for confirmation and consumes required ingredients across stock
-lots in earliest-expiry-first order without double-counting interchangeable ingredients. Optional
-ingredients are not consumed automatically. Every applied event stores the exact item IDs,
-quantities, units, and expiry snapshots so Undo can restore the same lots. Overdue ingredients are
-flagged for a human safety check; the planner never treats an expiry date as proof that food is safe.
+draft and cannot mutate inventory. Before saving, a deterministic projection checks all meals
+together and warns when the draft exceeds current stock. Saved plans remain inert and do not reserve
+ingredients because later intake or another plan may change availability. Within each plan, one
+global exact-lot budget prevents meals from counting the same quantity twice, preserves valid
+interchangeable substitutions, and prioritizes earlier meals if stock is genuinely short. Gaps are
+aggregated into a live shopping list that identifies the contributing meals and dates; adding stock
+recalculates it automatically. **Mark cooked** asks for confirmation and consumes required
+ingredients from the plan's optimized lot assignment. A clearly labelled **Cook anyway** action can
+explicitly reprioritize a meal that current stock can supply only by taking stock budgeted to an
+earlier meal. Optional ingredients are not consumed automatically. Every applied event stores exact
+item IDs, quantities, units, and expiry snapshots so Undo can restore the same lots. Overdue
+ingredients are flagged for a human safety check; the planner never treats an expiry date as proof
+that food is safe.
 
 > Keep the key out of git. Put it in a `.env` file next to `docker-compose.yml` (already
 > covered by `.gitignore`) and reference it as `${STASH_AI_API_KEY}`.
@@ -246,7 +254,7 @@ dependencies only (see [THIRD-PARTY-NOTICES](THIRD-PARTY-NOTICES.md)).
 ## Development
 
 ```bash
-dotnet test                    # 153 tests, no network access required
+dotnet test                    # 155 tests, no network access required
 dotnet build -c Release
 ```
 

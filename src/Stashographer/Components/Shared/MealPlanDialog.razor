@@ -1,5 +1,7 @@
 @inject IAiEnrichmentService Ai
 @inject SettingsService SettingsSvc
+@inject MealPlanService MealPlanSvc
+@inject IDialogService Dialogs
 
 <MudDialog Options="@(new DialogOptions { MaxWidth = MaxWidth.Large, FullWidth = true })">
     <DialogContent>
@@ -117,7 +119,7 @@
             }
             <MudButton Color="Color.Primary" Variant="Variant.Filled"
                        StartIcon="@Icons.Material.Filled.Check"
-                       Disabled="@(_working || !CanAccept())" OnClick="Accept">
+                       Disabled="@(_working || !CanAccept())" OnClick="AcceptAsync">
                 Save reviewed plan
             </MudButton>
         }
@@ -274,9 +276,41 @@
 
     private bool CanAccept() => TryBuildDraft(out _);
 
-    private void Accept()
+    private async Task AcceptAsync()
     {
-        if (TryBuildDraft(out var draft)) Dialog.Close(DialogResult.Ok(draft));
+        if (!TryBuildDraft(out var draft)) return;
+        _error = null;
+        _working = true;
+        try
+        {
+            var projection = await MealPlanSvc.GetDraftProjectionAsync(draft);
+            if (!projection.CanSupplyAll)
+            {
+                var gaps = string.Join(", ", projection.ShoppingList.Take(5).Select(ShoppingLineText));
+                if (projection.ShoppingList.Count > 5) gaps += ", and more";
+                var missingRecipe = projection.UnavailableRecipeCount > 0
+                    ? $" {projection.UnavailableRecipeCount} recipe(s) are no longer available."
+                    : string.Empty;
+                var message = projection.ShoppingList.Count > 0
+                    ? $"Current stock cannot supply the whole plan. Shopping list: {gaps}.{missingRecipe} Save it anyway?"
+                    : $"The plan cannot be fully projected.{missingRecipe} Save it anyway?";
+                var save = await Dialogs.ShowMessageBoxAsync(
+                    "Plan has stock gaps",
+                    message,
+                    yesText: "Save with shopping list",
+                    cancelText: "Keep editing");
+                if (save != true) return;
+            }
+            Dialog.Close(DialogResult.Ok(draft));
+        }
+        catch (Exception ex)
+        {
+            _error = $"Could not check the plan: {ex.Message}";
+        }
+        finally
+        {
+            _working = false;
+        }
     }
 
     private bool TryBuildDraft(out MealPlanDraft draft)
@@ -322,6 +356,9 @@
             System.Globalization.CultureInfo.InvariantCulture,
             System.Globalization.DateTimeStyles.None,
             out date);
+
+    private static string ShoppingLineText(MealPlanShoppingLine line) =>
+        $"{line.Quantity:0.##} {line.Unit} {line.Name}";
 
     private void Cancel() => Dialog.Cancel();
 

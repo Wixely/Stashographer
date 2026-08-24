@@ -16,7 +16,7 @@
             Plan from saved recipes, prioritize expiring lots, and consume stock only when a meal is cooked.
         </MudText>
         <MudText Typo="Typo.caption" Class="mud-text-secondary">
-            Plans do not reserve stock; exact availability is recalculated before cooking.
+            Plans do not reserve stock; every meal shares one projected stock budget, recalculated after changes.
         </MudText>
     </div>
     <div class="d-flex gap-2 flex-wrap">
@@ -66,10 +66,32 @@ else
     {
         @foreach (var plan in _plans)
         {
+            var planProjection = _projections.GetValueOrDefault(plan.Id);
             <MudPaper Outlined="true" Class="pa-4 mb-4">
                 <div class="d-flex justify-space-between align-start gap-2">
                     <div>
-                        <MudText Typo="Typo.h6">@plan.Name</MudText>
+                        <div class="d-flex align-center gap-2 flex-wrap">
+                            <MudText Typo="Typo.h6">@plan.Name</MudText>
+                            @if (plan.Entries.All(entry => entry.Status == MealPlanEntryStatus.Cooked))
+                            {
+                                <MudChip T="string" Size="Size.Small" Color="Color.Success">Complete</MudChip>
+                            }
+                            else if (planProjection?.UnavailableRecipeCount > 0)
+                            {
+                                <MudChip T="string" Size="Size.Small" Color="Color.Error">Recipe unavailable</MudChip>
+                            }
+                            else if (planProjection?.ShoppingList.Count > 0)
+                            {
+                                <MudChip T="string" Size="Size.Small" Color="Color.Warning"
+                                         Icon="@Icons.Material.Filled.ShoppingCart">
+                                    @planProjection.ShoppingList.Count to buy
+                                </MudChip>
+                            }
+                            else
+                            {
+                                <MudChip T="string" Size="Size.Small" Color="Color.Success">Stock covered</MudChip>
+                            }
+                        </div>
                         <MudText Typo="Typo.caption" Class="mud-text-secondary">
                             @plan.StartDate.ToString("d MMM yyyy")–@plan.EndDate.ToString("d MMM yyyy")
                         </MudText>
@@ -84,8 +106,44 @@ else
                 </div>
 
                 <MudDivider Class="my-3" />
+                @if (planProjection?.ShoppingList.Count > 0)
+                {
+                    <MudPaper Outlined="true" Class="pa-3 mb-3">
+                        <div class="d-flex justify-space-between align-center gap-2 flex-wrap mb-2">
+                            <div>
+                                <MudText Typo="Typo.subtitle1">
+                                    <MudIcon Icon="@Icons.Material.Filled.ShoppingCart" Size="Size.Small" />
+                                    Shopping list
+                                </MudText>
+                                <MudText Typo="Typo.caption" Class="mud-text-secondary">
+                                    Aggregate gaps after budgeting current stock across this plan in date order.
+                                </MudText>
+                            </div>
+                            <MudButton Href="scan" Variant="Variant.Outlined" Size="Size.Small"
+                                       StartIcon="@Icons.Material.Filled.AddAPhoto">Add stock</MudButton>
+                        </div>
+                        @foreach (var line in planProjection.ShoppingList)
+                        {
+                            <div class="py-2">
+                                <MudText Typo="Typo.subtitle2">@ShoppingLineText(line)</MudText>
+                                <MudText Typo="Typo.caption" Class="mud-text-secondary">
+                                    @ShoppingNeedText(line)
+                                </MudText>
+                            </div>
+                            <MudDivider />
+                        }
+                    </MudPaper>
+                }
+                @if (planProjection?.UnavailableRecipeCount > 0)
+                {
+                    <MudAlert Severity="Severity.Error" Class="mb-3">
+                        @planProjection.UnavailableRecipeCount planned meal(s) reference a deleted recipe,
+                        so their ingredients cannot be projected.
+                    </MudAlert>
+                }
                 @foreach (var entry in plan.Entries)
                 {
+                    var planAllocation = _planAllocations.GetValueOrDefault(entry.Id);
                     <MudPaper Outlined="true" Class="pa-3 mb-2">
                         <div class="d-flex justify-space-between align-start gap-2 flex-wrap">
                             <div class="flex-grow-1">
@@ -115,12 +173,12 @@ else
                                         Used @AllocationText(consumption.Lines)
                                     </MudText>
                                 }
-                                else if (_allocations.GetValueOrDefault(entry.Id) is { } allocation)
+                                else if (planAllocation is { } allocation)
                                 {
                                     @if (allocation.CanMake)
                                     {
                                         <MudText Typo="Typo.caption" Class="mud-text-secondary d-block mt-2">
-                                            Will use @AllocationText(allocation.Lines)
+                                            Plan budget: @AllocationText(allocation.Lines)
                                         </MudText>
                                         @if (allocation.Lines.Any(line => line.ExpiryDate < _today))
                                         {
@@ -131,8 +189,14 @@ else
                                     }
                                     else
                                     {
+                                        @if (allocation.Lines.Count > 0)
+                                        {
+                                            <MudText Typo="Typo.caption" Class="mud-text-secondary d-block mt-2">
+                                                Plan budget uses @AllocationText(allocation.Lines)
+                                            </MudText>
+                                        }
                                         <MudText Typo="Typo.caption" Color="Color.Error" Class="d-block mt-2">
-                                            Missing @ShortfallText(allocation.Shortfalls)
+                                            Plan conflict: buy @ShortfallText(allocation.Shortfalls)
                                         </MudText>
                                     }
                                 }
@@ -156,12 +220,15 @@ else
                                 }
                                 else
                                 {
-                                    <MudButton Variant="Variant.Filled" Color="Color.Success"
+                                    <MudButton Variant="Variant.Filled"
+                                               Color="@(planAllocation?.CanMake == false ? Color.Warning : Color.Success)"
                                                StartIcon="@Icons.Material.Filled.Restaurant"
                                                Disabled="@(_workingEntryId is not null
                                                            || _allocations.GetValueOrDefault(entry.Id)?.CanMake != true)"
                                                OnClick="@(() => CookAsync(entry))">
-                                        @(_workingEntryId == entry.Id ? "Cooking…" : "Mark cooked")
+                                        @(_workingEntryId == entry.Id
+                                            ? "Cooking…"
+                                            : planAllocation?.CanMake == false ? "Cook anyway" : "Mark cooked")
                                     </MudButton>
                                 }
                             </div>
@@ -178,6 +245,8 @@ else
     private List<BomEvaluation> _recipes = [];
     private List<Item> _foodInventory = [];
     private readonly Dictionary<int, BomAllocation?> _allocations = [];
+    private readonly Dictionary<int, MealPlanProjection> _projections = [];
+    private readonly Dictionary<int, BomAllocation?> _planAllocations = [];
     private DateOnly _today;
     private bool _loading = true;
     private int? _workingEntryId;
@@ -208,6 +277,14 @@ else
             if (evaluation is not null) _recipes.Add(evaluation);
         }
         _plans = await MealPlanSvc.GetAllAsync();
+        _projections.Clear();
+        _planAllocations.Clear();
+        foreach (var projection in await MealPlanSvc.GetProjectionsAsync(_plans))
+        {
+            _projections[projection.MealPlanId] = projection;
+            foreach (var entry in projection.Entries)
+                _planAllocations[entry.MealPlanEntryId] = entry.Allocation;
+        }
         _allocations.Clear();
         foreach (var entry in _plans.SelectMany(plan => plan.Entries)
                      .Where(entry => entry.Status == MealPlanEntryStatus.Planned))
@@ -241,7 +318,10 @@ else
 
     private async Task CookAsync(MealPlanEntry entry)
     {
-        var allocation = await MealPlanSvc.GetAllocationAsync(entry);
+        var individualAllocation = await MealPlanSvc.GetAllocationAsync(entry);
+        var planAllocation = _planAllocations.GetValueOrDefault(entry.Id);
+        var prioritizeThisMeal = planAllocation?.CanMake == false;
+        var allocation = prioritizeThisMeal ? individualAllocation : planAllocation ?? individualAllocation;
         if (allocation is null || !allocation.CanMake)
         {
             Snackbar.Add("Inventory no longer satisfies this meal. Reload and review it.", Severity.Error);
@@ -250,6 +330,8 @@ else
         var overdue = allocation.Lines.Any(line => line.ExpiryDate < _today)
             ? " This includes overdue food; check it is safe before continuing."
             : string.Empty;
+        if (prioritizeThisMeal)
+            overdue += " This meal works on its own, but cooking it ahead of earlier meals may change the plan's shopping gaps.";
         var yes = await Dialogs.ShowMessageBoxAsync(
             "Mark meal cooked?",
             $"Consume {AllocationText(allocation.Lines)} for “{entry.RecipeName}”?{overdue}",
@@ -260,7 +342,7 @@ else
         _workingEntryId = entry.Id;
         try
         {
-            var applied = await MealPlanSvc.CookAsync(entry.Id);
+            var applied = await MealPlanSvc.CookAsync(entry.Id, prioritizeThisMeal);
             await ReloadAsync();
             Snackbar.Add(
                 $"Cooked {applied.Description}; {applied.Lines.Count} stock lot(s) updated.",
@@ -334,4 +416,11 @@ else
     private static string ShortfallText(IEnumerable<BomRequirementShortfall> shortfalls) =>
         string.Join(", ", shortfalls.Select(shortfall =>
             $"{shortfall.RequiredQuantity - shortfall.AllocatedQuantity:0.##} {shortfall.Unit} {shortfall.RequirementName}"));
+
+    private static string ShoppingLineText(MealPlanShoppingLine line) =>
+        $"{line.Quantity:0.##} {line.Unit} {line.Name}";
+
+    private static string ShoppingNeedText(MealPlanShoppingLine line) =>
+        "Needed for " + string.Join(", ", line.Needs.Select(need =>
+            $"{need.RecipeName} ({need.PlanDate:d MMM}, {need.Quantity:0.##})"));
 }

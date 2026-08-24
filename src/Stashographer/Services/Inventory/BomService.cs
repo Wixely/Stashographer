@@ -230,7 +230,10 @@ public sealed class BomService(
     }
 
     internal static BomAllocation Allocate(
-        BomDefinition definition, decimal outputQuantity, IReadOnlyList<Item> activeItems)
+        BomDefinition definition,
+        decimal outputQuantity,
+        IReadOnlyList<Item> activeItems,
+        IReadOnlyDictionary<int, int>? requirementCosts = null)
     {
         if (definition.OutputQuantity <= 0)
             throw new InvalidOperationException("The recipe output quantity is invalid.");
@@ -274,7 +277,12 @@ public sealed class BomService(
             }
         }
         for (var requirementIndex = 0; requirementIndex < requirements.Count; requirementIndex++)
-            AddEdge(graph, requirementOffset + requirementIndex, sink, demands[requirementIndex], 0);
+            AddEdge(
+                graph,
+                requirementOffset + requirementIndex,
+                sink,
+                demands[requirementIndex],
+                requirementCosts?.GetValueOrDefault(requirements[requirementIndex].Id) ?? 0);
 
         var targetFlow = demands.Sum();
         var flow = 0m;
@@ -443,7 +451,7 @@ public sealed class BomService(
             var changed = false;
             for (var from = 0; from < graph.Count; from++)
             {
-                if (distances[from] == infinity) continue;
+                if (from == sink || distances[from] == infinity) continue;
                 for (var edgeIndex = 0; edgeIndex < graph[from].Count; edgeIndex++)
                 {
                     var edge = graph[from][edgeIndex];
