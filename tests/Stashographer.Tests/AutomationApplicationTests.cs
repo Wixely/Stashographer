@@ -6,6 +6,7 @@ using System.Text.Json;
 using Dapper;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
+using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using ModelContextProtocol.Client;
@@ -206,10 +207,20 @@ public sealed class AutomationApplicationTests
         public async ValueTask DisposeAsync()
         {
             await Factory.DisposeAsync();
+            SqliteConnection.ClearAllPools();
             foreach (var (key, value) in previousEnvironment)
                 Environment.SetEnvironmentVariable(key, value);
-            if (System.IO.Directory.Exists(Directory))
-                System.IO.Directory.Delete(Directory, recursive: true);
+            for (var attempt = 0; System.IO.Directory.Exists(Directory); attempt++)
+            {
+                try
+                {
+                    System.IO.Directory.Delete(Directory, recursive: true);
+                }
+                catch (IOException) when (attempt < 4)
+                {
+                    await Task.Delay(50 * (attempt + 1));
+                }
+            }
         }
     }
 }

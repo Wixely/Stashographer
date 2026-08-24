@@ -271,7 +271,126 @@ public class InventoryService(
                 WHERE Id=@Id;
                 """, p);
         }
+        await SynchronizePrimaryImageAsync(conn, item.Id, item.ImageId, now, ct);
         return item;
+    }
+
+    /// <summary>Loads every stored view for an item in display order.</summary>
+    public async Task<List<ItemImage>> GetImagesAsync(int itemId, CancellationToken ct = default)
+    {
+        using var conn = await db.OpenAsync(ct);
+        var rows = await conn.QueryAsync<ItemImageRow>("""
+            SELECT ii.ItemId, ii.ImageId, ii.Role, ii.IsPrimary, ii.SortOrder, ii.CreatedAt AS LinkedAt,
+                   im.StorageKey, im.ContentType, im.OriginalName, im.Width, im.Height,
+                   im.ByteSize, im.Sha256, im.SourceUrl, im.CreatedAt AS ImageCreatedAt
+            FROM ItemImages ii
+            JOIN Images im ON im.Id = ii.ImageId
+            WHERE ii.ItemId = @itemId
+            ORDER BY ii.IsPrimary DESC, ii.SortOrder, ii.CreatedAt;
+            """, new { itemId });
+        return rows.Select(MapItemImage).ToList();
+    }
+
+    /// <summary>
+    /// Associates an image without changing quantity. The first image becomes primary;
+    /// otherwise the requested semantic role is retained.
+    /// </summary>
+    public async Task<ItemImage> AttachImageAsync(
+        int itemId,
+        int imageId,
+        ItemImageRole role = ItemImageRole.Detail,
+        bool makePrimary = false,
+        CancellationToken ct = default)
+    {
+        using var conn = await db.OpenAsync(ct);
+        using var tx = conn.BeginTransaction();
+        if (await conn.ExecuteScalarAsync<int>(
+                "SELECT COUNT(*) FROM Items WHERE Id = @itemId", new { itemId }, tx) == 0)
+            throw new InvalidOperationException("The inventory item no longer exists.");
+        if (await conn.ExecuteScalarAsync<int>(
+                "SELECT COUNT(*) FROM Images WHERE Id = @imageId", new { imageId }, tx) == 0)
+            throw new InvalidOperationException("The stored image no longer exists.");
+
+        var hasPrimary = await conn.ExecuteScalarAsync<int>(
+            "SELECT COUNT(*) FROM ItemImages WHERE ItemId = @itemId AND IsPrimary = 1",
+            new { itemId }, tx) > 0;
+        var becomesPrimary = makePrimary || (!hasPrimary && role != ItemImageRole.Receipt);
+        if (becomesPrimary)
+        {
+            await DemotePrimaryAsync(conn, tx, itemId, imageId);
+        }
+
+        var sortOrder = await conn.ExecuteScalarAsync<int?>(
+            "SELECT MAX(SortOrder) FROM ItemImages WHERE ItemId = @itemId", new { itemId }, tx) ?? -1;
+        var now = DateTimeOffset.UtcNow;
+        await conn.ExecuteAsync("""
+            INSERT INTO ItemImages (ItemId, ImageId, Role, IsPrimary, SortOrder, CreatedAt)
+            VALUES (@itemId, @imageId, @role, @isPrimary, @sortOrder, @createdAt)
+            ON CONFLICT(ItemId, ImageId) DO UPDATE SET
+                Role = excluded.Role,
+                IsPrimary = CASE WHEN excluded.IsPrimary = 1 THEN 1 ELSE ItemImages.IsPrimary END;
+            """, new
+        {
+            itemId,
+            imageId,
+            role = (int)role,
+            isPrimary = becomesPrimary ? 1 : 0,
+            sortOrder = sortOrder + 1,
+            createdAt = now.ToString("O")
+        }, tx);
+        if (becomesPrimary)
+            await conn.ExecuteAsync(
+                "UPDATE Items SET ImageId = @imageId, UpdatedAt = @now WHERE Id = @itemId",
+                new { itemId, imageId, now = now.ToString("O") }, tx);
+        tx.Commit();
+        return (await GetImagesAsync(itemId, ct)).Single(link => link.ImageId == imageId);
+    }
+
+    public async Task SetPrimaryImageAsync(int itemId, int imageId, CancellationToken ct = default)
+    {
+        using var conn = await db.OpenAsync(ct);
+        using var tx = conn.BeginTransaction();
+        var linked = await conn.ExecuteScalarAsync<int>(
+            "SELECT COUNT(*) FROM ItemImages WHERE ItemId = @itemId AND ImageId = @imageId",
+            new { itemId, imageId }, tx);
+        if (linked == 0) throw new InvalidOperationException("Attach the image before making it primary.");
+        await DemotePrimaryAsync(conn, tx, itemId, imageId);
+        await conn.ExecuteAsync(
+            "UPDATE ItemImages SET IsPrimary = 1 WHERE ItemId = @itemId AND ImageId = @imageId",
+            new { itemId, imageId }, tx);
+        await conn.ExecuteAsync(
+            "UPDATE Items SET ImageId = @imageId, UpdatedAt = @now WHERE Id = @itemId",
+            new { itemId, imageId, now = DateTimeOffset.UtcNow.ToString("O") }, tx);
+        tx.Commit();
+    }
+
+    public async Task UpdateImageRoleAsync(
+        int itemId, int imageId, ItemImageRole role, CancellationToken ct = default)
+    {
+        using var conn = await db.OpenAsync(ct);
+        var exists = await conn.QuerySingleOrDefaultAsync<int?>(
+            "SELECT Role FROM ItemImages WHERE ItemId = @itemId AND ImageId = @imageId",
+            new { itemId, imageId });
+        if (exists is null) throw new InvalidOperationException("The image is not attached to this item.");
+        await conn.ExecuteAsync(
+            "UPDATE ItemImages SET Role = @role WHERE ItemId = @itemId AND ImageId = @imageId",
+            new { itemId, imageId, role = (int)role });
+    }
+
+    public async Task DetachImageAsync(int itemId, int imageId, CancellationToken ct = default)
+    {
+        using var conn = await db.OpenAsync(ct);
+        using var tx = conn.BeginTransaction();
+        var wasPrimary = await conn.ExecuteScalarAsync<int>("""
+            SELECT COUNT(*) FROM ItemImages
+            WHERE ItemId = @itemId AND ImageId = @imageId AND IsPrimary = 1;
+            """, new { itemId, imageId }, tx) > 0;
+        await conn.ExecuteAsync(
+            "DELETE FROM ItemImages WHERE ItemId = @itemId AND ImageId = @imageId",
+            new { itemId, imageId }, tx);
+        if (wasPrimary)
+            await PromoteFirstRemainingAsync(conn, tx, itemId);
+        tx.Commit();
     }
 
     /// <summary>
@@ -340,6 +459,11 @@ public class InventoryService(
             FROM Items WHERE Id = @itemId;
             SELECT last_insert_rowid();
             """, new { itemId, quantity, collectionKey, locationId, containerId, now }, tx);
+        await conn.ExecuteAsync("""
+            INSERT INTO ItemImages (ItemId, ImageId, Role, IsPrimary, SortOrder, CreatedAt)
+            SELECT @createdId, ImageId, Role, IsPrimary, SortOrder, @now
+            FROM ItemImages WHERE ItemId = @itemId;
+            """, new { itemId, createdId, now }, tx);
         tx.Commit();
 
         var remaining = await GetAsync(itemId, ct)
@@ -449,6 +573,96 @@ public class InventoryService(
         }
         tx.Commit();
     }
+
+    private static async Task SynchronizePrimaryImageAsync(
+        System.Data.IDbConnection conn,
+        int itemId,
+        int? imageId,
+        DateTimeOffset now,
+        CancellationToken ct)
+    {
+        _ = ct;
+        if (imageId is null)
+        {
+            await conn.ExecuteAsync(
+                "DELETE FROM ItemImages WHERE ItemId = @itemId AND IsPrimary = 1",
+                new { itemId });
+            return;
+        }
+
+        await conn.ExecuteAsync("""
+            UPDATE ItemImages SET IsPrimary = 0
+            WHERE ItemId = @itemId AND IsPrimary = 1 AND ImageId <> @imageId;
+            """, new
+        {
+            itemId,
+            imageId,
+        });
+        await conn.ExecuteAsync("""
+            INSERT INTO ItemImages (ItemId, ImageId, Role, IsPrimary, SortOrder, CreatedAt)
+            VALUES (@itemId, @imageId, @role, 1, 0, @createdAt)
+            ON CONFLICT(ItemId, ImageId) DO UPDATE SET IsPrimary = 1;
+            """, new
+        {
+            itemId,
+            imageId,
+            role = (int)ItemImageRole.Other,
+            createdAt = now.ToString("O")
+        });
+    }
+
+    private static Task DemotePrimaryAsync(
+        System.Data.IDbConnection conn,
+        System.Data.IDbTransaction tx,
+        int itemId,
+        int exceptImageId) => conn.ExecuteAsync("""
+            UPDATE ItemImages SET IsPrimary = 0
+            WHERE ItemId = @itemId AND IsPrimary = 1 AND ImageId <> @exceptImageId;
+            """, new { itemId, exceptImageId }, tx);
+
+    private static async Task PromoteFirstRemainingAsync(
+        System.Data.IDbConnection conn,
+        System.Data.IDbTransaction tx,
+        int itemId)
+    {
+        var replacement = await conn.QuerySingleOrDefaultAsync<int?>("""
+            SELECT ImageId FROM ItemImages
+            WHERE ItemId = @itemId AND Role <> @receipt
+            ORDER BY SortOrder, CreatedAt LIMIT 1;
+            """, new { itemId, receipt = (int)ItemImageRole.Receipt }, tx);
+        if (replacement is { } imageId)
+        {
+            await conn.ExecuteAsync(
+                "UPDATE ItemImages SET IsPrimary = 1 WHERE ItemId = @itemId AND ImageId = @imageId",
+                new { itemId, imageId }, tx);
+        }
+        await conn.ExecuteAsync(
+            "UPDATE Items SET ImageId = @imageId, UpdatedAt = @now WHERE Id = @itemId",
+            new { itemId, imageId = replacement, now = DateTimeOffset.UtcNow.ToString("O") }, tx);
+    }
+
+    private static ItemImage MapItemImage(ItemImageRow row) => new()
+    {
+        ItemId = row.ItemId,
+        ImageId = row.ImageId,
+        Role = (ItemImageRole)row.Role,
+        IsPrimary = row.IsPrimary,
+        SortOrder = row.SortOrder,
+        CreatedAt = DateTimeOffset.Parse(row.LinkedAt),
+        Image = new Image
+        {
+            Id = row.ImageId,
+            StorageKey = row.StorageKey,
+            ContentType = row.ContentType,
+            OriginalName = row.OriginalName,
+            Width = row.Width,
+            Height = row.Height,
+            ByteSize = row.ByteSize,
+            Sha256 = row.Sha256,
+            SourceUrl = row.SourceUrl,
+            CreatedAt = DateTimeOffset.Parse(row.ImageCreatedAt)
+        }
+    };
 
     public async Task<List<ItemKind>> GetKindsAsync(CancellationToken ct = default)
     {
@@ -609,6 +823,25 @@ public class InventoryService(
         public int? ContainerLocationId { get; set; }
         public string? ContainerLocationName { get; set; }
         public bool IsCheckedOut { get; set; }
+    }
+
+    private sealed class ItemImageRow
+    {
+        public int ItemId { get; set; }
+        public int ImageId { get; set; }
+        public int Role { get; set; }
+        public bool IsPrimary { get; set; }
+        public int SortOrder { get; set; }
+        public string LinkedAt { get; set; } = string.Empty;
+        public string StorageKey { get; set; } = string.Empty;
+        public string ContentType { get; set; } = string.Empty;
+        public string? OriginalName { get; set; }
+        public int? Width { get; set; }
+        public int? Height { get; set; }
+        public long? ByteSize { get; set; }
+        public string? Sha256 { get; set; }
+        public string? SourceUrl { get; set; }
+        public string ImageCreatedAt { get; set; } = string.Empty;
     }
 
     private sealed class SplitSource

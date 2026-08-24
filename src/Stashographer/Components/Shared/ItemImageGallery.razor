@@ -1,0 +1,179 @@
+@inject InventoryService Inventory
+@inject ImageService Images
+@inject ISnackbar Snackbar
+@inject IDialogService Dialogs
+
+<MudPaper Class="pa-4 mb-3" Outlined="true">
+    <div class="d-flex justify-space-between align-center gap-2 flex-wrap mb-2">
+        <div>
+            <MudText Typo="Typo.subtitle2">Item images</MudText>
+            <MudText Typo="Typo.caption" Class="mud-text-secondary">
+                Extra views add context without changing the item quantity.
+            </MudText>
+        </div>
+        <div class="d-flex gap-2 align-center flex-wrap">
+            <MudSelect T="ItemImageRole" @bind-Value="_newRole" Label="New image role"
+                       Variant="Variant.Outlined" Margin="Margin.Dense" Style="min-width:130px">
+                @foreach (var role in Enum.GetValues<ItemImageRole>())
+                {
+                    <MudSelectItem Value="@role">@RoleLabel(role)</MudSelectItem>
+                }
+            </MudSelect>
+            <MudButton HtmlTag="label" for="item-gallery-upload" Variant="Variant.Outlined"
+                       StartIcon="@Icons.Material.Filled.AddPhotoAlternate" Disabled="_busy">
+                Add image
+            </MudButton>
+            <InputFile id="item-gallery-upload" hidden accept="image/*" OnChange="AddImageAsync" />
+        </div>
+    </div>
+
+    @if (_loading)
+    {
+        <MudProgressLinear Indeterminate="true" />
+    }
+    else if (_images.Count == 0)
+    {
+        <MudAlert Severity="Severity.Info" Dense="true">
+            No stored images yet. Receipt-only attachments do not become the catalogue image.
+        </MudAlert>
+    }
+    else
+    {
+        <MudGrid Spacing="2">
+            @foreach (var link in _images)
+            {
+                <MudItem xs="12" sm="6">
+                    <MudPaper Class="pa-2" Outlined="true">
+                        <div class="d-flex gap-2">
+                            <MudImage Src="@ImageUrls.For(link.ImageId, null, 180)" Alt="@RoleLabel(link.Role)"
+                                      Width="96" Height="96" ObjectFit="ObjectFit.Cover" Class="rounded" />
+                            <div class="flex-grow-1" style="min-width:0">
+                                <div class="d-flex gap-1 align-center flex-wrap mb-1">
+                                    @if (link.IsPrimary)
+                                    {
+                                        <MudChip T="string" Size="Size.Small" Color="Color.Primary"
+                                                 Icon="@Icons.Material.Filled.Star">Primary</MudChip>
+                                    }
+                                    @if (_derivations.TryGetValue(link.ImageId, out var source))
+                                    {
+                                        <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined"
+                                                 Icon="@Icons.Material.Filled.Crop">AI crop</MudChip>
+                                    }
+                                </div>
+                                <MudSelect T="ItemImageRole" Value="link.Role" Label="Role"
+                                           Variant="Variant.Outlined" Margin="Margin.Dense"
+                                           ValueChanged="@(role => ChangeRoleAsync(link, role))">
+                                    @foreach (var role in Enum.GetValues<ItemImageRole>())
+                                    {
+                                        <MudSelectItem Value="@role">@RoleLabel(role)</MudSelectItem>
+                                    }
+                                </MudSelect>
+                                <div class="d-flex gap-1 flex-wrap mt-1">
+                                    @if (!link.IsPrimary && link.Role != ItemImageRole.Receipt)
+                                    {
+                                        <MudButton Size="Size.Small" Variant="Variant.Text"
+                                                   StartIcon="@Icons.Material.Filled.Star"
+                                                   OnClick="@(() => MakePrimaryAsync(link))">Primary</MudButton>
+                                    }
+                                    @if (_derivations.TryGetValue(link.ImageId, out source))
+                                    {
+                                        <MudButton Size="Size.Small" Variant="Variant.Text"
+                                                   Href="@($"/img/{source.ParentImageId}")" Target="_blank"
+                                                   StartIcon="@Icons.Material.Filled.OpenInNew">Original</MudButton>
+                                    }
+                                    <MudButton Size="Size.Small" Variant="Variant.Text" Color="Color.Error"
+                                               StartIcon="@Icons.Material.Filled.LinkOff"
+                                               OnClick="@(() => DetachAsync(link))">Detach</MudButton>
+                                </div>
+                            </div>
+                        </div>
+                    </MudPaper>
+                </MudItem>
+            }
+        </MudGrid>
+    }
+</MudPaper>
+
+@code {
+    [Parameter, EditorRequired] public int ItemId { get; set; }
+    [Parameter] public EventCallback<int?> PrimaryImageChanged { get; set; }
+
+    private List<ItemImage> _images = new();
+    private Dictionary<int, ImageDerivation> _derivations = new();
+    private ItemImageRole _newRole = ItemImageRole.Front;
+    private bool _loading = true;
+    private bool _busy;
+
+    protected override async Task OnParametersSetAsync() => await ReloadAsync();
+
+    private async Task AddImageAsync(InputFileChangeEventArgs e)
+    {
+        var file = e.File;
+        if (file is null) return;
+        _busy = true;
+        try
+        {
+            await using var stream = file.OpenReadStream(20 * 1024 * 1024);
+            var image = await Images.SaveAsync(stream, file.ContentType, file.Name);
+            var linked = await Inventory.AttachImageAsync(ItemId, image.Id, _newRole);
+            if (linked.IsPrimary) await PrimaryImageChanged.InvokeAsync(image.Id);
+            await ReloadAsync();
+            Snackbar.Add("Image attached without changing quantity.", Severity.Success);
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Couldn't attach image: {ex.Message}", Severity.Error);
+        }
+        finally { _busy = false; }
+    }
+
+    private async Task ChangeRoleAsync(ItemImage link, ItemImageRole role)
+    {
+        await Inventory.UpdateImageRoleAsync(ItemId, link.ImageId, role);
+        await ReloadAsync();
+    }
+
+    private async Task MakePrimaryAsync(ItemImage link)
+    {
+        await Inventory.SetPrimaryImageAsync(ItemId, link.ImageId);
+        await PrimaryImageChanged.InvokeAsync(link.ImageId);
+        await ReloadAsync();
+    }
+
+    private async Task DetachAsync(ItemImage link)
+    {
+        var confirmed = await Dialogs.ShowMessageBoxAsync(
+            "Detach image?",
+            "This removes the image from this item only. Shared copies and the stored image are retained.",
+            yesText: "Detach",
+            cancelText: "Cancel");
+        if (confirmed != true) return;
+        await Inventory.DetachImageAsync(ItemId, link.ImageId);
+        var item = await Inventory.GetAsync(ItemId);
+        await PrimaryImageChanged.InvokeAsync(item?.ImageId);
+        await ReloadAsync();
+    }
+
+    private async Task ReloadAsync()
+    {
+        _loading = true;
+        _images = await Inventory.GetImagesAsync(ItemId);
+        _derivations.Clear();
+        foreach (var link in _images)
+        {
+            var derivations = await Images.GetDerivationsAsync(link.ImageId);
+            if (derivations.Count > 0) _derivations[link.ImageId] = derivations[0];
+        }
+        _loading = false;
+    }
+
+    private static string RoleLabel(ItemImageRole role) => role switch
+    {
+        ItemImageRole.Front => "Front",
+        ItemImageRole.Back => "Back",
+        ItemImageRole.Detail => "Detail",
+        ItemImageRole.Label => "Label",
+        ItemImageRole.Receipt => "Receipt",
+        _ => "Other"
+    };
+}

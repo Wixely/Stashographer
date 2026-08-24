@@ -3,6 +3,9 @@ using Microsoft.Extensions.Logging.Abstractions;
 using SixLabors.ImageSharp;
 using SixLabors.ImageSharp.PixelFormats;
 using Stashographer.Services.Images;
+using ImageDerivationKind = Stashographer.Data.Entities.ImageDerivationKind;
+using Item = Stashographer.Data.Entities.Item;
+using ItemImageRole = Stashographer.Data.Entities.ItemImageRole;
 
 namespace Stashographer.Tests;
 
@@ -101,6 +104,78 @@ public class ImageServiceTests
             Assert.Equal(50, crop.Width);
             Assert.Equal(50, crop.Height);
             Assert.True(File.Exists(Path.Combine(root, "originals", crop.StorageKey)));
+            var derivation = Assert.Single(await svc.GetDerivationsAsync(crop.Id));
+            Assert.Equal(source.Id, derivation.ParentImageId);
+            Assert.Equal(ImageDerivationKind.Crop, derivation.Kind);
+            Assert.Equal(0.25m, derivation.CropX);
+            Assert.Equal(0.25m, derivation.CropY);
+            Assert.Equal(0.5m, derivation.CropWidth);
+            Assert.Equal(0.5m, derivation.CropHeight);
+        }
+        finally { if (Directory.Exists(root)) Directory.Delete(root, true); }
+    }
+
+    [Fact]
+    public async Task Item_can_hold_multiple_semantic_views_without_changing_quantity()
+    {
+        await using var db = await TestDb.CreateAsync();
+        var root = Path.Combine(Path.GetTempPath(), $"stash_img_{Guid.NewGuid():N}");
+        try
+        {
+            var svc = Create(db, root);
+            var inventory = new Stashographer.Services.Inventory.InventoryService(db.Factory);
+            var front = await svc.SaveAsync(
+                new MemoryStream(await PngAsync(80, 80)), "image/png", "front.png");
+            var back = await svc.SaveAsync(
+                new MemoryStream(await PngAsync(90, 80)), "image/png", "back.png");
+            var item = await inventory.SaveAsync(new Item
+            {
+                Name = "Record sleeve", ItemKindId = 5, Quantity = 1, ImageId = front.Id
+            });
+
+            await inventory.UpdateImageRoleAsync(item.Id, front.Id, ItemImageRole.Front);
+            await inventory.AttachImageAsync(item.Id, back.Id, ItemImageRole.Back);
+
+            var views = await inventory.GetImagesAsync(item.Id);
+            Assert.Equal(2, views.Count);
+            Assert.True(views.Single(view => view.ImageId == front.Id).IsPrimary);
+            Assert.Equal(ItemImageRole.Front, views.Single(view => view.ImageId == front.Id).Role);
+            Assert.Equal(ItemImageRole.Back, views.Single(view => view.ImageId == back.Id).Role);
+            Assert.Equal(1, (await inventory.GetAsync(item.Id))!.Quantity);
+
+            await inventory.SetPrimaryImageAsync(item.Id, back.Id);
+            Assert.Equal(back.Id, (await inventory.GetAsync(item.Id))!.ImageId);
+            Assert.True((await inventory.GetImagesAsync(item.Id)).Single(view => view.ImageId == back.Id).IsPrimary);
+
+            await inventory.DetachImageAsync(item.Id, back.Id);
+            Assert.Equal(front.Id, (await inventory.GetAsync(item.Id))!.ImageId);
+            Assert.Single(await inventory.GetImagesAsync(item.Id));
+            Assert.Equal(1, (await inventory.GetAsync(item.Id))!.Quantity);
+        }
+        finally { if (Directory.Exists(root)) Directory.Delete(root, true); }
+    }
+
+    [Fact]
+    public async Task Receipt_image_can_be_shared_without_becoming_an_item_photo()
+    {
+        await using var db = await TestDb.CreateAsync();
+        var root = Path.Combine(Path.GetTempPath(), $"stash_img_{Guid.NewGuid():N}");
+        try
+        {
+            var svc = Create(db, root);
+            var inventory = new Stashographer.Services.Inventory.InventoryService(db.Factory);
+            var receipt = await svc.SaveAsync(
+                new MemoryStream(await PngAsync(120, 200)), "image/png", "receipt.png");
+            var first = await inventory.SaveAsync(new Item { Name = "Milk", ItemKindId = 1 });
+            var second = await inventory.SaveAsync(new Item { Name = "Bread", ItemKindId = 1 });
+
+            await inventory.AttachImageAsync(first.Id, receipt.Id, ItemImageRole.Receipt);
+            await inventory.AttachImageAsync(second.Id, receipt.Id, ItemImageRole.Receipt);
+
+            Assert.Null((await inventory.GetAsync(first.Id))!.ImageId);
+            Assert.Null((await inventory.GetAsync(second.Id))!.ImageId);
+            Assert.Equal(ItemImageRole.Receipt, Assert.Single(await inventory.GetImagesAsync(first.Id)).Role);
+            Assert.Equal(ItemImageRole.Receipt, Assert.Single(await inventory.GetImagesAsync(second.Id)).Role);
         }
         finally { if (Directory.Exists(root)) Directory.Delete(root, true); }
     }

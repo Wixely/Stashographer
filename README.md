@@ -48,6 +48,9 @@ Every container gets a printable QR code — scan it to see what's meant to be i
 - **Automatic photo framing** — AI bounding boxes produce a focused, square-ish crop for each
   detected object. Explicit single-item captures crop around the dominant object and fall back
   to the original photo when no reliable bound is available.
+- **Multi-view item images** — attach front, back, label, detail, and shared receipt images
+  without changing quantity. AI crops retain their source-image relationship and exact crop
+  region, so the untouched original remains available when a crop needs correcting.
 - **Locations & containers** — put items in a room or inside a box/shelf/drawer/bin. Each
   container gets a **printable QR code**; scan it to see what's (meant to be) inside.
 - **Fast placement** — queue review remembers recent location/container targets, while the
@@ -209,7 +212,7 @@ dependencies only (see [THIRD-PARTY-NOTICES](THIRD-PARTY-NOTICES.md)).
 ## Development
 
 ```bash
-dotnet test                    # 135 tests, no network access required
+dotnet test                    # 137 tests, no network access required
 dotnet build -c Release
 ```
 

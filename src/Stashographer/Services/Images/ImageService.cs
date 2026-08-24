@@ -213,6 +213,8 @@ public class ImageService
         if (!File.Exists(path)) return null;
 
         using var img = await SixLabors.ImageSharp.Image.LoadAsync(path, ct);
+        var sourceWidth = img.Width;
+        var sourceHeight = img.Height;
 
         // Expand around the detected object to the requested pixel aspect ratio. Expansion
         // preserves the whole object; the later bounds clamp tolerates objects near an edge.
@@ -249,7 +251,52 @@ public class ImageService
         using var ms = new MemoryStream();
         await img.SaveAsPngAsync(ms, ct);
         ms.Position = 0;
-        return await SaveAsync(ms, "image/png", $"crop-of-{imageId}.png", null, ct);
+        var crop = await SaveAsync(ms, "image/png", $"crop-of-{imageId}.png", null, ct);
+        if (crop.Id != imageId)
+        {
+            using var conn = await _db.OpenAsync(ct);
+            await conn.ExecuteAsync("""
+                INSERT INTO ImageDerivations
+                    (ParentImageId, ChildImageId, Kind, CropX, CropY, CropWidth, CropHeight, CreatedAt)
+                VALUES
+                    (@parentImageId, @childImageId, @kind, @cropX, @cropY, @cropWidth, @cropHeight, @createdAt)
+                ON CONFLICT(ParentImageId, ChildImageId, Kind) DO UPDATE SET
+                    CropX = excluded.CropX,
+                    CropY = excluded.CropY,
+                    CropWidth = excluded.CropWidth,
+                    CropHeight = excluded.CropHeight;
+                """, new
+            {
+                parentImageId = imageId,
+                childImageId = crop.Id,
+                kind = (int)Entities.ImageDerivationKind.Crop,
+                cropX = (decimal)rx / sourceWidth,
+                cropY = (decimal)ry / sourceHeight,
+                cropWidth = (decimal)rw / sourceWidth,
+                cropHeight = (decimal)rh / sourceHeight,
+                createdAt = DateTimeOffset.UtcNow.ToString("O")
+            });
+        }
+        return crop;
+    }
+
+    public async Task<List<Entities.ImageDerivation>> GetDerivationsAsync(
+        int childImageId, CancellationToken ct = default)
+    {
+        using var conn = await _db.OpenAsync(ct);
+        var rows = await conn.QueryAsync<DerivationRow>("""
+            SELECT ParentImageId, ChildImageId, Kind, CropX, CropY, CropWidth, CropHeight, CreatedAt
+            FROM ImageDerivations WHERE ChildImageId = @childImageId ORDER BY CreatedAt;
+            """, new { childImageId });
+        return rows.Select(row => new Entities.ImageDerivation(
+            row.ParentImageId,
+            row.ChildImageId,
+            (Entities.ImageDerivationKind)row.Kind,
+            row.CropX,
+            row.CropY,
+            row.CropWidth,
+            row.CropHeight,
+            DateTimeOffset.Parse(row.CreatedAt))).ToList();
     }
 
     /// <summary>Returns a thumbnail no wider than <paramref name="width"/>, generating and caching it once.</summary>
@@ -286,10 +333,29 @@ public class ImageService
         if (image is null) return;
 
         using var conn = await _db.OpenAsync(ct);
-        await conn.ExecuteAsync("UPDATE Items SET ImageId = NULL WHERE ImageId = @id", new { id });
-        await conn.ExecuteAsync("UPDATE Containers SET ImageId = NULL WHERE ImageId = @id", new { id });
-        await conn.ExecuteAsync("UPDATE Locations SET ImageId = NULL WHERE ImageId = @id", new { id });
-        await conn.ExecuteAsync("DELETE FROM Images WHERE Id = @id", new { id });
+        using var tx = conn.BeginTransaction();
+        var affectedItems = (await conn.QueryAsync<int>(
+            "SELECT ItemId FROM ItemImages WHERE ImageId = @id AND IsPrimary = 1",
+            new { id }, tx)).ToList();
+        await conn.ExecuteAsync("UPDATE Containers SET ImageId = NULL WHERE ImageId = @id", new { id }, tx);
+        await conn.ExecuteAsync("UPDATE Locations SET ImageId = NULL WHERE ImageId = @id", new { id }, tx);
+        await conn.ExecuteAsync("DELETE FROM Images WHERE Id = @id", new { id }, tx);
+        foreach (var itemId in affectedItems)
+        {
+            var replacement = await conn.QuerySingleOrDefaultAsync<int?>("""
+                SELECT ImageId FROM ItemImages
+                WHERE ItemId = @itemId AND Role <> @receipt
+                ORDER BY SortOrder, CreatedAt LIMIT 1;
+                """, new { itemId, receipt = (int)Entities.ItemImageRole.Receipt }, tx);
+            if (replacement is { } imageId)
+                await conn.ExecuteAsync(
+                    "UPDATE ItemImages SET IsPrimary = 1 WHERE ItemId = @itemId AND ImageId = @imageId",
+                    new { itemId, imageId }, tx);
+            await conn.ExecuteAsync(
+                "UPDATE Items SET ImageId = @imageId, UpdatedAt = @now WHERE Id = @itemId",
+                new { itemId, imageId = replacement, now = DateTimeOffset.UtcNow.ToString("O") }, tx);
+        }
+        tx.Commit();
 
         TryDelete(Path.Combine(_originalsDir, image.StorageKey));
         if (Directory.Exists(_thumbsDir))
@@ -301,5 +367,17 @@ public class ImageService
     {
         try { if (File.Exists(path)) File.Delete(path); }
         catch (IOException ex) { _logger.LogWarning(ex, "Could not delete image file {Path}", path); }
+    }
+
+    private sealed class DerivationRow
+    {
+        public int ParentImageId { get; set; }
+        public int ChildImageId { get; set; }
+        public int Kind { get; set; }
+        public decimal? CropX { get; set; }
+        public decimal? CropY { get; set; }
+        public decimal? CropWidth { get; set; }
+        public decimal? CropHeight { get; set; }
+        public string CreatedAt { get; set; } = string.Empty;
     }
 }

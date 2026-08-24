@@ -109,10 +109,17 @@ else
         </MudItem>
 
         <MudItem xs="12" md="5">
-            <MudPaper Class="pa-4 mb-3 d-flex justify-center" Outlined="true">
-                <ImagePicker @bind-ImageId="_item.ImageId" @bind-FallbackUrl="_item.ThumbnailUrl"
-                             Label="Add item photo" Width="220px" Height="200px" />
-            </MudPaper>
+            @if (_item.Id == 0)
+            {
+                <MudPaper Class="pa-4 mb-3 d-flex justify-center" Outlined="true">
+                    <ImagePicker @bind-ImageId="_item.ImageId" @bind-FallbackUrl="_item.ThumbnailUrl"
+                                 Label="Add item photo" Width="220px" Height="200px" />
+                </MudPaper>
+            }
+            else
+            {
+                <ItemImageGallery ItemId="_item.Id" PrimaryImageChanged="SetPrimaryImage" />
+            }
 
             <MudPaper Class="pa-4 mb-3" Outlined="true">
                 <MudText Typo="Typo.subtitle2" Class="mb-2">Where is it?</MudText>
@@ -222,6 +229,8 @@ else
             Snackbar.Add(ex.Message, Severity.Error);
         }
     }
+
+    private void SetPrimaryImage(int? imageId) => _item.ImageId = imageId;
 
     private async Task Delete()
     {

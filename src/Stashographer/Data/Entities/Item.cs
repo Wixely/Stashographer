@@ -54,6 +54,9 @@ public class Item
     /// <summary>Primary stored image (see <c>Images</c> table), served at <c>/img/{id}</c>.</summary>
     public int? ImageId { get; set; }
 
+    /// <summary>All locally stored views. Loaded explicitly for item detail workflows.</summary>
+    public List<ItemImage> Images { get; set; } = new();
+
     /// <summary>Flexible per-item metadata, persisted as JSON in <c>AttributesJson</c>.</summary>
     public Dictionary<string, string> Attributes { get; set; } = new();
 
