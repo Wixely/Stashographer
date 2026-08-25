@@ -94,6 +94,80 @@ public class IntakeQueueTests
     }
 
     [Fact]
+    public async Task Live_barcode_waits_for_repeat_window_and_uses_confirmed_quantity()
+    {
+        await using var harness = await Harness.CreateAsync();
+        const string code = "5012345678999";
+        harness.Lookup.Result = new LookupResult
+        {
+            Found = true, Code = code, Name = "Bulk cereal", SuggestedKind = "Grocery"
+        };
+
+        var queued = await harness.Queue.EnqueueLiveBarcodeAsync(code, TimeSpan.FromMinutes(1));
+
+        Assert.False(await harness.Queue.ProcessAsync(
+            queued.Id, new IntakeOptions(), aiEnabled: false));
+        await harness.Queue.UpdateLiveBarcodeQuantityAsync(
+            queued.Id, code, 3, TimeSpan.FromMinutes(1));
+        await harness.Queue.FinalizeLiveBarcodeAsync(queued.Id);
+        Assert.True(await harness.Queue.ProcessAsync(
+            queued.Id, new IntakeOptions(), aiEnabled: false));
+
+        var ready = (await harness.Queue.GetAsync(queued.Id))!;
+        Assert.Equal(IntakeQueueStatus.ReadyForReview, ready.Status);
+        Assert.Equal(3, ready.CaptureQuantity);
+        Assert.Equal(3, ready.Draft.Quantity);
+        Assert.Equal(3, ready.IncrementBy);
+
+        var applied = await harness.Queue.AcceptAsync(ready.Id, ready.Draft, null);
+        Assert.Equal(3, (await harness.Inventory.GetAsync(applied.ItemId))!.Quantity);
+    }
+
+    [Fact]
+    public async Task Finalized_live_barcode_auto_accepts_confirmed_increment_quantity()
+    {
+        await using var harness = await Harness.CreateAsync();
+        var existing = await harness.Inventory.SaveAsync(new Item
+        {
+            Name = "Sparkling water", Code = "5012345678982", ItemKindId = 1, Quantity = 1
+        });
+        harness.Lookup.Result = new LookupResult
+        {
+            Found = true, Code = existing.Code, Name = existing.Name, SuggestedKind = "Grocery"
+        };
+
+        var queued = await harness.Queue.EnqueueLiveBarcodeAsync(
+            existing.Code!, TimeSpan.FromMinutes(1));
+        await harness.Queue.UpdateLiveBarcodeQuantityAsync(
+            queued.Id, existing.Code!, 4, TimeSpan.FromMinutes(1));
+        await harness.Queue.FinalizeLiveBarcodeAsync(queued.Id);
+        await harness.Queue.ProcessAsync(
+            queued.Id, new IntakeOptions { RequireReview = false }, aiEnabled: false);
+
+        Assert.Equal(IntakeQueueStatus.Accepted, (await harness.Queue.GetAsync(queued.Id))!.Status);
+        Assert.Equal(5, (await harness.Inventory.GetAsync(existing.Id))!.Quantity);
+    }
+
+    [Fact]
+    public async Task Queue_worker_skips_held_live_barcode_and_processes_next_capture()
+    {
+        await using var harness = await Harness.CreateAsync();
+        var held = await harness.Queue.EnqueueLiveBarcodeAsync(
+            "5012345678975", TimeSpan.FromMinutes(1));
+        harness.Lookup.Result = new LookupResult
+        {
+            Found = true, Code = "5012345678968", Name = "Next item", SuggestedKind = "Other"
+        };
+        var next = await harness.Queue.EnqueueBarcodeAsync("5012345678968");
+
+        Assert.True(await harness.Queue.ProcessNextAsync(
+            new IntakeOptions(), aiEnabled: false));
+
+        Assert.Equal(IntakeQueueStatus.Pending, (await harness.Queue.GetAsync(held.Id))!.Status);
+        Assert.Equal(IntakeQueueStatus.ReadyForReview, (await harness.Queue.GetAsync(next.Id))!.Status);
+    }
+
+    [Fact]
     public async Task Split_barcode_requires_location_choice_instead_of_incrementing_arbitrarily()
     {
         await using var harness = await Harness.CreateAsync();

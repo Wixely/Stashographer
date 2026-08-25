@@ -33,14 +33,19 @@ public class IntakeQueueService(
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
 
     public Task<IntakeQueueItem> EnqueueBarcodeAsync(string code, CancellationToken ct = default) =>
-        EnqueueBarcodeCoreAsync(code, null, ct);
+        EnqueueBarcodeCoreAsync(code, null, null, ct);
 
     public Task<IntakeQueueItem> EnqueueBarcodeFromBrowserAsync(
         string code, string browserUploadToken, CancellationToken ct = default) =>
-        EnqueueBarcodeCoreAsync(code, browserUploadToken, ct);
+        EnqueueBarcodeCoreAsync(code, browserUploadToken, null, ct);
+
+    public Task<IntakeQueueItem> EnqueueLiveBarcodeAsync(
+        string code, TimeSpan holdFor, CancellationToken ct = default) =>
+        EnqueueBarcodeCoreAsync(code, null, DateTimeOffset.UtcNow.Add(holdFor), ct);
 
     private async Task<IntakeQueueItem> EnqueueBarcodeCoreAsync(
-        string code, string? browserUploadToken, CancellationToken ct)
+        string code, string? browserUploadToken, DateTimeOffset? liveCaptureHoldUntil,
+        CancellationToken ct)
     {
         code = code.Trim();
         if (code.Length == 0) throw new ArgumentException("A barcode or ISBN is required.", nameof(code));
@@ -53,6 +58,8 @@ public class IntakeQueueService(
             SessionId = await GetOrCreateActiveSessionIdAsync(ct),
             SourceType = IntakeSourceType.Barcode,
             SourceCode = code,
+            CaptureQuantity = 1,
+            LiveCaptureHoldUntil = liveCaptureHoldUntil,
             BrowserUploadToken = browserUploadToken,
             Status = IntakeQueueStatus.Pending,
             Draft = new Item { Name = string.Empty, Code = code, ItemKindId = 7 },
@@ -133,6 +140,52 @@ public class IntakeQueueService(
         item.Id = await InsertIdempotentlyAsync(item, ct);
         signal.Pulse();
         return item;
+    }
+
+    public async Task UpdateLiveBarcodeQuantityAsync(
+        int id, string code, int quantity, TimeSpan holdFor, CancellationToken ct = default)
+    {
+        code = code.Trim();
+        if (quantity < 1) throw new ArgumentOutOfRangeException(nameof(quantity));
+        using var conn = await db.OpenAsync(ct);
+        var changed = await conn.ExecuteAsync("""
+            UPDATE IntakeQueueItems
+            SET CaptureQuantity = @quantity,
+                DraftJson = json_set(DraftJson, '$.quantity', @quantity),
+                IncrementBy = @quantity,
+                LiveCaptureHoldUntil = @holdUntil
+            WHERE Id = @id AND SourceType = @barcode AND SourceCode = @code
+              AND Status NOT IN (@accepted, @rejected);
+            """, new
+        {
+            id,
+            code,
+            quantity,
+            holdUntil = DateTimeOffset.UtcNow.Add(holdFor).ToString("O"),
+            barcode = (int)IntakeSourceType.Barcode,
+            accepted = (int)IntakeQueueStatus.Accepted,
+            rejected = (int)IntakeQueueStatus.Rejected
+        });
+        if (changed == 0)
+            throw new InvalidOperationException("That barcode capture is no longer available to update.");
+        signal.Pulse();
+    }
+
+    public async Task FinalizeLiveBarcodeAsync(int id, CancellationToken ct = default)
+    {
+        using var conn = await db.OpenAsync(ct);
+        await conn.ExecuteAsync("""
+            UPDATE IntakeQueueItems SET LiveCaptureHoldUntil = NULL
+            WHERE Id = @id AND SourceType = @barcode
+              AND Status NOT IN (@accepted, @rejected);
+            """, new
+        {
+            id,
+            barcode = (int)IntakeSourceType.Barcode,
+            accepted = (int)IntakeQueueStatus.Accepted,
+            rejected = (int)IntakeQueueStatus.Rejected
+        });
+        signal.Pulse();
     }
 
     /// <summary>
@@ -278,7 +331,8 @@ public class IntakeQueueService(
             var changed = await conn.ExecuteAsync("""
                 UPDATE IntakeQueueItems
                 SET Status = @processing, ProcessingStartedAt = @now, Error = NULL
-                WHERE Id = @id AND Status IN (@pending, @failed);
+                WHERE Id = @id AND Status IN (@pending, @failed)
+                  AND (LiveCaptureHoldUntil IS NULL OR LiveCaptureHoldUntil <= @now);
                 """, new
             {
                 id,
@@ -373,6 +427,7 @@ public class IntakeQueueService(
         var id = await conn.QueryFirstOrDefaultAsync<int?>("""
             SELECT Id FROM IntakeQueueItems
             WHERE Status = @pending
+              AND (LiveCaptureHoldUntil IS NULL OR LiveCaptureHoldUntil <= @now)
               AND ((SourceType = @barcode AND @barcodes = 1)
                 OR (SourceType IN (@photo, @receipt) AND @photos = 1 AND @ai = 1))
             ORDER BY Id LIMIT 1;
@@ -384,7 +439,8 @@ public class IntakeQueueService(
             receipt = (int)IntakeSourceType.Receipt,
             barcodes = options.AutoProcessBarcodes ? 1 : 0,
             photos = options.AutoProcessPhotos ? 1 : 0,
-            ai = aiEnabled ? 1 : 0
+            ai = aiEnabled ? 1 : 0,
+            now = DateTimeOffset.UtcNow.ToString("O")
         });
         return id is not null && await ProcessAsync(id.Value, options, aiEnabled, ct);
     }
@@ -754,6 +810,7 @@ public class IntakeQueueService(
     private async Task<ProcessedCapture> ProcessBarcodeAsync(IntakeQueueItem queued, CancellationToken ct)
     {
         var code = queued.SourceCode ?? throw new InvalidOperationException("Queued barcode is empty.");
+        var quantity = Math.Max(1, queued.CaptureQuantity);
         var result = await lookup.LookupAsync(code, ct);
         var draft = result.Found
             ? new Item
@@ -763,9 +820,10 @@ public class IntakeQueueService(
                 Description = result.Description,
                 ThumbnailUrl = result.ThumbnailUrl,
                 Attributes = new(result.Attributes),
-                ItemKindId = KindId(result.SuggestedKind)
+                ItemKindId = KindId(result.SuggestedKind),
+                Quantity = quantity
             }
-            : new Item { Name = string.Empty, Code = code, ItemKindId = 7 };
+            : new Item { Name = string.Empty, Code = code, ItemKindId = 7, Quantity = quantity };
 
         var candidates = await inventory.FindCandidatesAsync(draft.Name, code, ct: ct);
         var exact = candidates
@@ -773,9 +831,9 @@ public class IntakeQueueService(
             .ToList();
         return exact.Count switch
         {
-            0 => new ProcessedCapture(draft, IntakeAction.CreateNew, null, null, 1),
-            1 => new ProcessedCapture(draft, IntakeAction.IncrementExisting, exact[0].Id, exact[0].Name, 1),
-            _ => new ProcessedCapture(draft, IntakeAction.ChooseCandidate, null, null, 1)
+            0 => new ProcessedCapture(draft, IntakeAction.CreateNew, null, null, quantity),
+            1 => new ProcessedCapture(draft, IntakeAction.IncrementExisting, exact[0].Id, exact[0].Name, quantity),
+            _ => new ProcessedCapture(draft, IntakeAction.ChooseCandidate, null, null, quantity)
         };
     }
 
@@ -1008,10 +1066,15 @@ public class IntakeQueueService(
     {
         using var conn = await db.OpenAsync(ct);
         await conn.ExecuteAsync("""
-            UPDATE IntakeQueueItems SET Status = @Ready, DraftJson = @Draft, ImageId = @ImageId,
+            UPDATE IntakeQueueItems SET Status = @Ready,
+                DraftJson = CASE WHEN SourceType = @Barcode
+                    THEN json_set(@Draft, '$.quantity', CaptureQuantity) ELSE @Draft END,
+                ImageId = @ImageId,
                 IsMultiPhoto = 0,
                 ProposalAction = @Action, MatchedItemId = @MatchedId,
-                MatchedItemName = @MatchedName, IncrementBy = @IncrementBy,
+                MatchedItemName = @MatchedName,
+                IncrementBy = CASE WHEN SourceType = @Barcode
+                    THEN CaptureQuantity ELSE @IncrementBy END,
                 MatchedQueueItemId = @MatchedQueueItemId,
                 CaptureRelationship = @CaptureRelationship,
                 RelationshipConfidence = @RelationshipConfidence,
@@ -1023,6 +1086,7 @@ public class IntakeQueueService(
         {
             Id = id,
             Ready = (int)IntakeQueueStatus.ReadyForReview,
+            Barcode = (int)IntakeSourceType.Barcode,
             Draft = JsonSerializer.Serialize(processed.Draft, Json),
             ImageId = processed.Draft.ImageId,
             Action = (int)processed.Action,
@@ -1180,10 +1244,12 @@ public class IntakeQueueService(
         using var conn = await db.OpenAsync(ct);
         return await conn.ExecuteScalarAsync<int>("""
             INSERT INTO IntakeQueueItems
-                (SessionId, SourceType, SourceTypeOverride, SourceCode, BrowserUploadToken, ImageId, IsMultiPhoto, Status, DraftJson,
+                (SessionId, SourceType, SourceTypeOverride, SourceCode, CaptureQuantity, LiveCaptureHoldUntil,
+                 BrowserUploadToken, ImageId, IsMultiPhoto, Status, DraftJson,
                  ProposalAction, IncrementBy, CreatedAt, ProcessedAt)
             VALUES
-                (@SessionId, @SourceType, @SourceTypeOverride, @SourceCode, @BrowserUploadToken, @ImageId, @IsMultiPhoto, @Status, @DraftJson,
+                (@SessionId, @SourceType, @SourceTypeOverride, @SourceCode, @CaptureQuantity, @LiveCaptureHoldUntil,
+                 @BrowserUploadToken, @ImageId, @IsMultiPhoto, @Status, @DraftJson,
                  @ProposalAction, @IncrementBy, @CreatedAt, @ProcessedAt);
             SELECT last_insert_rowid();
             """, new
@@ -1192,6 +1258,8 @@ public class IntakeQueueService(
             SourceType = (int)item.SourceType,
             SourceTypeOverride = item.SourceTypeOverride ? 1 : 0,
             item.SourceCode,
+            item.CaptureQuantity,
+            LiveCaptureHoldUntil = item.LiveCaptureHoldUntil?.ToString("O"),
             item.BrowserUploadToken,
             item.ImageId,
             IsMultiPhoto = item.IsMultiPhoto ? 1 : 0,
@@ -1287,6 +1355,8 @@ public class IntakeQueueService(
         SourceType = (IntakeSourceType)row.SourceType,
         SourceTypeOverride = row.SourceTypeOverride,
         SourceCode = row.SourceCode,
+        CaptureQuantity = Math.Max(1, row.CaptureQuantity),
+        LiveCaptureHoldUntil = ParseDate(row.LiveCaptureHoldUntil),
         BrowserUploadToken = row.BrowserUploadToken,
         ImageId = row.ImageId,
         IsMultiPhoto = row.IsMultiPhoto,
@@ -1321,7 +1391,8 @@ public class IntakeQueueService(
         string.IsNullOrWhiteSpace(value) ? null : DateTimeOffset.Parse(value);
 
     private const string QueueSelect = """
-        SELECT q.Id, q.SessionId, q.SourceType, q.SourceTypeOverride, q.SourceCode, q.BrowserUploadToken,
+        SELECT q.Id, q.SessionId, q.SourceType, q.SourceTypeOverride, q.SourceCode,
+               q.CaptureQuantity, q.LiveCaptureHoldUntil, q.BrowserUploadToken,
                q.ImageId, q.IsMultiPhoto, q.Status,
                q.DraftJson, q.ReceiptJson, q.ProposalAction, q.MatchedItemId, q.MatchedItemName,
                q.MatchedQueueItemId, q.CaptureRelationship, q.RelationshipConfidence,
@@ -1338,6 +1409,8 @@ public class IntakeQueueService(
         public int SourceType { get; set; }
         public bool SourceTypeOverride { get; set; }
         public string? SourceCode { get; set; }
+        public int CaptureQuantity { get; set; }
+        public string? LiveCaptureHoldUntil { get; set; }
         public string? BrowserUploadToken { get; set; }
         public int? ImageId { get; set; }
         public bool IsMultiPhoto { get; set; }

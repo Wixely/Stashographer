@@ -84,7 +84,9 @@ else
                 else if (queued.Status == IntakeQueueStatus.Pending)
                 {
                     <MudAlert Severity="Severity.Info" Class="mb-3">
-                        Waiting for processing. You can process it now or complete the fields manually.
+                        @(queued.LiveCaptureHoldUntil > DateTimeOffset.UtcNow
+                            ? $"Live scan captured {queued.CaptureQuantity} in this barcode group. It will process after the brief repeat-scan window."
+                            : "Waiting for processing. You can process it now or complete the fields manually.")
                     </MudAlert>
                 }
 
@@ -419,6 +421,8 @@ else
         try
         {
             if (current.Status == IntakeQueueStatus.Failed) await IntakeQueue.RetryAsync(current.Id);
+            if (current.LiveCaptureHoldUntil is not null)
+                await IntakeQueue.FinalizeLiveBarcodeAsync(current.Id);
             await IntakeQueue.ProcessAsync(current.Id, _options, Ai.IsEnabled);
             await LoadAsync(true);
         }

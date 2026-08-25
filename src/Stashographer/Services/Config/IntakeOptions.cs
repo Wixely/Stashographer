@@ -17,4 +17,13 @@ public class IntakeOptions
 
     /// <summary>Number of earlier captures supplied as weak session context to the model.</summary>
     public int ContextItemCount { get; set; } = 8;
+
+    /// <summary>Keep the camera stream open after a successful live barcode read.</summary>
+    public bool ContinueLiveScanning { get; set; } = true;
+
+    /// <summary>Visible pause between accepted live barcode reads, in milliseconds.</summary>
+    public int LiveScanCooldownMilliseconds { get; set; } = 2000;
+
+    /// <summary>Ask for a total quantity when the same barcode is intentionally read again.</summary>
+    public bool PromptForConsecutiveBarcodeQuantity { get; set; } = true;
 }

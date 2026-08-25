@@ -80,6 +80,14 @@ public class SettingsService(IDbConnectionFactory db)
             AutoProcessBarcodes = ReadBool(stored, "Intake.AutoProcessBarcodes", defaults.AutoProcessBarcodes),
             AutoProcessPhotos = ReadBool(stored, "Intake.AutoProcessPhotos", defaults.AutoProcessPhotos),
             RequireReview = ReadBool(stored, "Intake.RequireReview", defaults.RequireReview),
+            ContinueLiveScanning = ReadBool(stored, "Intake.ContinueLiveScanning", defaults.ContinueLiveScanning),
+            PromptForConsecutiveBarcodeQuantity = ReadBool(
+                stored, "Intake.PromptForConsecutiveBarcodeQuantity",
+                defaults.PromptForConsecutiveBarcodeQuantity),
+            LiveScanCooldownMilliseconds = stored.TryGetValue("Intake.LiveScanCooldownMilliseconds", out var cooldown)
+                && int.TryParse(cooldown, out var parsedCooldown)
+                    ? Math.Clamp(parsedCooldown, 500, 5000)
+                    : defaults.LiveScanCooldownMilliseconds,
             ContextItemCount = stored.TryGetValue("Intake.ContextItemCount", out var count)
                 && int.TryParse(count, out var parsed)
                     ? Math.Clamp(parsed, 0, 25)
@@ -94,6 +102,10 @@ public class SettingsService(IDbConnectionFactory db)
             ["Intake.AutoProcessBarcodes"] = options.AutoProcessBarcodes.ToString(),
             ["Intake.AutoProcessPhotos"] = options.AutoProcessPhotos.ToString(),
             ["Intake.RequireReview"] = options.RequireReview.ToString(),
+            ["Intake.ContinueLiveScanning"] = options.ContinueLiveScanning.ToString(),
+            ["Intake.PromptForConsecutiveBarcodeQuantity"] = options.PromptForConsecutiveBarcodeQuantity.ToString(),
+            ["Intake.LiveScanCooldownMilliseconds"] = Math.Clamp(
+                options.LiveScanCooldownMilliseconds, 500, 5000).ToString(),
             ["Intake.ContextItemCount"] = Math.Clamp(options.ContextItemCount, 0, 25).ToString()
         }, ct);
 

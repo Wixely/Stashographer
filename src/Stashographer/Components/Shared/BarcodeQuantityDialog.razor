@@ -1,0 +1,32 @@
+<MudDialog>
+    <DialogContent>
+        <MudText Typo="Typo.body2" Class="mb-3">
+            <b>@Code</b> was scanned twice in a row. Choose the total number of copies.
+        </MudText>
+        <MudNumericField T="int" @bind-Value="_quantity" Label="Total quantity"
+                         Min="1" Max="9999" Immediate="true" AutoFocus="true"
+                         Variant="Variant.Outlined"
+                         HelperText="The second scan sets the suggested total to 2." />
+    </DialogContent>
+    <DialogActions>
+        <MudButton OnClick="@(() => Dialog.Cancel())">Keep @_currentQuantity</MudButton>
+        <MudButton Color="Color.Primary" Variant="Variant.Filled"
+                   StartIcon="@Icons.Material.Filled.Done" OnClick="Confirm">
+            Use @_quantity
+        </MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private IMudDialogInstance Dialog { get; set; } = default!;
+    [Parameter] public string Code { get; set; } = string.Empty;
+    [Parameter] public int SuggestedQuantity { get; set; } = 2;
+
+    private int _quantity = 2;
+    private int _currentQuantity => Math.Max(1, SuggestedQuantity - 1);
+
+    protected override void OnParametersSet() =>
+        _quantity = Math.Clamp(SuggestedQuantity, 1, 9999);
+
+    private void Confirm() => Dialog.Close(DialogResult.Ok(Math.Clamp(_quantity, 1, 9999)));
+}

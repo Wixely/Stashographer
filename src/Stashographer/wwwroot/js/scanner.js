@@ -108,6 +108,7 @@ window.stashScanner = (() => {
     let detector = null;
     let rafId = null;
     let video = null;
+    let running = false;
 
     const unavailableReason = () => {
         if (!window.isSecureContext) return 'insecure';
@@ -118,12 +119,13 @@ window.stashScanner = (() => {
 
     const supported = () => unavailableReason() === null;
 
-    async function start(videoEl, dotNetRef) {
+    async function start(videoEl, dotNetRef, cooldownMilliseconds) {
         const unavailable = unavailableReason();
         if (unavailable) {
             return { ok: false, reason: unavailable };
         }
         try {
+            stop();
             detector = new BarcodeDetector({
                 formats: ['ean_13', 'ean_8', 'upc_a', 'upc_e', 'code_128', 'qr_code']
             });
@@ -134,26 +136,44 @@ window.stashScanner = (() => {
             video.srcObject = stream;
             await video.play();
 
+            const cooldown = Math.min(5000, Math.max(500, Number(cooldownMilliseconds) || 2000));
+            let cooldownUntil = 0;
             let lastCode = null;
-            let lastAt = 0;
+            let clearFrameSince = null;
+            let sameCodeArmed = true;
+            let callbackInFlight = false;
+            running = true;
+
             const scan = async () => {
-                if (!detector || !video) return;
+                if (!running || !detector || !video) return;
                 try {
+                    const now = Date.now();
                     const codes = await detector.detect(video);
-                    if (codes && codes.length > 0) {
-                        const value = codes[0].rawValue;
-                        const now = Date.now();
-                        // Debounce repeat reads of the same code within 3s.
-                        if (value && (value !== lastCode || now - lastAt > 3000)) {
+                    const value = codes && codes.length > 0 ? codes[0].rawValue : null;
+
+                    if (!value) {
+                        if (lastCode && now >= cooldownUntil) {
+                            clearFrameSince ??= now;
+                            if (now - clearFrameSince >= 350) sameCodeArmed = true;
+                        }
+                    } else {
+                        clearFrameSince = null;
+                        const isNewCode = value !== lastCode;
+                        const intentionalRepeat = value === lastCode && sameCodeArmed;
+                        if (!callbackInFlight && now >= cooldownUntil && (isNewCode || intentionalRepeat)) {
+                            callbackInFlight = true;
+                            sameCodeArmed = false;
                             lastCode = value;
-                            lastAt = now;
                             await dotNetRef.invokeMethodAsync('OnCodeScanned', value);
+                            cooldownUntil = Date.now() + cooldown;
+                            callbackInFlight = false;
                         }
                     }
                 } catch (e) {
-                    // transient detect failures are ignored; keep scanning
+                    // Transient detector or interop failures do not close the camera.
+                    callbackInFlight = false;
                 }
-                rafId = requestAnimationFrame(scan);
+                if (running) rafId = requestAnimationFrame(scan);
             };
             rafId = requestAnimationFrame(scan);
             return { ok: true };
@@ -164,6 +184,7 @@ window.stashScanner = (() => {
     }
 
     function stop() {
+        running = false;
         if (rafId) { cancelAnimationFrame(rafId); rafId = null; }
         if (stream) { stream.getTracks().forEach(t => t.stop()); stream = null; }
         if (video) { video.srcObject = null; video = null; }

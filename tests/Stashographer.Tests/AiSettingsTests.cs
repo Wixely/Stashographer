@@ -83,6 +83,9 @@ public class AiSettingsTests
         Assert.True(defaults.AutoProcessBarcodes);
         Assert.True(defaults.AutoProcessPhotos);
         Assert.True(defaults.RequireReview);
+        Assert.True(defaults.ContinueLiveScanning);
+        Assert.True(defaults.PromptForConsecutiveBarcodeQuantity);
+        Assert.Equal(2000, defaults.LiveScanCooldownMilliseconds);
 
         await service.SaveIntakeOptionsAsync(new IntakeOptions
         {
@@ -90,6 +93,9 @@ public class AiSettingsTests
             AutoProcessBarcodes = false,
             AutoProcessPhotos = false,
             RequireReview = false,
+            ContinueLiveScanning = false,
+            PromptForConsecutiveBarcodeQuantity = false,
+            LiveScanCooldownMilliseconds = 9000,
             ContextItemCount = 99
         });
 
@@ -98,6 +104,9 @@ public class AiSettingsTests
         Assert.False(loaded.AutoProcessBarcodes);
         Assert.False(loaded.AutoProcessPhotos);
         Assert.False(loaded.RequireReview);
+        Assert.False(loaded.ContinueLiveScanning);
+        Assert.False(loaded.PromptForConsecutiveBarcodeQuantity);
+        Assert.Equal(5000, loaded.LiveScanCooldownMilliseconds);
         Assert.Equal(25, loaded.ContextItemCount);
     }
 

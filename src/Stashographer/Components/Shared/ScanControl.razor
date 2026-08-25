@@ -1,12 +1,40 @@
-@* Camera barcode scanner + manual entry. Raises OnCode with whatever code is captured. *@
+@* Camera barcode scanner + manual entry. Raises durable capture events without closing the camera. *@
 @implements IAsyncDisposable
 @inject IJSRuntime JS
 @inject ISnackbar Snackbar
+@inject IDialogService Dialogs
 
 <MudPaper Class="pa-4" Elevation="0" Outlined="true">
+    <div class="d-flex align-center gap-2 mb-1">
+        <MudIcon Icon="@Icons.Material.Filled.QrCodeScanner" Color="Color.Primary" />
+        <MudText Typo="Typo.h6">Scan barcodes and ISBNs</MudText>
+    </div>
+    <MudText Typo="Typo.body2" Class="mud-text-secondary mb-3">
+        Use the live camera, scan a barcode photo, or enter a code with a handheld scanner or keyboard.
+    </MudText>
+
     @if (_scanning)
     {
-        <video @ref="_video" playsinline muted style="width:100%;max-height:320px;border-radius:8px;background:#000"></video>
+        <div class="live-scanner-frame">
+            <video @ref="_video" playsinline muted></video>
+            <div class="live-scanner-status @(_cooldownRemainingMilliseconds > 0 ? "live-scanner-cooldown" : "live-scanner-ready")"
+                 role="status" aria-live="polite">
+                @if (_cooldownRemainingMilliseconds > 0)
+                {
+                    <MudText Typo="Typo.subtitle2">Added @_lastStatusCode</MudText>
+                    <MudText Typo="Typo.caption">Next scan in @CooldownSeconds.ToString("0.0")s</MudText>
+                    <MudProgressLinear Value="@CooldownProgress" Color="Color.Success" Class="mt-1" />
+                }
+                else
+                {
+                    <MudIcon Icon="@Icons.Material.Filled.CenterFocusStrong" Size="Size.Small" />
+                    <MudText Typo="Typo.caption">Ready for the next barcode</MudText>
+                }
+            </div>
+        </div>
+        <MudText Typo="Typo.caption" Class="mud-text-secondary d-block mt-2 text-center">
+            For the same barcode again, move it out of view and bring it back after the pause.
+        </MudText>
         <div class="d-flex justify-center mt-2">
             <MudButton Color="Color.Error" Variant="Variant.Filled" StartIcon="@Icons.Material.Filled.Stop"
                        OnClick="StopAsync">Stop camera</MudButton>
@@ -30,7 +58,7 @@
                 <MudButton HtmlTag="label" for="barcode-photo-capture" Color="Color.Primary"
                            Variant="Variant.Outlined" StartIcon="@Icons.Material.Filled.PhotoCamera"
                            Disabled="_decodingPhoto">
-                    @(_decodingPhoto ? "Reading…" : "Scan barcode photo")
+                    @(_decodingPhoto ? "Reading..." : "Scan barcode photo")
                 </MudButton>
             </div>
             @if (_cameraFailure is not null)
@@ -55,8 +83,14 @@
 
 @code {
     [Parameter] public EventCallback<string> OnCode { get; set; }
+    [Parameter] public EventCallback<string> OnLiveCode { get; set; }
+    [Parameter] public EventCallback<LiveBarcodeQuantity> OnLiveQuantityChanged { get; set; }
+    [Parameter] public EventCallback OnLiveStopped { get; set; }
     [Parameter] public EventCallback<string> OnBarcodeQueued { get; set; }
     [Parameter] public bool QueueBarcodePhotos { get; set; }
+    [Parameter] public bool ContinueLiveScanning { get; set; } = true;
+    [Parameter] public bool PromptForConsecutiveQuantity { get; set; } = true;
+    [Parameter] public int CooldownMilliseconds { get; set; } = 2000;
 
     private ElementReference _video;
     private bool _scanning;
@@ -65,15 +99,28 @@
     private string _manual = string.Empty;
     private MudTextField<string>? _manualField;
     private DotNetObjectReference<ScanControl>? _selfRef;
+    private CancellationTokenSource? _cooldownCancellation;
+    private int _cooldownRemainingMilliseconds;
+    private string? _lastStatusCode;
+    private string? _lastLiveCode;
+    private int _liveQuantity = 1;
+
+    private int EffectiveCooldownMilliseconds => Math.Clamp(CooldownMilliseconds, 500, 5000);
+    private double CooldownSeconds => _cooldownRemainingMilliseconds / 1000d;
+    private double CooldownProgress => EffectiveCooldownMilliseconds == 0
+        ? 100
+        : 100d * (EffectiveCooldownMilliseconds - _cooldownRemainingMilliseconds)
+          / EffectiveCooldownMilliseconds;
 
     private async Task StartAsync()
     {
         _selfRef ??= DotNetObjectReference.Create(this);
         _scanning = true;
+        _cameraFailure = null;
         StateHasChanged();
-        // Allow the <video> element to render before starting the camera.
         await Task.Yield();
-        var result = await JS.InvokeAsync<ScanStartResult>("stashScanner.start", _video, _selfRef);
+        var result = await JS.InvokeAsync<ScanStartResult>(
+            "stashScanner.start", _video, _selfRef, EffectiveCooldownMilliseconds);
         if (!result.Ok)
         {
             _scanning = false;
@@ -93,15 +140,86 @@
     private async Task StopAsync()
     {
         await JS.InvokeVoidAsync("stashScanner.stop");
+        _cooldownCancellation?.Cancel();
+        _cooldownRemainingMilliseconds = 0;
         _scanning = false;
+        await OnLiveStopped.InvokeAsync();
+        _lastLiveCode = null;
+        _liveQuantity = 1;
         StateHasChanged();
     }
 
     [JSInvokable]
     public async Task OnCodeScanned(string code)
     {
-        await StopAsync();
-        await OnCode.InvokeAsync(code);
+        if (!ContinueLiveScanning)
+        {
+            await JS.InvokeVoidAsync("stashScanner.stop");
+            _scanning = false;
+            await OnCode.InvokeAsync(code);
+            StateHasChanged();
+            return;
+        }
+
+        if (PromptForConsecutiveQuantity
+            && string.Equals(code, _lastLiveCode, StringComparison.OrdinalIgnoreCase))
+        {
+            var parameters = new DialogParameters<BarcodeQuantityDialog>
+            {
+                { x => x.Code, code },
+                { x => x.SuggestedQuantity, _liveQuantity + 1 }
+            };
+            var options = new DialogOptions
+            {
+                CloseButton = true,
+                FullWidth = true,
+                MaxWidth = MaxWidth.ExtraSmall
+            };
+            var result = await (await Dialogs.ShowAsync<BarcodeQuantityDialog>(
+                "Same barcode again", parameters, options)).Result;
+            if (result is { Canceled: false, Data: int quantity })
+            {
+                _liveQuantity = quantity;
+                await OnLiveQuantityChanged.InvokeAsync(new LiveBarcodeQuantity(code, quantity));
+            }
+        }
+        else
+        {
+            _lastLiveCode = code;
+            _liveQuantity = 1;
+            if (OnLiveCode.HasDelegate)
+                await OnLiveCode.InvokeAsync(code);
+            else
+                await OnCode.InvokeAsync(code);
+        }
+
+        BeginCooldown(code);
+    }
+
+    private void BeginCooldown(string code)
+    {
+        _cooldownCancellation?.Cancel();
+        _cooldownCancellation?.Dispose();
+        _cooldownCancellation = new CancellationTokenSource();
+        _lastStatusCode = code;
+        _cooldownRemainingMilliseconds = EffectiveCooldownMilliseconds;
+        _ = RunCooldownAsync(_cooldownCancellation.Token);
+    }
+
+    private async Task RunCooldownAsync(CancellationToken ct)
+    {
+        const int tickMilliseconds = 100;
+        try
+        {
+            while (_cooldownRemainingMilliseconds > 0)
+            {
+                await Task.Delay(tickMilliseconds, ct);
+                _cooldownRemainingMilliseconds = Math.Max(
+                    0, _cooldownRemainingMilliseconds - tickMilliseconds);
+                await InvokeAsync(StateHasChanged);
+            }
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
     }
 
     private async Task SubmitManual()
@@ -136,7 +254,7 @@
 
         if (upload.Kind == BrowserUploadKind.QueuedBarcode)
         {
-            Snackbar.Add($"Queued barcode {code} — ready for the next scan.", Severity.Success);
+            Snackbar.Add($"Queued barcode {code} - ready for the next scan.", Severity.Success);
             await OnBarcodeQueued.InvokeAsync(code);
         }
         else
@@ -155,9 +273,16 @@
 
     public async ValueTask DisposeAsync()
     {
-        try { await JS.InvokeVoidAsync("stashScanner.stop"); } catch { /* circuit gone */ }
+        _cooldownCancellation?.Cancel();
+        _cooldownCancellation?.Dispose();
+        if (_scanning)
+        {
+            try { await OnLiveStopped.InvokeAsync(); } catch { /* parent is already disposing */ }
+        }
+        try { await JS.InvokeVoidAsync("stashScanner.stop"); } catch { /* circuit gone or prerender */ }
         _selfRef?.Dispose();
     }
 
-    private record ScanStartResult(bool Ok, string? Reason);
+    public sealed record LiveBarcodeQuantity(string Code, int Quantity);
+    private sealed record ScanStartResult(bool Ok, string? Reason);
 }

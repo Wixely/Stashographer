@@ -13,14 +13,22 @@
 
 <PageTitle>Scan &amp; add · Stashographer</PageTitle>
 
-<div class="d-flex justify-space-between align-center mb-4">
+<div class="d-flex justify-space-between align-center flex-wrap gap-2 mb-4">
     <MudText Typo="Typo.h4">Scan &amp; add</MudText>
-    @if (_intakeOptions.QueueEnabled)
-    {
-        <MudButton Href="queue" Variant="Variant.Outlined" StartIcon="@Icons.Material.Filled.PlaylistAddCheck">
-            Queue (@_queuedCount)
+    <div class="d-flex gap-2 flex-wrap">
+        <MudButton Variant="Variant.Filled" Color="Color.Primary"
+                   StartIcon="@Icons.Material.Filled.EditNote"
+                   OnClick="StartManualEntryAsync"
+                   title="Open a blank item form without a photo or AI processing">
+            Add manually
         </MudButton>
-    }
+        @if (_intakeOptions.QueueEnabled)
+        {
+            <MudButton Href="queue" Variant="Variant.Outlined" StartIcon="@Icons.Material.Filled.PlaylistAddCheck">
+                Queue (@_queuedCount)
+            </MudButton>
+        }
+    </div>
 </div>
 
 @if (_intakeOptions.QueueEnabled)
@@ -33,12 +41,21 @@
 <MudGrid>
     <MudItem xs="12" md="6">
         <ScanControl OnCode="OnCode"
+                     OnLiveCode="OnLiveCode"
+                     OnLiveQuantityChanged="OnLiveQuantityChanged"
+                     OnLiveStopped="FinalizeLiveCaptureAsync"
                      QueueBarcodePhotos="_intakeOptions.QueueEnabled"
+                     ContinueLiveScanning="@(_intakeOptions.QueueEnabled && _intakeOptions.ContinueLiveScanning)"
+                     PromptForConsecutiveQuantity="@(_intakeOptions.QueueEnabled && _intakeOptions.PromptForConsecutiveBarcodeQuantity)"
+                     CooldownMilliseconds="_intakeOptions.LiveScanCooldownMilliseconds"
                      OnBarcodeQueued="OnBarcodeQueued" />
 
         <MudPaper Class="pa-4 mt-3" Outlined="true">
             <div class="d-flex justify-space-between align-center mb-2">
-                <MudText Typo="Typo.subtitle2">Add from a photo</MudText>
+                <div class="d-flex align-center gap-2">
+                    <MudIcon Icon="@Icons.Material.Filled.AddPhotoAlternate" Color="Color.Primary" />
+                    <MudText Typo="Typo.h6">Add items from photos</MudText>
+                </div>
                 @if (Ai.IsEnabled)
                 {
                     <MudSwitch T="bool" @bind-Value="_multiMode" Label="Split into individual items"
@@ -255,7 +272,7 @@
         else
         {
             <MudAlert Severity="Severity.Info">
-                Scan a barcode, enter one manually, or add a photo to get items in.
+                Scan a barcode above, or use the separate photo section to add photographed items.
             </MudAlert>
         }
     </MudItem>
@@ -272,6 +289,8 @@
     private IntakeOptions _intakeOptions = new();
     private int _queuedCount;
     private bool _clipboardInteropEnabled;
+    private int? _liveBarcodeQueueItemId;
+    private string? _liveBarcodeCode;
     private BrowserUploadKind PhotoUploadKind => _intakeOptions.QueueEnabled
         ? BrowserUploadKind.QueuedPhoto
         : BrowserUploadKind.Image;
@@ -293,6 +312,7 @@
 
     private async Task OnCode(string code)
     {
+        await FinalizeLiveCaptureAsync();
         ClearIntake();
         if (_intakeOptions.QueueEnabled)
         {
@@ -310,6 +330,59 @@
         _busy = false;
     }
 
+    private async Task OnLiveCode(string code)
+    {
+        if (!_intakeOptions.QueueEnabled)
+        {
+            await OnCode(code);
+            return;
+        }
+
+        if (_liveBarcodeQueueItemId is not null)
+            await FinalizeLiveCaptureAsync();
+
+        ClearIntake();
+        var queued = await Queue.EnqueueLiveBarcodeAsync(code, LiveCaptureHoldDuration);
+        _liveBarcodeQueueItemId = queued.Id;
+        _liveBarcodeCode = queued.SourceCode;
+        await RefreshQueueCountAsync();
+        Snackbar.Add($"Queued {queued.SourceCode} - keep scanning.", Severity.Success);
+    }
+
+    private async Task OnLiveQuantityChanged(ScanControl.LiveBarcodeQuantity change)
+    {
+        if (_liveBarcodeQueueItemId is not { } queueItemId
+            || !string.Equals(_liveBarcodeCode, change.Code, StringComparison.OrdinalIgnoreCase))
+        {
+            Snackbar.Add("The earlier barcode has already moved on. Scan it again to add more.", Severity.Warning);
+            return;
+        }
+
+        try
+        {
+            await Queue.UpdateLiveBarcodeQuantityAsync(
+                queueItemId, change.Code, change.Quantity, LiveCaptureHoldDuration);
+            Snackbar.Add($"{change.Code} quantity set to {change.Quantity}.", Severity.Success);
+        }
+        catch (InvalidOperationException ex)
+        {
+            Snackbar.Add(ex.Message, Severity.Warning);
+            _liveBarcodeQueueItemId = null;
+            _liveBarcodeCode = null;
+        }
+    }
+
+    private async Task FinalizeLiveCaptureAsync()
+    {
+        if (_liveBarcodeQueueItemId is not { } queueItemId) return;
+        _liveBarcodeQueueItemId = null;
+        _liveBarcodeCode = null;
+        await Queue.FinalizeLiveBarcodeAsync(queueItemId);
+    }
+
+    private TimeSpan LiveCaptureHoldDuration => TimeSpan.FromSeconds(Math.Max(
+        8d, Math.Clamp(_intakeOptions.LiveScanCooldownMilliseconds, 500, 5000) / 1000d * 3d));
+
     private async Task OnBarcodeQueued(string _)
     {
         await RefreshQueueCountAsync();
@@ -324,6 +397,14 @@
     private void AddBlank(string? code)
     {
         Draft.Set(new Item { Name = string.Empty, Code = code, ItemKindId = 7 });
+        Nav.NavigateTo("items/new");
+    }
+
+    private async Task StartManualEntryAsync()
+    {
+        await FinalizeLiveCaptureAsync();
+        ClearIntake();
+        Draft.Set(new Item { Name = string.Empty, ItemKindId = 7 });
         Nav.NavigateTo("items/new");
     }
 

@@ -1,5 +1,7 @@
 @inherits LayoutComponentBase
+@implements IDisposable
 @inject IJSRuntime JS
+@inject PersistentComponentState ComponentState
 @using Microsoft.AspNetCore.Http
 
 <MudThemeProvider Theme="StashTheme.Default" @bind-IsDarkMode="_isDarkMode" />
@@ -34,7 +36,7 @@
 <div id="blazor-error-ui" data-nosnippet>
     An unhandled error has occurred.
     <a href="." class="reload">Reload</a>
-    <span class="dismiss">🗙</span>
+    <span class="dismiss" title="Dismiss">&times;</span>
 </div>
 
 @code {
@@ -43,35 +45,79 @@
 
     private bool _drawerOpen = true;
     private bool _isDarkMode;
+    private bool _browserThemeChecked;
+    private bool _temporaryPaletteCleared;
+    private PersistingComponentStateSubscription? _themeStateSubscription;
+    private const string PersistedThemeKey = "stashographer-layout-dark-mode";
 
     protected override void OnInitialized()
     {
-        _isDarkMode = string.Equals(
-            HttpContext?.Request.Cookies["stash-theme"],
-            "dark",
-            StringComparison.Ordinal);
+        if (ComponentState.TryTakeFromJson<bool>(PersistedThemeKey, out var persistedDarkMode))
+        {
+            _isDarkMode = persistedDarkMode;
+            return;
+        }
+
+        // HttpContext exists during static prerendering but not reliably when the interactive
+        // layout starts. Transfer the server-selected value instead of defaulting to light.
+        if (HttpContext is not null)
+        {
+            _isDarkMode = string.Equals(
+                HttpContext.Request.Cookies["stash-theme"],
+                "dark",
+                StringComparison.Ordinal);
+            _themeStateSubscription = ComponentState.RegisterOnPersisting(PersistThemeState);
+        }
     }
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
-        if (!firstRender) return;
+        if (!firstRender)
+        {
+            if (_browserThemeChecked && !_temporaryPaletteCleared)
+            {
+                await JS.InvokeVoidAsync("stashTheme.ready");
+                _temporaryPaletteCleared = true;
+            }
+            return;
+        }
+
         try
         {
             var stored = await JS.InvokeAsync<string?>("stashTheme.get");
-            _isDarkMode = stored switch
+            var browserDarkMode = stored switch
             {
                 "dark" => true,
                 "light" => false,
                 _ => await JS.InvokeAsync<bool>("stashTheme.prefersDark")
             };
-            StateHasChanged();
+            _browserThemeChecked = true;
+            if (_isDarkMode != browserDarkMode)
+            {
+                _isDarkMode = browserDarkMode;
+                StateHasChanged();
+            }
+            else
+            {
+                await JS.InvokeVoidAsync("stashTheme.ready");
+                _temporaryPaletteCleared = true;
+            }
         }
-        catch (JSException) { /* pre-render / JS unavailable — keep default */ }
+        catch (JSException) { /* prerender or JS unavailable: keep the server-selected theme */ }
+    }
+
+    private Task PersistThemeState()
+    {
+        ComponentState.PersistAsJson(PersistedThemeKey, _isDarkMode);
+        return Task.CompletedTask;
     }
 
     private async Task ToggleDarkMode()
     {
         _isDarkMode = !_isDarkMode;
+        _temporaryPaletteCleared = false;
         await JS.InvokeVoidAsync("stashTheme.set", _isDarkMode ? "dark" : "light");
     }
+
+    public void Dispose() => _themeStateSubscription?.Dispose();
 }

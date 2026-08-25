@@ -29,6 +29,8 @@ public class IntakeQueueItem
     /// <summary>True when a person explicitly chose the source type, so AI must not change it.</summary>
     public bool SourceTypeOverride { get; set; }
     public string? SourceCode { get; set; }
+    public int CaptureQuantity { get; set; } = 1;
+    public DateTimeOffset? LiveCaptureHoldUntil { get; set; }
     public string? BrowserUploadToken { get; set; }
     public int? ImageId { get; set; }
     public bool IsMultiPhoto { get; set; }

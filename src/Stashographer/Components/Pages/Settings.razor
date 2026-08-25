@@ -178,6 +178,18 @@
                Color="Color.Primary" Disabled="!_queueEnabled" />
     <MudSwitch T="bool" @bind-Value="_requireReview" Label="Require item-by-item verification before changing inventory"
                Color="Color.Primary" Disabled="!_queueEnabled" />
+    <MudDivider Class="my-3" />
+    <MudText Typo="Typo.subtitle2">Live barcode scanning</MudText>
+    <MudSwitch T="bool" @bind-Value="_continueLiveScanning" Label="Keep the camera open after each barcode"
+               Color="Color.Primary" />
+    <MudSwitch T="bool" @bind-Value="_promptForConsecutiveBarcodeQuantity"
+               Label="Ask for quantity when the same barcode is scanned twice in a row"
+               Color="Color.Primary" Disabled="!_continueLiveScanning" />
+    <MudNumericField T="int" @bind-Value="_liveScanCooldownMilliseconds"
+                     Label="Pause between live scans (milliseconds)" Min="500" Max="5000" Step="250"
+                     Variant="Variant.Outlined" Margin="Margin.Dense" Class="mt-2"
+                     Disabled="!_continueLiveScanning"
+                     HelperText="A visible pause prevents accidental repeat reads. Default: 2000 ms." />
     <MudNumericField T="int" @bind-Value="_contextItemCount" Label="Earlier items supplied as session context"
                      Min="0" Max="25" Variant="Variant.Outlined" Margin="Margin.Dense" Class="mt-2"
                      HelperText="Used for kind, placement, and same-object photo comparison; 0 disables session context." />
@@ -375,6 +387,9 @@
     private bool _autoProcessPhotos = true;
     private bool _requireReview = true;
     private int _contextItemCount = 8;
+    private bool _continueLiveScanning = true;
+    private bool _promptForConsecutiveBarcodeQuantity = true;
+    private int _liveScanCooldownMilliseconds = 2000;
     private string _defaultCurrency = "GBP";
     private RegionalDateOrder _dateOrder = RegionalDateOrder.DayMonthYear;
     private string _cultureName = "en-GB";
@@ -408,6 +423,9 @@
         _autoProcessPhotos = intake.AutoProcessPhotos;
         _requireReview = intake.RequireReview;
         _contextItemCount = intake.ContextItemCount;
+        _continueLiveScanning = intake.ContinueLiveScanning;
+        _promptForConsecutiveBarcodeQuantity = intake.PromptForConsecutiveBarcodeQuantity;
+        _liveScanCooldownMilliseconds = intake.LiveScanCooldownMilliseconds;
         var regional = await SettingsSvc.GetRegionalOptionsAsync();
         _defaultCurrency = regional.DefaultCurrency;
         _dateOrder = regional.DateOrder;
@@ -455,6 +473,9 @@
             AutoProcessBarcodes = _autoProcessBarcodes,
             AutoProcessPhotos = _autoProcessPhotos,
             RequireReview = _requireReview,
+            ContinueLiveScanning = _continueLiveScanning,
+            PromptForConsecutiveBarcodeQuantity = _promptForConsecutiveBarcodeQuantity,
+            LiveScanCooldownMilliseconds = Math.Clamp(_liveScanCooldownMilliseconds, 500, 5000),
             ContextItemCount = Math.Clamp(_contextItemCount, 0, 25)
         });
         QueueSignal.Pulse();

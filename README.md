@@ -49,7 +49,11 @@ All screenshots use the repository's wholly synthetic Development sample data.
   the code's shape.
 - **Camera scanning** via the browser-native `BarcodeDetector`, with manual entry always
   available (also works with USB keyboard-wedge scanners). On LAN HTTP or browsers without
-  that API, a rear-camera still-photo fallback decodes locally on the server.
+  that API, a rear-camera still-photo fallback decodes locally on the server. Queue-mode live
+  scanning keeps the camera open, shows a configurable cooldown between reads, and turns a
+  deliberate consecutive read of the same barcode into one editable quantity.
+- **Fully manual item entry** — **Add manually** on Scan & add opens a blank item form without
+  requiring a barcode, image, AI processing, or an intake-queue capture.
 - **Queue-first intake** — photos and barcodes are persisted immediately so the next item
   can be captured without waiting. A photo containing several objects is split by default
   into individual, focused crops and queue entries. A sequential worker uses earlier session
@@ -205,6 +209,13 @@ the picker exposes it; many mobile camera apps still return only one shot, in wh
 runs in capture order, which lets the model use recent item kinds, attributes, and confirmed
 placement from the same session as weak context.
 
+**Live scan** is a bulk barcode mode when queueing is enabled. The camera remains open after
+each successful read and displays an obvious pause before it is ready again. To scan the same
+barcode intentionally, move it out of view and bring it back after the pause. A second
+consecutive read opens a quantity dialog with `2` already selected; confirming updates the
+original durable queue capture instead of creating duplicate review entries. Pressing Stop,
+scanning a different code, or a short inactivity timeout releases the capture for processing.
+
 Open **Intake Queue** to verify one item at a time, edit its fields and placement, choose
 between creating a new item or incrementing a match, then Accept or Reject it. Raw pending
 items can also be completed manually. **New session** resets context for the next inventory
@@ -219,7 +230,8 @@ line price are stored as purchase evidence on the selected stock lots; quantitie
 deliberately unchanged.
 
 Settings → **Intake workflow** controls queueing, automatic barcode lookup, automatic photo
-processing, the context window, and mandatory review. Turning queueing off restores the
+processing, live-camera continuation, repeat-scan quantity prompts, cooldown length, the
+context window, and mandatory review. Turning queueing off restores the
 original immediate lookup/validation flow. Review is on by default; disabling it allows only
 complete, unambiguous results to apply automatically.
 
@@ -292,7 +304,7 @@ dependencies only (see [THIRD-PARTY-NOTICES](THIRD-PARTY-NOTICES.md)).
 ## Development
 
 ```bash
-dotnet test                    # 163 tests, no network access required
+dotnet test                    # 169 tests, no network access required
 dotnet build -c Release
 ```
 
