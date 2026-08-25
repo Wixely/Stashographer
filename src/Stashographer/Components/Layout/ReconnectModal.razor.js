@@ -8,7 +8,7 @@ retryButton.addEventListener("click", retry);
 const resumeButton = document.getElementById("components-resume-button");
 resumeButton.addEventListener("click", resume);
 
-function handleReconnectStateChanged(event) {
+async function handleReconnectStateChanged(event) {
     if (event.detail.state === "show") {
         reconnectModal.showModal();
     } else if (event.detail.state === "hide") {
@@ -16,7 +16,7 @@ function handleReconnectStateChanged(event) {
     } else if (event.detail.state === "failed") {
         document.addEventListener("visibilitychange", retryWhenDocumentBecomesVisible);
     } else if (event.detail.state === "rejected") {
-        location.reload();
+        await reloadSafely();
     }
 }
 
@@ -34,7 +34,7 @@ async function retry() {
             // We'll reload the page so the user can continue using the app as quickly as possible.
             const resumeSuccessful = await Blazor.resumeCircuit();
             if (!resumeSuccessful) {
-                location.reload();
+                await reloadSafely();
             } else {
                 reconnectModal.close();
             }
@@ -49,7 +49,7 @@ async function resume() {
     try {
         const successful = await Blazor.resumeCircuit();
         if (!successful) {
-            location.reload();
+            await reloadSafely();
         }
     } catch {
         reconnectModal.classList.replace("components-reconnect-paused", "components-reconnect-resume-failed");
@@ -59,5 +59,17 @@ async function resume() {
 async function retryWhenDocumentBecomesVisible() {
     if (document.visibilityState === "visible") {
         await retry();
+    }
+}
+
+let reloadStarted = false;
+
+async function reloadSafely() {
+    if (reloadStarted) return;
+    reloadStarted = true;
+    try {
+        await window.stashResilientUpload?.beforeCircuitReload?.();
+    } finally {
+        location.reload();
     }
 }

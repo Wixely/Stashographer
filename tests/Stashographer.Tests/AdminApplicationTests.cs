@@ -146,17 +146,15 @@ public sealed partial class AdminApplicationTests : IAsyncLifetime
         var page = await client.GetStringAsync("/scan");
         var antiforgery = AntiforgeryToken(page);
         var token = Guid.NewGuid().ToString();
-        byte[] png;
-        using (var image = new Image<Rgba32>(32, 24, new Rgba32(20, 80, 140)))
-        await using (var output = new MemoryStream())
-        {
-            await image.SaveAsPngAsync(output);
-            png = output.ToArray();
-        }
+        var png = await PngAsync();
 
         using (var unprotected = BrowserUploadForm(png, token, antiforgery: null))
         using (var rejected = await client.PostAsync("/browser-uploads", unprotected))
+        {
             Assert.Equal(HttpStatusCode.BadRequest, rejected.StatusCode);
+            using var json = JsonDocument.Parse(await rejected.Content.ReadAsStringAsync());
+            Assert.True(json.RootElement.GetProperty("retryable").GetBoolean());
+        }
 
         int queueItemId;
         using (var form = BrowserUploadForm(png, token, antiforgery))
@@ -192,6 +190,26 @@ public sealed partial class AdminApplicationTests : IAsyncLifetime
             await queue.GetOpenAsync(), item => item.BrowserUploadToken == token).Id);
     }
 
+    [Fact]
+    public async Task Browser_upload_can_refresh_antiforgery_without_a_live_blazor_circuit()
+    {
+        using var client = CreateClient();
+        using var tokenResponse = await client.GetAsync("/browser-uploads/antiforgery-token");
+        Assert.Equal(HttpStatusCode.OK, tokenResponse.StatusCode);
+        using var tokenJson = JsonDocument.Parse(await tokenResponse.Content.ReadAsStringAsync());
+        var antiforgery = tokenJson.RootElement.GetProperty("token").GetString();
+        Assert.False(string.IsNullOrWhiteSpace(antiforgery));
+
+        using var form = BrowserUploadForm(
+            await PngAsync(), Guid.NewGuid().ToString(), antiforgery);
+        using var response = await client.PostAsync("/browser-uploads", form);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        using var resultJson = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        Assert.Equal("QueuedPhoto", resultJson.RootElement.GetProperty("kind").GetString());
+        Assert.True(resultJson.RootElement.GetProperty("queueItemId").GetInt32() > 0);
+    }
+
     private HttpClient CreateClient() => _factory.CreateClient(new WebApplicationFactoryClientOptions
     {
         AllowAutoRedirect = false,
@@ -211,6 +229,14 @@ public sealed partial class AdminApplicationTests : IAsyncLifetime
         file.Headers.ContentType = new MediaTypeHeaderValue("image/png");
         form.Add(file, "photo", "mobile-camera.png");
         return form;
+    }
+
+    private static async Task<byte[]> PngAsync()
+    {
+        using var image = new Image<Rgba32>(32, 24, new Rgba32(20, 80, 140));
+        await using var output = new MemoryStream();
+        await image.SaveAsPngAsync(output);
+        return output.ToArray();
     }
 
     private static string AntiforgeryToken(string html)

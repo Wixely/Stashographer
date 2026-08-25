@@ -58,8 +58,11 @@ All screenshots use the repository's wholly synthetic Development sample data.
   can be captured without waiting. A photo containing several objects is split by default
   into individual, focused crops and queue entries. A sequential worker uses earlier session
   items as context, and the review queue presents every suggestion for item-by-item acceptance
-  or correction. Mobile file and camera selections upload through a circuit-independent HTTP
-  path, so suspending the browser picker cannot strand the photo during a Blazor reconnect.
+  or correction. Mobile file and camera selections are persisted in browser storage before
+  using the circuit-independent HTTP upload path. If the Blazor circuit expires while the
+  camera is open, circuit recovery waits for that handoff and a full page reload resumes the
+  same selected file instead of asking the user to take the photo again. Disconnected circuits
+  are also retained for 30 minutes as a convenience, but file recovery does not depend on them.
 - **Batch photo selection** — in queue mode, the Scan page accepts multiple images from one
   gallery/file-picker action and camera apps that support multi-capture. Every selected image
   receives its own durable, idempotent upload and queue entry. Mobile camera apps that return
@@ -304,7 +307,7 @@ dependencies only (see [THIRD-PARTY-NOTICES](THIRD-PARTY-NOTICES.md)).
 ## Development
 
 ```bash
-dotnet test                    # 169 tests, no network access required
+dotnet test                    # 170 tests, no network access required
 dotnet build -c Release
 ```
 

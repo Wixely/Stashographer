@@ -22,7 +22,13 @@ var builder = WebApplication.CreateBuilder(args);
 
 // --- Razor / Blazor + MudBlazor -----------------------------------------------
 builder.Services.AddRazorComponents()
-    .AddInteractiveServerComponents();
+    .AddInteractiveServerComponents(options =>
+    {
+        // Mobile camera applications can suspend the browser for several minutes. Retaining
+        // the circuit improves the return path, while IndexedDB-backed uploads remain the
+        // authoritative recovery mechanism when this period is still exceeded.
+        options.DisconnectedCircuitRetentionPeriod = TimeSpan.FromMinutes(30);
+    });
 builder.Services.ConfigureHttpJsonOptions(options =>
     options.SerializerOptions.Converters.Add(new JsonStringEnumConverter()));
 builder.Services.AddMudServices();

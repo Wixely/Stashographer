@@ -10,9 +10,17 @@ public static class BrowserUploadEndpoints
     {
         var uploads = endpoints.MapGroup("/browser-uploads")
             .RequireRateLimiting("browser-uploads");
+        uploads.MapGet("/antiforgery-token", GetAntiforgeryToken);
         uploads.MapPost(string.Empty, UploadAsync);
         uploads.MapGet("/{token}", GetAsync);
         return uploads;
+    }
+
+    private static IResult GetAntiforgeryToken(HttpContext context, IAntiforgery antiforgery)
+    {
+        context.Response.Headers.CacheControl = "no-store";
+        var tokens = antiforgery.GetAndStoreTokens(context);
+        return Results.Ok(new { token = tokens.RequestToken });
     }
 
     private static async Task<IResult> UploadAsync(
@@ -54,7 +62,11 @@ public static class BrowserUploadEndpoints
         }
         catch (AntiforgeryValidationException)
         {
-            return Results.BadRequest(new { error = "The upload page expired. Reload it and try again." });
+            return Results.BadRequest(new
+            {
+                error = "The upload authorization expired. The selected image will retry automatically.",
+                retryable = true
+            });
         }
         catch (BrowserUploadInProgressException)
         {
