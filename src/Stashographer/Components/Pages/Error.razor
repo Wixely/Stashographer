@@ -3,8 +3,10 @@
 
 <PageTitle>Error</PageTitle>
 
-<h1 class="text-danger">Error.</h1>
-<h2 class="text-danger">An error occurred while processing your request.</h2>
+<MudAlert Severity="Severity.Error" Variant="Variant.Outlined" Class="mb-4">
+    <MudText Typo="Typo.h4">Error</MudText>
+    <MudText>An error occurred while processing your request.</MudText>
+</MudAlert>
 
 @if (ShowRequestId)
 {
