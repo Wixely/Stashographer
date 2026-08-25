@@ -2,6 +2,15 @@ html, body {
     font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
 }
 
+/* Applied by theme.js in <head>, before the first page paint. MudBlazor supplies the
+   component palette; this keeps the browser canvas dark while a first-time preference
+   is synchronized into the server-rendering cookie. */
+html[data-stash-theme="dark"],
+html[data-stash-theme="dark"] body {
+    background-color: #101512;
+    color-scheme: dark;
+}
+
 /* Home launcher tiles */
 .quick-tile {
     transition: box-shadow 120ms ease, transform 120ms ease;

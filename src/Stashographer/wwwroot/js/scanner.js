@@ -1,13 +1,7 @@
-// Stashographer browser interop: theme persistence + barcode scanning.
+// Stashographer browser interop: barcode scanning and photo intake.
 // Hand-written, dependency-free. Uses the native BarcodeDetector API where the browser
 // provides it (Chrome/Edge/Android). On browsers without it (notably iOS Safari) scanning
 // degrades gracefully and the UI falls back to manual entry.
-
-window.stashTheme = {
-    get: () => localStorage.getItem('stash-theme'),
-    set: (value) => localStorage.setItem('stash-theme', value),
-    prefersDark: () => window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches
-};
 
 // Clipboard image intake for the Scan page. Only image/file clipboard entries are handled;
 // ordinary pasted text (including barcodes) continues to the focused control unchanged.

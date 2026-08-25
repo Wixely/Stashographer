@@ -1,5 +1,6 @@
 @inherits LayoutComponentBase
 @inject IJSRuntime JS
+@using Microsoft.AspNetCore.Http
 
 <MudThemeProvider Theme="StashTheme.Default" @bind-IsDarkMode="_isDarkMode" />
 <MudPopoverProvider />
@@ -37,8 +38,19 @@
 </div>
 
 @code {
+    [CascadingParameter]
+    private HttpContext? HttpContext { get; set; }
+
     private bool _drawerOpen = true;
     private bool _isDarkMode;
+
+    protected override void OnInitialized()
+    {
+        _isDarkMode = string.Equals(
+            HttpContext?.Request.Cookies["stash-theme"],
+            "dark",
+            StringComparison.Ordinal);
+    }
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
