@@ -589,6 +589,56 @@ public class IntakeQueueTests
     }
 
     [Fact]
+    public async Task Receipt_can_create_a_missing_inventory_item_with_quantity_price_and_evidence()
+    {
+        await using var harness = await Harness.CreateAsync();
+        harness.Ai.Receipt = new ReceiptExtraction
+        {
+            Merchant = "Example Market",
+            PurchaseDate = new DateOnly(2026, 8, 24),
+            Currency = "GBP",
+            Total = 3.50m,
+            Lines =
+            [
+                new ReceiptLineSuggestion
+                {
+                    LineIndex = 0,
+                    Description = "OAT MILK",
+                    Quantity = 2,
+                    LineTotal = 3.50m,
+                    CreateNewItem = true,
+                    NewItemKindId = 1,
+                    Selected = true
+                }
+            ]
+        };
+
+        await using var photo = await PhotoAsync(94);
+        var receiptQueue = await harness.Queue.EnqueueReceiptAsync(
+            photo, "image/png", "receipt-with-new-item.png");
+        await harness.Queue.ProcessAsync(receiptQueue.Id, new IntakeOptions(), aiEnabled: true);
+
+        var review = (await harness.Queue.GetAsync(receiptQueue.Id))!;
+        var applied = await harness.Queue.AcceptReceiptAsync(review.Id, review.Receipt!);
+
+        Assert.Equal(new ReceiptApplied(1, 1, 1), applied);
+        var created = Assert.Single(await harness.Inventory.QueryAsync(
+            new ItemQuery(Search: "OAT MILK")));
+        Assert.Equal(2, created.Quantity);
+        Assert.Equal(1, created.ItemKindId);
+        var price = SpecialAttributeCatalog.GetPrice(created);
+        Assert.Equal(1.75m, price!.DecimalValue);
+        Assert.Equal("GBP", price.CurrencyCode);
+        Assert.Equal("receipt", price.Evidence!.Source);
+        Assert.Equal(receiptQueue.ImageId, price.Evidence.SourceImageId);
+        var purchase = Assert.Single(await harness.Queue.GetPurchasesAsync(created.Id));
+        Assert.Equal(3.50m, purchase.LineTotal);
+        Assert.Equal(new DateOnly(2026, 8, 24), purchase.PurchasedOn);
+        Assert.Equal(ItemImageRole.Receipt,
+            Assert.Single(await harness.Inventory.GetImagesAsync(created.Id)).Role);
+    }
+
+    [Fact]
     public async Task Ordinary_photo_is_automatically_routed_to_purchase_evidence_review()
     {
         await using var harness = await Harness.CreateAsync();

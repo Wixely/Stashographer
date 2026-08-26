@@ -15,7 +15,7 @@ public record RememberedDestinations(int? LocationId, int? ContainerId);
 
 public record IntakeQueueCounts(int Waiting, int Processing, int Ready, int Failed, int Completed);
 
-public record ReceiptApplied(int MatchedLines, int MatchedItems);
+public record ReceiptApplied(int MatchedLines, int MatchedItems, int CreatedItems = 0);
 
 /// <summary>
 /// Durable capture queue. Enqueue operations only persist input; lookup/model work happens
@@ -593,7 +593,12 @@ public class IntakeQueueService(
         receipt.Currency = string.IsNullOrWhiteSpace(receipt.Currency)
             ? null
             : SpecialAttributeCatalog.NormalizeCurrencyCode(receipt.Currency);
-        var resolved = new List<(ReceiptLineSuggestion Line, int ItemId)>();
+        if (receipt.Currency is null
+            && selected.Any(line => line.CreateNewItem
+                                    && (line.UnitPrice is not null || line.LineTotal is not null)))
+            throw new InvalidOperationException(
+                "Enter a three-letter currency before creating priced items from this receipt.");
+        var resolved = new List<(ReceiptLineSuggestion Line, int? ItemId)>();
         foreach (var line in selected)
         {
             line.Description = line.Description.Trim();
@@ -601,6 +606,16 @@ public class IntakeQueueService(
                 throw new InvalidOperationException("Every selected receipt line needs a description.");
             if (line.Quantity <= 0 || line.UnitPrice < 0 || line.LineTotal < 0)
                 throw new InvalidOperationException("Receipt quantities and prices cannot be negative.");
+            if (line.CreateNewItem)
+            {
+                if (line.NewItemKindId <= 0)
+                    throw new InvalidOperationException(
+                        $"Choose an item kind for new receipt item '{line.Description}'.");
+                line.MatchedQueueItemId = null;
+                line.MatchedItemId = null;
+                resolved.Add((line, null));
+                continue;
+            }
             var itemId = line.MatchedItemId;
             if (itemId is null && line.MatchedQueueItemId is { } matchedQueueId)
                 itemId = await ResolveReceiptItemAsync(queued, matchedQueueId, ct);
@@ -616,8 +631,71 @@ public class IntakeQueueService(
         using var conn = await db.OpenAsync(ct);
         using var tx = conn.BeginTransaction();
         var now = DateTimeOffset.UtcNow.ToString("O");
-        foreach (var (line, itemId) in resolved)
+        var createKindIds = resolved
+            .Where(entry => entry.ItemId is null)
+            .Select(entry => entry.Line.NewItemKindId)
+            .Distinct()
+            .ToArray();
+        if (createKindIds.Length > 0)
         {
+            var validKindCount = await conn.ExecuteScalarAsync<int>(
+                "SELECT COUNT(*) FROM ItemKinds WHERE Id IN @createKindIds;",
+                new { createKindIds }, tx);
+            if (validKindCount != createKindIds.Length)
+                throw new InvalidOperationException("One or more selected new-item kinds no longer exist.");
+        }
+
+        var createdItems = 0;
+        var appliedItemIds = new List<int>();
+        foreach (var (line, existingItemId) in resolved)
+        {
+            var itemId = existingItemId;
+            if (itemId is null)
+            {
+                var newItem = new Item
+                {
+                    Name = line.Description,
+                    ItemKindId = line.NewItemKindId,
+                    Quantity = line.Quantity
+                };
+                var unitPrice = line.UnitPrice
+                                ?? (line.LineTotal is { } lineTotal
+                                    ? decimal.Round(lineTotal / line.Quantity, 2,
+                                        MidpointRounding.AwayFromZero)
+                                    : null);
+                if (unitPrice is not null)
+                {
+                    SpecialAttributeCatalog.SetPrice(
+                        newItem,
+                        unitPrice,
+                        receipt.Currency,
+                        new SpecialAttributeEvidence
+                        {
+                            Source = "receipt",
+                            SourceImageId = imageId,
+                            RawText = line.Description
+                        });
+                }
+                itemId = await conn.ExecuteScalarAsync<int>("""
+                    INSERT INTO Items
+                        (Name, ItemKindId, Quantity, LowStockThreshold, AttributesJson,
+                         SpecialAttributesJson, CreatedAt, UpdatedAt)
+                    VALUES
+                        (@name, @itemKindId, @quantity, 0, '{}', @specialAttributesJson,
+                         @now, @now);
+                    SELECT last_insert_rowid();
+                    """, new
+                {
+                    name = newItem.Name,
+                    itemKindId = newItem.ItemKindId,
+                    quantity = newItem.Quantity,
+                    specialAttributesJson = JsonSerializer.Serialize(newItem.SpecialAttributes, Json),
+                    now
+                }, tx);
+                line.MatchedItemId = itemId;
+                createdItems++;
+            }
+            appliedItemIds.Add(itemId.Value);
             await conn.ExecuteAsync("""
                 INSERT INTO ItemImages (ItemId, ImageId, Role, IsPrimary, SortOrder, CreatedAt)
                 SELECT @itemId, @imageId, @role, 0,
@@ -626,7 +704,7 @@ public class IntakeQueueService(
                 ON CONFLICT(ItemId, ImageId) DO NOTHING;
                 """, new
             {
-                itemId,
+                itemId = itemId.Value,
                 imageId,
                 role = (int)ItemImageRole.Receipt,
                 now
@@ -634,7 +712,7 @@ public class IntakeQueueService(
             var purchaseParameters = new DynamicParameters();
             purchaseParameters.Add("queueItemId", id);
             purchaseParameters.Add("lineIndex", line.LineIndex);
-            purchaseParameters.Add("itemId", itemId);
+            purchaseParameters.Add("itemId", itemId.Value);
             purchaseParameters.Add("imageId", imageId);
             purchaseParameters.Add("merchant", Clean(receipt.Merchant));
             purchaseParameters.Add("purchasedOn", receipt.PurchaseDate?.ToString("yyyy-MM-dd"));
@@ -671,7 +749,7 @@ public class IntakeQueueService(
         if (changed != 1)
             throw new InvalidOperationException("This receipt was already reviewed.");
         tx.Commit();
-        return new ReceiptApplied(resolved.Count, resolved.Select(entry => entry.ItemId).Distinct().Count());
+        return new ReceiptApplied(resolved.Count, appliedItemIds.Distinct().Count(), createdItems);
     }
 
     public async Task<List<ItemPurchase>> GetPurchasesAsync(int itemId, CancellationToken ct = default)

@@ -79,8 +79,9 @@ All screenshots use the repository's wholly synthetic Development sample data.
   receipts, invoices, and screenshots of completed orders, then extracts merchant, date,
   currency, totals, and purchase lines for conservative line-to-item matching. One sanitized
   image can be shared by several stock lots with durable provenance; accepting purchase
-  evidence never changes stock counts. A manual receipt/order override and reclassification
-  controls remain available when the model is wrong.
+  evidence never changes existing stock counts. Unmatched reviewed lines can instead create
+  new inventory items directly, using the extracted quantity and unit price. A manual
+  receipt/order override and reclassification controls remain available when the model is wrong.
 - **Same-object capture safety** — the vision agent compares each photo with recent session
   captures using instance-specific evidence such as wear, labels, and surrounding context.
   Confident additional views become zero-quantity image attachments; uncertain same-product
@@ -228,9 +229,10 @@ Capture receipts, invoices, and completed-order screenshots with the normal phot
 the vision agent routes confidently recognized purchase evidence automatically. Use
 **Receipt / order override** only when recognition misses it. The agent only proposes matches
 to earlier captures in that session, and only high-confidence matches start selected. Accept
-the item entries first, then review every purchase line. The shared image, merchant/date and
-line price are stored as purchase evidence on the selected stock lots; quantities are
-deliberately unchanged.
+the item entries first, then review every purchase line. An unmatched line can be explicitly
+created as a new, unplaced inventory item with a chosen kind. The shared image, merchant/date
+and line price are stored as purchase evidence on the selected stock lots; existing quantities
+are deliberately unchanged.
 
 Settings → **Intake workflow** controls queueing, automatic barcode lookup, automatic photo
 processing, live-camera continuation, repeat-scan quantity prompts, cooldown length, the
@@ -307,7 +309,7 @@ dependencies only (see [THIRD-PARTY-NOTICES](THIRD-PARTY-NOTICES.md)).
 ## Development
 
 ```bash
-dotnet test                    # 170 tests, no network access required
+dotnet test                    # 171 tests, no network access required
 dotnet build -c Release
 ```
 

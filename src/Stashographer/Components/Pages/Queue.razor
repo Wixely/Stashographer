@@ -512,9 +512,14 @@ else
 
     private async Task ReceiptAcceptedAsync(ReceiptApplied applied)
     {
-        Snackbar.Add(
-            $"Purchase evidence linked to {applied.MatchedItems} item{(applied.MatchedItems == 1 ? string.Empty : "s")}. Quantities were not changed.",
-            Severity.Success);
+        var existingItems = applied.MatchedItems - applied.CreatedItems;
+        var message = applied.CreatedItems > 0
+            ? $"Created {applied.CreatedItems} new item{(applied.CreatedItems == 1 ? string.Empty : "s")} from the receipt"
+              + (existingItems > 0
+                  ? $" and linked {existingItems} existing item{(existingItems == 1 ? string.Empty : "s")}."
+                  : ".")
+            : $"Purchase evidence linked to {existingItems} item{(existingItems == 1 ? string.Empty : "s")}. Existing quantities were not changed.";
+        Snackbar.Add(message, Severity.Success);
         await LoadAsync(false);
     }
 

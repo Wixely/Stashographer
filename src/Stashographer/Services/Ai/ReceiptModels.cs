@@ -28,6 +28,10 @@ public sealed class ReceiptLineSuggestion
     public decimal? LineTotal { get; set; }
     public int? MatchedQueueItemId { get; set; }
     public int? MatchedItemId { get; set; }
+    /// <summary>When reviewed, create a new stock entry instead of linking an existing one.</summary>
+    public bool CreateNewItem { get; set; }
+    /// <summary>Item kind used when <see cref="CreateNewItem"/> is selected.</summary>
+    public int NewItemKindId { get; set; } = 7;
     public MatchConfidence Confidence { get; set; }
 
     /// <summary>Only high-confidence matches start selected; every line remains user-reviewable.</summary>

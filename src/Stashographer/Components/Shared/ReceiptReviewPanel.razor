@@ -1,4 +1,5 @@
 @inject IntakeQueueService IntakeQueue
+@inject InventoryService Inventory
 @inject ISnackbar Snackbar
 
 @if (QueueItem.Receipt is not { } receipt)
@@ -10,8 +11,8 @@
 else
 {
     <MudAlert Severity="Severity.Info" Class="mb-3">
-        Review every match. Accepting attaches this purchase evidence to the selected stock entries and
-        records purchase evidence; it never changes inventory quantities.
+        Review every line. Link it to an existing captured item, or choose to create a new inventory
+        item directly from the receipt. Existing inventory quantities are never changed.
     </MudAlert>
 
     <MudGrid>
@@ -24,7 +25,8 @@ else
         </MudItem>
         <MudItem xs="6">
             <MudTextField @bind-Value="receipt.Currency" Label="Currency" Placeholder="GBP"
-                          Variant="Variant.Outlined" />
+                          Variant="Variant.Outlined" Required="@ReceiptNeedsCurrency(receipt)"
+                          RequiredError="Currency is required when creating a priced item." />
         </MudItem>
         <MudItem xs="6">
             <MudNumericField @bind-Value="receipt.Total" Label="Purchase total"
@@ -59,7 +61,8 @@ else
                     </MudGrid>
                     <MudSelect T="int?" @bind-Value="line.MatchedQueueItemId"
                                Label="Match to captured item" Variant="Variant.Outlined"
-                               Margin="Margin.Dense" Clearable="true" Class="mt-2">
+                               Margin="Margin.Dense" Clearable="true" Class="mt-2"
+                               Disabled="line.CreateNewItem">
                         @foreach (var candidate in _candidates)
                         {
                             <MudSelectItem T="int?" Value="@candidate.QueueItemId">
@@ -68,6 +71,25 @@ else
                             </MudSelectItem>
                         }
                     </MudSelect>
+                    <MudSwitch T="bool" Value="line.CreateNewItem"
+                               ValueChanged="@(value => SetCreateNew(line, value))"
+                               Label="Create a new inventory item from this line"
+                               Color="Color.Primary" Class="mt-1" />
+                    @if (line.CreateNewItem)
+                    {
+                        <MudSelect T="int" @bind-Value="line.NewItemKindId"
+                                   Label="New item kind" Variant="Variant.Outlined"
+                                   Margin="Margin.Dense" Class="mt-1">
+                            @foreach (var kind in _kinds)
+                            {
+                                <MudSelectItem T="int" Value="kind.Id">@kind.Name</MudSelectItem>
+                            }
+                        </MudSelect>
+                        <MudText Typo="Typo.caption" Class="mud-text-secondary">
+                            Creates @line.Quantity.ToString("0.##") as an unplaced item named
+                            “@line.Description”. The receipt remains purchase evidence, not its catalogue photo.
+                        </MudText>
+                    }
                     <MudText Typo="Typo.caption" Class="mud-text-secondary">
                         Agent match: @ConfidenceLabel(line.Confidence)
                     </MudText>
@@ -78,9 +100,9 @@ else
 
     @if (_candidates.Count == 0)
     {
-        <MudAlert Severity="Severity.Warning" Dense="true" Class="mt-2">
-            There are no earlier items in this intake session. Add and accept the items first,
-            or reject this purchase evidence and capture it in the correct session.
+        <MudAlert Severity="Severity.Info" Dense="true" Class="mt-2">
+            There are no earlier items in this intake session. Select “Create a new inventory item”
+            on each purchased line you want to add, or reject lines that should not become inventory.
         </MudAlert>
     }
 
@@ -88,7 +110,7 @@ else
         <MudButton Color="Color.Success" Variant="Variant.Filled"
                    StartIcon="@Icons.Material.Filled.ReceiptLong"
                    Disabled="@(_working || !CanAccept(receipt))"
-                   OnClick="AcceptAsync">Accept purchase links</MudButton>
+                   OnClick="AcceptAsync">@AcceptButtonText(receipt)</MudButton>
         <MudButton Color="Color.Error" Variant="Variant.Outlined"
                    StartIcon="@Icons.Material.Filled.Close"
                    Disabled="_working" OnClick="RejectAsync">Reject</MudButton>
@@ -101,6 +123,7 @@ else
     [Parameter] public EventCallback OnRejected { get; set; }
 
     private List<ReceiptMatchCandidate> _candidates = [];
+    private List<ItemKind> _kinds = [];
     private int _loadedId;
     private string? _purchaseDate;
     private bool _working;
@@ -111,16 +134,43 @@ else
         _loadedId = QueueItem.Id;
         _purchaseDate = QueueItem.Receipt?.PurchaseDate?.ToString("yyyy-MM-dd");
         _candidates = await IntakeQueue.GetReceiptCandidatesAsync(QueueItem.Id);
+        _kinds = await Inventory.GetKindsAsync();
     }
 
     private bool CanAccept(ReceiptExtraction receipt)
     {
         var selected = receipt.Lines.Where(line => line.Selected).ToList();
         return selected.Count > 0
-               && selected.All(line => line.MatchedQueueItemId is { } queueId
-                                       && _candidates.Any(candidate =>
-                                           candidate.QueueItemId == queueId
-                                           && candidate.InventoryItemId is not null));
+               && !ReceiptNeedsCurrency(receipt)
+               && selected.All(line => line.CreateNewItem
+                   ? !string.IsNullOrWhiteSpace(line.Description)
+                     && line.Quantity > 0
+                     && _kinds.Any(kind => kind.Id == line.NewItemKindId)
+                   : line.MatchedQueueItemId is { } queueId
+                     && _candidates.Any(candidate =>
+                         candidate.QueueItemId == queueId
+                         && candidate.InventoryItemId is not null));
+    }
+
+    private static string AcceptButtonText(ReceiptExtraction receipt) =>
+        receipt.Lines.Any(line => line.Selected && line.CreateNewItem)
+            ? "Accept links and add items"
+            : "Accept purchase links";
+
+    private static bool ReceiptNeedsCurrency(ReceiptExtraction receipt) =>
+        string.IsNullOrWhiteSpace(receipt.Currency)
+        && receipt.Lines.Any(line => line.Selected
+                                     && line.CreateNewItem
+                                     && (line.UnitPrice is not null || line.LineTotal is not null));
+
+    private static void SetCreateNew(ReceiptLineSuggestion line, bool value)
+    {
+        line.CreateNewItem = value;
+        if (!value) return;
+        line.Selected = true;
+        line.MatchedQueueItemId = null;
+        line.MatchedItemId = null;
+        if (line.NewItemKindId <= 0) line.NewItemKindId = 7;
     }
 
     private async Task AcceptAsync()
