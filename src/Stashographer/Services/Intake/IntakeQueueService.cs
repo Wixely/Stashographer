@@ -445,6 +445,31 @@ public class IntakeQueueService(
         return id is not null && await ProcessAsync(id.Value, options, aiEnabled, ct);
     }
 
+    public async Task<DateTimeOffset?> GetNextProcessableCreatedAtAsync(
+        IntakeOptions options, bool aiEnabled, CancellationToken ct = default)
+    {
+        using var conn = await db.OpenAsync(ct);
+        var value = await conn.QueryFirstOrDefaultAsync<string?>("""
+            SELECT CreatedAt FROM IntakeQueueItems
+            WHERE Status = @pending
+              AND (LiveCaptureHoldUntil IS NULL OR LiveCaptureHoldUntil <= @now)
+              AND ((SourceType = @barcode AND @barcodes = 1)
+                OR (SourceType IN (@photo, @receipt) AND @photos = 1 AND @ai = 1))
+            ORDER BY CreatedAt, Id LIMIT 1;
+            """, new
+        {
+            pending = (int)IntakeQueueStatus.Pending,
+            barcode = (int)IntakeSourceType.Barcode,
+            photo = (int)IntakeSourceType.Photo,
+            receipt = (int)IntakeSourceType.Receipt,
+            barcodes = options.AutoProcessBarcodes ? 1 : 0,
+            photos = options.AutoProcessPhotos ? 1 : 0,
+            ai = aiEnabled ? 1 : 0,
+            now = DateTimeOffset.UtcNow.ToString("O")
+        });
+        return value is null ? null : DateTimeOffset.Parse(value);
+    }
+
     /// <summary>Returns work interrupted by a previous process shutdown to the pending state.</summary>
     public async Task RecoverInterruptedAsync(CancellationToken ct = default)
     {

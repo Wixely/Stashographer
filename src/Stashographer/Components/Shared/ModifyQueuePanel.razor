@@ -1,0 +1,494 @@
+@implements IAsyncDisposable
+@inject ModifyQueueService ModifyQueue
+@inject SettingsService SettingsSvc
+@inject IAiEnrichmentService Ai
+@inject InventoryService Inventory
+@inject ContainerService Containers
+@inject IDialogService Dialogs
+@inject ISnackbar Snackbar
+
+<div class="d-flex justify-space-between align-center flex-wrap gap-2 mb-4">
+    <div>
+        <MudText Typo="Typo.h4">Modify queue</MudText>
+        @if (_session is not null)
+        {
+            <MudText Typo="Typo.caption" Class="mud-text-secondary">
+                Session @_session.Id · started @_session.StartedAt.ToLocalTime().ToString("g")
+            </MudText>
+        }
+    </div>
+    <div class="d-flex gap-2 flex-wrap">
+        <MudButton Href="modify" Variant="Variant.Filled" Color="Color.Info"
+                   StartIcon="@Icons.Material.Filled.PhotoCamera">Take more photos</MudButton>
+        <MudButton Variant="Variant.Outlined" StartIcon="@Icons.Material.Filled.Refresh"
+                   OnClick="@(() => LoadAsync(true))">Refresh</MudButton>
+        <MudButton Variant="Variant.Text" StartIcon="@Icons.Material.Filled.Flag"
+                   OnClick="StartNewSessionAsync">New session</MudButton>
+    </div>
+</div>
+
+@if (_loading)
+{
+    <MudProgressLinear Indeterminate="true" Color="Color.Info" />
+}
+else if (_items.Count == 0)
+{
+    <MudAlert Severity="Severity.Success">
+        Nothing needs modifying. Photos captured from Modify will appear here.
+    </MudAlert>
+}
+else
+{
+    <div class="d-flex justify-space-between align-center mb-2">
+        <MudText Typo="Typo.subtitle2">Reminder @(_index + 1) of @_items.Count</MudText>
+        <div class="d-flex align-center gap-1">
+            <MudIconButton Icon="@Icons.Material.Filled.ChevronLeft" Disabled="_index == 0"
+                           OnClick="Previous" aria-label="Previous modify reminder" />
+            <MudIconButton Icon="@Icons.Material.Filled.ChevronRight" Disabled="_index >= _items.Count - 1"
+                           OnClick="Next" aria-label="Next modify reminder" />
+        </div>
+    </div>
+
+    @if (Current is { } queued)
+    {
+        <MudPaper Class="pa-4" Outlined="true">
+            <div class="d-flex justify-space-between align-center flex-wrap gap-2 mb-3">
+                <div class="d-flex align-center gap-2">
+                    <MudChip T="string" Size="Size.Small" Color="@StatusColor(queued.Status)">
+                        @StatusLabel(queued.Status)
+                    </MudChip>
+                    <MudText Typo="Typo.body2">Photo reminder</MudText>
+                </div>
+                <MudText Typo="Typo.caption" Class="mud-text-secondary">
+                    Captured @queued.CreatedAt.ToLocalTime().ToString("g")
+                </MudText>
+            </div>
+
+            @if (queued.Status == ModifyQueueStatus.Processing)
+            {
+                <div class="d-flex align-center gap-2 py-6 justify-center">
+                    <MudProgressCircular Indeterminate="true" Color="Color.Info" />
+                    <MudText>Identifying inventory item…</MudText>
+                </div>
+            }
+            else
+            {
+                @if (queued.Status == ModifyQueueStatus.Failed)
+                {
+                    <MudAlert Severity="Severity.Error" Class="mb-3">@queued.Error</MudAlert>
+                }
+                else if (queued.Status == ModifyQueueStatus.Pending)
+                {
+                    <MudAlert Severity="Severity.Info" Class="mb-3">
+                        Waiting for identification. You may process it now or select the inventory item manually.
+                    </MudAlert>
+                }
+
+                <MudGrid>
+                    <MudItem xs="12" md="4">
+                        <MudImage Src="@ImageUrls.For(queued.ImageId, width: 720)" Width="360" Height="300"
+                                  ObjectFit="ObjectFit.Contain" Class="rounded" Style="max-width:100%" />
+                        <MudButton FullWidth="true" Class="mt-2" Variant="Variant.Outlined"
+                                   StartIcon="@Icons.Material.Filled.AutoAwesome" Color="Color.Info"
+                                   Disabled="@(_working || !Ai.IsEnabled)" OnClick="ProcessCurrentAsync">
+                            @(queued.Status == ModifyQueueStatus.Failed ? "Retry identification" : "Identify now")
+                        </MudButton>
+                        @if (!Ai.IsEnabled)
+                        {
+                            <MudText Typo="Typo.caption" Color="Color.Warning" Class="d-block mt-1">
+                                AI is off; use inventory search below.
+                            </MudText>
+                        }
+                        @if (queued.OriginalImageId != queued.ImageId)
+                        {
+                            <MudLink Href="@ImageUrls.For(queued.OriginalImageId)" Target="_blank"
+                                     Class="d-block mt-2">Open untouched original</MudLink>
+                        }
+                    </MudItem>
+                    <MudItem xs="12" md="8">
+                        @if (queued.Identification is { } identification)
+                        {
+                            <MudAlert Severity="Severity.Info" Dense="true" Class="mb-3">
+                                Identified as <strong>@identification.Name</strong>
+                                @if (!string.IsNullOrWhiteSpace(queued.MatchedItemName))
+                                {
+                                    <text> · suggested match: <strong>@queued.MatchedItemName</strong>
+                                        (@ConfidenceLabel(queued.MatchConfidence))</text>
+                                }
+                            </MudAlert>
+                        }
+
+                        <MudText Typo="Typo.subtitle2" Class="mb-2">1. Confirm the existing item</MudText>
+                        <div class="d-flex gap-2 align-start flex-wrap mb-2">
+                            <MudTextField @bind-Value="_search" Label="Search inventory"
+                                          Variant="Variant.Outlined" Margin="Margin.Dense"
+                                          Immediate="true" OnKeyDown="SearchKeyDown" Style="flex:1;min-width:14rem" />
+                            <MudButton Variant="Variant.Outlined" StartIcon="@Icons.Material.Filled.Search"
+                                       OnClick="SearchAsync">Search</MudButton>
+                        </div>
+                        <MudSelect T="int?" Value="_matchedItemId" ValueChanged="SelectItemAsync"
+                                   Label="Inventory item" Variant="Variant.Outlined" Clearable="true"
+                                   Margin="Margin.Dense">
+                            @foreach (var candidate in _candidates)
+                            {
+                                <MudSelectItem T="int?" Value="@candidate.Id">
+                                    @CandidateLabel(candidate)
+                                </MudSelectItem>
+                            }
+                        </MudSelect>
+
+                        @if (_matchedItem is { } matched)
+                        {
+                            <MudPaper Class="pa-3 mt-2" Outlined="true">
+                                <div class="d-flex justify-space-between gap-2 flex-wrap">
+                                    <div>
+                                        <MudText Typo="Typo.subtitle1">@matched.Name</MudText>
+                                        <MudText Typo="Typo.body2" Class="mud-text-secondary">
+                                            @matched.Quantity.ToString("0.##") @(matched.Unit ?? "each") · @PlacementLabel(matched)
+                                        </MudText>
+                                    </div>
+                                    <MudButton Href="@($"items/{matched.Id}")" Variant="Variant.Text"
+                                               StartIcon="@Icons.Material.Filled.Edit">Edit full record</MudButton>
+                                </div>
+                            </MudPaper>
+
+                            <MudText Typo="Typo.subtitle2" Class="mt-4 mb-2">2. Choose the action</MudText>
+                            <MudSelect T="ModifyAction?" @bind-Value="_action" Label="Action"
+                                       Variant="Variant.Outlined" Margin="Margin.Dense" Clearable="true">
+                                <MudSelectItem T="ModifyAction?" Value="ModifyAction.Decrement">Decrement / use</MudSelectItem>
+                                <MudSelectItem T="ModifyAction?" Value="ModifyAction.Move">Move</MudSelectItem>
+                                <MudSelectItem T="ModifyAction?" Value="ModifyAction.AttachImage">Attach this photo</MudSelectItem>
+                                <MudSelectItem T="ModifyAction?" Value="ModifyAction.Delete">Delete item record</MudSelectItem>
+                            </MudSelect>
+
+                            @if (_action == ModifyAction.Decrement)
+                            {
+                                <MudNumericField T="decimal" @bind-Value="_quantity" Label="Quantity used"
+                                                 Min="0.01m" Max="matched.Quantity" Variant="Variant.Outlined"
+                                                 Margin="Margin.Dense" Class="mt-2" />
+                                <MudTextField @bind-Value="_description" Label="Reason (optional)"
+                                              Variant="Variant.Outlined" Margin="Margin.Dense" Class="mt-2" />
+                                <MudAlert Severity="Severity.Info" Dense="true" Class="mt-2">
+                                    Quantity becomes @Math.Max(0, matched.Quantity - _quantity).ToString("0.##").
+                                    This is recorded in Use History and can be undone.
+                                </MudAlert>
+                            }
+                            else if (_action == ModifyAction.Move)
+                            {
+                                <MudNumericField T="decimal" @bind-Value="_quantity" Label="Quantity to move"
+                                                 Min="0.01m" Max="matched.Quantity" Variant="Variant.Outlined"
+                                                 Margin="Margin.Dense" Class="mt-2"
+                                                 HelperText="Moving less than the full quantity creates a linked stock entry." />
+                                <PlacementPicker Locations="_locations" @bind-LocationId="_locationId"
+                                                 @bind-ContainerId="_containerId" Class="mt-1" />
+                            }
+                            else if (_action == ModifyAction.AttachImage)
+                            {
+                                <MudSelect T="ItemImageRole" @bind-Value="_imageRole" Label="Image role"
+                                           Variant="Variant.Outlined" Margin="Margin.Dense" Class="mt-2">
+                                    @foreach (var role in AttachRoles)
+                                    {
+                                        <MudSelectItem T="ItemImageRole" Value="role">@role</MudSelectItem>
+                                    }
+                                </MudSelect>
+                                <MudAlert Severity="Severity.Info" Dense="true" Class="mt-2">
+                                    Attaches the focused photo without changing quantity. The original remains available.
+                                </MudAlert>
+                            }
+                            else if (_action == ModifyAction.Delete)
+                            {
+                                <MudAlert Severity="Severity.Error" Class="mt-2">
+                                    Permanently deletes “@matched.Name” and its current quantity of
+                                    @matched.Quantity.ToString("0.##"). This is different from decrementing to zero.
+                                </MudAlert>
+                            }
+
+                            <div class="d-flex gap-2 flex-wrap mt-4">
+                                <MudButton Color="@(_action == ModifyAction.Delete ? Color.Error : Color.Info)"
+                                           Variant="Variant.Filled" StartIcon="@ActionIcon"
+                                           Disabled="@(_working || !CanApply)" OnClick="ApplyAsync">
+                                    Apply modification
+                                </MudButton>
+                                <MudButton Variant="Variant.Text" Disabled="_working" OnClick="DismissAsync">
+                                    No change / dismiss
+                                </MudButton>
+                            </div>
+                        }
+                        else
+                        {
+                            <MudAlert Severity="Severity.Warning" Dense="true" Class="mt-3">
+                                Select the exact stock entry before choosing an action. Nothing can be applied from an AI name alone.
+                            </MudAlert>
+                            <MudButton Variant="Variant.Text" Class="mt-2" Disabled="_working" OnClick="DismissAsync">
+                                No change / dismiss
+                            </MudButton>
+                        }
+                    </MudItem>
+                </MudGrid>
+            }
+        </MudPaper>
+    }
+}
+
+@code {
+    [Parameter] public EventCallback OnChanged { get; set; }
+
+    private readonly CancellationTokenSource _dispose = new();
+    private List<ModifyQueueItem> _items = [];
+    private List<Item> _candidates = [];
+    private List<Location> _locations = [];
+    private ModifySession? _session;
+    private ModifyOptions _options = new();
+    private Item? _matchedItem;
+    private int? _matchedItemId;
+    private ModifyAction? _action;
+    private decimal _quantity = 1;
+    private int? _locationId;
+    private int? _containerId;
+    private ItemImageRole _imageRole = ItemImageRole.Detail;
+    private string? _description;
+    private string? _search;
+    private int _index;
+    private bool _loading = true;
+    private bool _working;
+
+    private ModifyQueueItem? Current => _items.Count == 0
+        ? null
+        : _items[Math.Clamp(_index, 0, _items.Count - 1)];
+    private static ItemImageRole[] AttachRoles =>
+        [ItemImageRole.Front, ItemImageRole.Back, ItemImageRole.Detail,
+         ItemImageRole.Label, ItemImageRole.Other];
+    private bool CanApply => _matchedItem is not null && _action is not null
+                             && (_action is not (ModifyAction.Decrement or ModifyAction.Move)
+                                 || (_quantity > 0 && _quantity <= _matchedItem.Quantity))
+                             && (_action != ModifyAction.Move
+                                 || _locationId is not null || _containerId is not null);
+    private string ActionIcon => _action switch
+    {
+        ModifyAction.Decrement => Icons.Material.Filled.RemoveCircle,
+        ModifyAction.Move => Icons.Material.Filled.DriveFileMove,
+        ModifyAction.Delete => Icons.Material.Filled.Delete,
+        ModifyAction.AttachImage => Icons.Material.Filled.AddPhotoAlternate,
+        _ => Icons.Material.Filled.Rule
+    };
+
+    protected override async Task OnInitializedAsync()
+    {
+        _options = await SettingsSvc.GetModifyOptionsAsync();
+        _locations = await Containers.GetLocationsAsync();
+        _session = await ModifyQueue.GetCurrentSessionAsync();
+        await LoadAsync(false);
+        _ = RefreshLoopAsync();
+    }
+
+    public async Task ReloadAsync() => await LoadAsync(true);
+
+    private async Task LoadAsync(bool preserveIndex)
+    {
+        var currentId = preserveIndex ? Current?.Id : null;
+        _items = await ModifyQueue.GetOpenAsync();
+        _index = currentId is { } id ? Math.Max(0, _items.FindIndex(item => item.Id == id)) : 0;
+        if (_items.Count > 0 && _index >= _items.Count) _index = _items.Count - 1;
+        await LoadCurrentAsync();
+        _loading = false;
+    }
+
+    private async Task LoadCurrentAsync()
+    {
+        _matchedItem = null;
+        _matchedItemId = null;
+        _candidates = [];
+        _action = null;
+        _quantity = 1;
+        _locationId = null;
+        _containerId = null;
+        _description = null;
+        if (Current is not { } current) return;
+
+        if (current.Identification is { } identification)
+            _candidates = await Inventory.FindCandidatesAsync(identification.Name, identification.Barcode);
+        if (current.MatchedItemId is { } matchedId
+            && await Inventory.GetAsync(matchedId) is { } matched)
+        {
+            if (_candidates.All(candidate => candidate.Id != matched.Id)) _candidates.Insert(0, matched);
+            await SelectItemAsync(matched.Id);
+        }
+    }
+
+    private async Task SelectItemAsync(int? itemId)
+    {
+        _matchedItemId = itemId;
+        _matchedItem = itemId is { } id ? await Inventory.GetAsync(id) : null;
+        _quantity = _matchedItem is null ? 1 : Math.Min(1, _matchedItem.Quantity);
+        _action = null;
+        _locationId = null;
+        _containerId = null;
+    }
+
+    private async Task SearchAsync()
+    {
+        if (string.IsNullOrWhiteSpace(_search)) return;
+        _candidates = await Inventory.QueryAsync(new ItemQuery(Search: _search.Trim()));
+        if (_matchedItem is { } selected && _candidates.All(item => item.Id != selected.Id))
+            _candidates.Insert(0, selected);
+    }
+
+    private async Task SearchKeyDown(KeyboardEventArgs args)
+    {
+        if (args.Key == "Enter") await SearchAsync();
+    }
+
+    private async Task ProcessCurrentAsync()
+    {
+        if (Current is not { } current) return;
+        _working = true;
+        try
+        {
+            if (current.Status == ModifyQueueStatus.Failed) await ModifyQueue.RetryAsync(current.Id);
+            await ModifyQueue.ProcessAsync(current.Id, _options, Ai.IsEnabled);
+            await LoadAsync(true);
+            await OnChanged.InvokeAsync();
+        }
+        catch (Exception ex) { Snackbar.Add(ex.Message, Severity.Error); }
+        finally { _working = false; }
+    }
+
+    private async Task ApplyAsync()
+    {
+        if (Current is not { } current || _matchedItem is not { } item || _action is not { } action) return;
+        if (action == ModifyAction.Delete)
+        {
+            var confirmed = await Dialogs.ShowMessageBoxAsync(
+                "Delete item record",
+                $"Permanently delete “{item.Name}” ({item.Quantity:0.##} {item.Unit ?? "each"}) from {PlacementLabel(item)}?",
+                yesText: "Delete record", cancelText: "Cancel");
+            if (confirmed != true) return;
+        }
+
+        _working = true;
+        try
+        {
+            var applied = await ModifyQueue.ApplyAsync(current.Id, item.Id,
+                new ModifyActionRequest(
+                    action,
+                    _quantity,
+                    _locationId,
+                    _containerId,
+                    _imageRole,
+                    _description,
+                    item.UpdatedAt.ToString("O")));
+            Snackbar.Add(AppliedMessage(applied), Severity.Success);
+            await LoadAsync(false);
+            await OnChanged.InvokeAsync();
+        }
+        catch (Exception ex) { Snackbar.Add(ex.Message, Severity.Error); }
+        finally { _working = false; }
+    }
+
+    private async Task DismissAsync()
+    {
+        if (Current is not { } current) return;
+        _working = true;
+        try
+        {
+            await ModifyQueue.DismissAsync(current.Id);
+            Snackbar.Add("Modify reminder dismissed without changing inventory.", Severity.Info);
+            await LoadAsync(false);
+            await OnChanged.InvokeAsync();
+        }
+        catch (Exception ex) { Snackbar.Add(ex.Message, Severity.Error); }
+        finally { _working = false; }
+    }
+
+    private async Task StartNewSessionAsync()
+    {
+        _session = await ModifyQueue.StartNewSessionAsync();
+        Snackbar.Add("New Modify session started. Matching context has been reset.", Severity.Success);
+    }
+
+    private void Previous()
+    {
+        if (_index <= 0) return;
+        _index--;
+        _ = LoadCurrentAndRefreshAsync();
+    }
+
+    private void Next()
+    {
+        if (_index >= _items.Count - 1) return;
+        _index++;
+        _ = LoadCurrentAndRefreshAsync();
+    }
+
+    private async Task LoadCurrentAndRefreshAsync()
+    {
+        await LoadCurrentAsync();
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private async Task RefreshLoopAsync()
+    {
+        using var timer = new PeriodicTimer(TimeSpan.FromSeconds(2));
+        try
+        {
+            while (await timer.WaitForNextTickAsync(_dispose.Token))
+            {
+                if (!_working && Current?.Status == ModifyQueueStatus.Processing)
+                {
+                    await InvokeAsync(async () =>
+                    {
+                        await LoadAsync(true);
+                        await OnChanged.InvokeAsync();
+                        StateHasChanged();
+                    });
+                }
+            }
+        }
+        catch (OperationCanceledException) when (_dispose.IsCancellationRequested) { }
+    }
+
+    private static string CandidateLabel(Item item) =>
+        $"{item.Name} · {item.Quantity:0.##} {item.Unit ?? "each"} · {PlacementLabel(item)}";
+    private static string PlacementLabel(Item item) => item.Container?.Name is { } container
+        ? $"{item.Container.Location?.Name ?? "Unknown"} › {container}"
+        : item.Location?.Name ?? "Unplaced";
+    private static string ConfidenceLabel(MatchConfidence confidence) => confidence switch
+    {
+        MatchConfidence.High => "high confidence",
+        MatchConfidence.Medium => "possible",
+        MatchConfidence.Low => "low confidence",
+        _ => "no confident match"
+    };
+    private static string StatusLabel(ModifyQueueStatus status) => status switch
+    {
+        ModifyQueueStatus.Pending => "Waiting",
+        ModifyQueueStatus.Processing => "Identifying",
+        ModifyQueueStatus.ReadyForReview => "Ready to decide",
+        ModifyQueueStatus.Failed => "Needs attention",
+        _ => status.ToString()
+    };
+    private static Color StatusColor(ModifyQueueStatus status) => status switch
+    {
+        ModifyQueueStatus.ReadyForReview => Color.Success,
+        ModifyQueueStatus.Failed => Color.Error,
+        ModifyQueueStatus.Processing => Color.Info,
+        _ => Color.Default
+    };
+    private static string AppliedMessage(ModifyApplied applied) => applied.Action switch
+    {
+        ModifyAction.Decrement => $"Updated {applied.ItemName}; the decrement is available in Use History.",
+        ModifyAction.Move when applied.CreatedItemId is not null =>
+            $"Split and moved part of {applied.ItemName} to its new place.",
+        ModifyAction.Move => $"Moved {applied.ItemName}.",
+        ModifyAction.Delete => $"Deleted {applied.ItemName}.",
+        ModifyAction.AttachImage => $"Attached the reminder photo to {applied.ItemName}.",
+        _ => "Modification applied."
+    };
+
+    public ValueTask DisposeAsync()
+    {
+        _dispose.Cancel();
+        _dispose.Dispose();
+        return ValueTask.CompletedTask;
+    }
+}

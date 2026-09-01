@@ -2,6 +2,7 @@ using Dapper;
 using Stashographer.Data;
 using Stashographer.Services.Intake;
 using Stashographer.Services.Lookup;
+using Stashographer.Services.Modify;
 
 namespace Stashographer.Services.Images;
 
@@ -13,6 +14,7 @@ public sealed class BrowserUploadService(
     IDbConnectionFactory db,
     ImageService images,
     IntakeQueueService intake,
+    ModifyQueueService modify,
     BarcodeImageDecoder barcodes)
 {
     private const int Processing = 0;
@@ -43,6 +45,8 @@ public sealed class BrowserUploadService(
                     token, content, contentType, originalName, multipleItems, ct),
                 BrowserUploadKind.QueuedReceipt => await QueueReceiptAsync(
                     token, content, contentType, originalName, ct),
+                BrowserUploadKind.QueuedModifyPhoto => await QueueModifyPhotoAsync(
+                    token, content, contentType, originalName, multipleItems, ct),
                 BrowserUploadKind.Barcode => await DecodeBarcodeAsync(
                     token, kind, content, ct),
                 BrowserUploadKind.QueuedBarcode => await QueueBarcodeAsync(
@@ -65,7 +69,7 @@ public sealed class BrowserUploadService(
         token = ValidateToken(token);
         using var conn = await db.OpenAsync(ct);
         var row = await conn.QuerySingleOrDefaultAsync<UploadRow>("""
-            SELECT Token, Kind, Status, ImageId, QueueItemId, Code, CreatedAt, CompletedAt
+            SELECT Token, Kind, Status, ImageId, QueueItemId, ModifyQueueItemId, Code, CreatedAt, CompletedAt
             FROM BrowserUploads WHERE Token = @token;
             """, new { token });
         return row?.Status == Complete ? Map(row) : null;
@@ -108,6 +112,17 @@ public sealed class BrowserUploadService(
             queued.ImageId, queued.Id, null);
     }
 
+    private async Task<BrowserUploadResult> QueueModifyPhotoAsync(
+        string token, Stream content, string? contentType, string? originalName,
+        bool multipleItems, CancellationToken ct)
+    {
+        var queued = await modify.EnqueuePhotoFromBrowserAsync(
+            content, contentType ?? "application/octet-stream", originalName,
+            multipleItems, token, ct);
+        return new BrowserUploadResult(token, BrowserUploadKind.QueuedModifyPhoto,
+            queued.ImageId, null, null, queued.Id);
+    }
+
     private async Task<BrowserUploadResult> DecodeBarcodeAsync(
         string token, BrowserUploadKind kind, Stream content, CancellationToken ct)
     {
@@ -133,7 +148,7 @@ public sealed class BrowserUploadService(
         using var conn = await db.OpenAsync(ct);
         using var tx = conn.BeginTransaction();
         var row = await conn.QuerySingleOrDefaultAsync<UploadRow>("""
-            SELECT Token, Kind, Status, ImageId, QueueItemId, Code, CreatedAt, CompletedAt
+            SELECT Token, Kind, Status, ImageId, QueueItemId, ModifyQueueItemId, Code, CreatedAt, CompletedAt
             FROM BrowserUploads WHERE Token = @token;
             """, new { token }, tx);
         if (row is not null)
@@ -175,6 +190,7 @@ public sealed class BrowserUploadService(
         var changed = await conn.ExecuteAsync("""
             UPDATE BrowserUploads
             SET Status = @complete, ImageId = @ImageId, QueueItemId = @QueueItemId,
+                ModifyQueueItemId = @ModifyQueueItemId,
                 Code = @Code, CompletedAt = @completedAt
             WHERE Token = @Token AND Status = @processing;
             """, new
@@ -182,6 +198,7 @@ public sealed class BrowserUploadService(
             result.Token,
             result.ImageId,
             result.QueueItemId,
+            result.ModifyQueueItemId,
             result.Code,
             complete = Complete,
             processing = Processing,
@@ -219,7 +236,8 @@ public sealed class BrowserUploadService(
         (BrowserUploadKind)row.Kind,
         row.ImageId,
         row.QueueItemId,
-        row.Code);
+        row.Code,
+        row.ModifyQueueItemId);
 
     private sealed record UploadClaim(bool Acquired, BrowserUploadResult? Result);
 
@@ -230,6 +248,7 @@ public sealed class BrowserUploadService(
         public int Status { get; set; }
         public int? ImageId { get; set; }
         public int? QueueItemId { get; set; }
+        public int? ModifyQueueItemId { get; set; }
         public string? Code { get; set; }
         public string CreatedAt { get; set; } = string.Empty;
         public string? CompletedAt { get; set; }

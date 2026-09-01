@@ -1,4 +1,5 @@
 @page "/queue"
+@page "/queues"
 @implements IAsyncDisposable
 @inject IntakeQueueService IntakeQueue
 @inject SettingsService SettingsSvc
@@ -6,8 +7,19 @@
 @inject InventoryService Inventory
 @inject ContainerService Containers
 @inject ISnackbar Snackbar
+@inject ModifyQueueService ModifyQueue
+@inject NavigationManager Navigation
 
-<PageTitle>Intake queue · Stashographer</PageTitle>
+<PageTitle>Queues · Stashographer</PageTitle>
+
+<MudTabs ActivePanelIndex="_activeTab" ActivePanelIndexChanged="ChangeTabAsync"
+         Color="Color.Primary" Border="true" Class="mb-4">
+    <MudTabPanel Text="@($"Intake ({_intakeOpenCount})")" Icon="@Icons.Material.Filled.PlaylistAddCheck" />
+    <MudTabPanel Text="@($"Modify ({_modifyOpenCount})")" Icon="@Icons.Material.Filled.Rule" />
+</MudTabs>
+
+@if (_activeTab == 0)
+{
 
 <div class="d-flex justify-space-between align-center flex-wrap gap-2 mb-4">
     <div>
@@ -336,6 +348,11 @@ else
         </MudPaper>
     }
 }
+}
+else
+{
+    <ModifyQueuePanel OnChanged="RefreshQueueCountsAsync" />
+}
 
 @code {
     private static string SourceLabel(IntakeQueueItem item) => item.SourceType switch
@@ -363,6 +380,12 @@ else
     private bool _loading = true;
     private bool _working;
     private string _defaultCurrency = "GBP";
+    private int _activeTab;
+    private int _intakeOpenCount;
+    private int _modifyOpenCount;
+
+    [SupplyParameterFromQuery(Name = "tab")]
+    public string? RequestedTab { get; set; }
 
     private IntakeQueueItem? Current => _items.Count == 0 ? null : _items[Math.Clamp(_index, 0, _items.Count - 1)];
     private Location? RememberedLocation => _locations.FirstOrDefault(x => x.Id == _rememberedLocationId);
@@ -371,6 +394,9 @@ else
 
     protected override async Task OnInitializedAsync()
     {
+        await RefreshQueueCountsAsync();
+        _activeTab = QueueTabSelection.InitialIndex(
+            RequestedTab, _intakeOpenCount, _modifyOpenCount);
         _options = await SettingsSvc.GetIntakeOptionsAsync();
         _defaultCurrency = await SettingsSvc.GetDefaultCurrencyAsync();
         _kinds = await Inventory.GetKindsAsync();
@@ -381,10 +407,27 @@ else
         _ = RefreshLoopAsync();
     }
 
+    private Task ChangeTabAsync(int index)
+    {
+        _activeTab = index;
+        var tab = index == 1 ? "modify" : "intake";
+        Navigation.NavigateTo($"queues?tab={tab}", replace: true);
+        return Task.CompletedTask;
+    }
+
+    private async Task RefreshQueueCountsAsync()
+    {
+        var intake = await IntakeQueue.GetCountsAsync();
+        var modify = await ModifyQueue.GetCountsAsync();
+        _intakeOpenCount = intake.Waiting + intake.Processing + intake.Ready + intake.Failed;
+        _modifyOpenCount = modify.Open;
+    }
+
     private async Task LoadAsync(bool preserveIndex)
     {
         var currentId = preserveIndex ? Current?.Id : null;
         _items = await IntakeQueue.GetOpenAsync();
+        _intakeOpenCount = _items.Count;
         _index = currentId is { } id ? Math.Max(0, _items.FindIndex(x => x.Id == id)) : 0;
         if (_items.Count > 0 && _index >= _items.Count) _index = _items.Count - 1;
         await LoadCurrentStateAsync();

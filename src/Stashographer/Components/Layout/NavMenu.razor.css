@@ -4,12 +4,21 @@
     justify-content: center;
     min-width: 1.55rem;
     height: 1.55rem;
-    margin-left: auto;
+    margin-left: 0.25rem;
     padding: 0 0.4rem;
     border-radius: 999px;
-    background: var(--mud-palette-primary);
-    color: var(--mud-palette-primary-text);
     font-size: 0.75rem;
     font-weight: 600;
     line-height: 1;
+}
+
+.queue-count-intake {
+    margin-left: auto;
+    background: var(--mud-palette-success);
+    color: var(--mud-palette-success-text);
+}
+
+.queue-count-modify {
+    background: var(--mud-palette-info);
+    color: var(--mud-palette-info-text);
 }

@@ -48,6 +48,9 @@ public class SampleDataSeeder(
                 logger.LogInformation("Sample data: resetting demo inventory and workflows");
                 await conn.ExecuteAsync("""
                     DELETE FROM BrowserUploads;
+                    DELETE FROM ModifyActionEvents;
+                    DELETE FROM ModifyQueueItems;
+                    DELETE FROM ModifySessions;
                     DELETE FROM IntakeQueueItems;
                     DELETE FROM IntakeSessions;
                     DELETE FROM ConsumptionEvents;

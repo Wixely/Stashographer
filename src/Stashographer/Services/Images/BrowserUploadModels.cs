@@ -9,6 +9,7 @@ public enum BrowserUploadKind
     Image,
     QueuedPhoto,
     QueuedReceipt,
+    QueuedModifyPhoto,
     Barcode,
     QueuedBarcode
 }
@@ -22,7 +23,8 @@ public sealed record BrowserUploadResult(
     BrowserUploadKind Kind,
     int? ImageId,
     int? QueueItemId,
-    string? Code);
+    string? Code,
+    int? ModifyQueueItemId = null);
 
 public sealed record BrowserUploadFailure(string Message, bool Retryable);
 

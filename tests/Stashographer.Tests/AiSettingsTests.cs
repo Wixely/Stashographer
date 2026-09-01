@@ -111,6 +111,30 @@ public class AiSettingsTests
     }
 
     [Fact]
+    public async Task Modify_options_default_to_automatic_identification_and_roundtrip()
+    {
+        await using var db = await TestDb.CreateAsync();
+        var service = new SettingsService(db.Factory);
+
+        var defaults = await service.GetModifyOptionsAsync();
+        Assert.True(defaults.AutoProcessPhotos);
+        Assert.True(defaults.SplitMultipleItems);
+        Assert.Equal(8, defaults.ContextItemCount);
+
+        await service.SaveModifyOptionsAsync(new ModifyOptions
+        {
+            AutoProcessPhotos = false,
+            SplitMultipleItems = false,
+            ContextItemCount = 99
+        });
+
+        var loaded = await service.GetModifyOptionsAsync();
+        Assert.False(loaded.AutoProcessPhotos);
+        Assert.False(loaded.SplitMultipleItems);
+        Assert.Equal(25, loaded.ContextItemCount);
+    }
+
+    [Fact]
     public async Task Regional_options_have_local_defaults_and_roundtrip()
     {
         await using var db = await TestDb.CreateAsync();

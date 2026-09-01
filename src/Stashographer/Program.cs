@@ -14,6 +14,7 @@ using Stashographer.Services.Images;
 using Stashographer.Services.Inventory;
 using Stashographer.Services.Intake;
 using Stashographer.Services.Lookup;
+using Stashographer.Services.Modify;
 using Stashographer.Services.Security;
 using System.Text.Json.Serialization;
 using System.Threading.RateLimiting;
@@ -144,6 +145,7 @@ builder.Services.AddScoped<SettingsService>();
 builder.Services.AddScoped<PhotoIntakeService>();
 builder.Services.AddSingleton<IntakeQueueSignal>();
 builder.Services.AddScoped<IntakeQueueService>();
+builder.Services.AddScoped<ModifyQueueService>();
 builder.Services.AddHostedService<IntakeQueueWorker>();
 builder.Services.AddMcpServer()
     .WithHttpTransport(options => options.Stateless = true)

@@ -15,6 +15,7 @@ public class SettingsService(IDbConnectionFactory db)
 {
     private const string AiPrefix = "Ai.";
     private const string IntakePrefix = "Intake.";
+    private const string ModifyPrefix = "Modify.";
     private const string InventoryPrefix = "Inventory.";
 
     public async Task<Dictionary<string, string>> GetAllAsync(string? prefix = null, CancellationToken ct = default)
@@ -107,6 +108,29 @@ public class SettingsService(IDbConnectionFactory db)
             ["Intake.LiveScanCooldownMilliseconds"] = Math.Clamp(
                 options.LiveScanCooldownMilliseconds, 500, 5000).ToString(),
             ["Intake.ContextItemCount"] = Math.Clamp(options.ContextItemCount, 0, 25).ToString()
+        }, ct);
+
+    public async Task<ModifyOptions> GetModifyOptionsAsync(CancellationToken ct = default)
+    {
+        var stored = await GetAllAsync(ModifyPrefix, ct);
+        var defaults = new ModifyOptions();
+        return new ModifyOptions
+        {
+            AutoProcessPhotos = ReadBool(stored, "Modify.AutoProcessPhotos", defaults.AutoProcessPhotos),
+            SplitMultipleItems = ReadBool(stored, "Modify.SplitMultipleItems", defaults.SplitMultipleItems),
+            ContextItemCount = stored.TryGetValue("Modify.ContextItemCount", out var count)
+                               && int.TryParse(count, out var parsed)
+                ? Math.Clamp(parsed, 0, 25)
+                : defaults.ContextItemCount
+        };
+    }
+
+    public Task SaveModifyOptionsAsync(ModifyOptions options, CancellationToken ct = default) =>
+        SetManyAsync(new Dictionary<string, string>
+        {
+            ["Modify.AutoProcessPhotos"] = options.AutoProcessPhotos.ToString(),
+            ["Modify.SplitMultipleItems"] = options.SplitMultipleItems.ToString(),
+            ["Modify.ContextItemCount"] = Math.Clamp(options.ContextItemCount, 0, 25).ToString()
         }, ct);
 
     // --- Inventory options ----------------------------------------------------------

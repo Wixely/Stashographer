@@ -1,0 +1,189 @@
+@page "/modify"
+@implements IAsyncDisposable
+@inject ModifyQueueService ModifyQueue
+@inject SettingsService SettingsSvc
+@inject ContainerService Containers
+@inject IAiEnrichmentService Ai
+@inject ISnackbar Snackbar
+@inject IJSRuntime JS
+
+<PageTitle>Modify inventory · Stashographer</PageTitle>
+
+<div class="d-flex justify-space-between align-center flex-wrap gap-2 mb-4">
+    <div>
+        <MudText Typo="Typo.h4">Modify inventory</MudText>
+        @if (_session is not null)
+        {
+            <MudText Typo="Typo.caption" Class="mud-text-secondary">
+                Session @_session.Id · started @_session.StartedAt.ToLocalTime().ToString("g")
+            </MudText>
+        }
+    </div>
+    <div class="d-flex gap-2 flex-wrap">
+        <MudButton Href="queues?tab=modify" Variant="Variant.Outlined"
+                   StartIcon="@Icons.Material.Filled.Rule">Modify queue (@_queueCount)</MudButton>
+        <MudButton Variant="Variant.Text" StartIcon="@Icons.Material.Filled.Flag"
+                   OnClick="StartNewSessionAsync">New session</MudButton>
+    </div>
+</div>
+
+<MudAlert Severity="Severity.Info" Dense="true" Class="mb-3">
+    Take photos now and decide what to change later. Photos are saved immediately; AI only
+    suggests existing inventory matches and never applies an action by itself.
+</MudAlert>
+
+<MudGrid>
+    <MudItem xs="12" md="5">
+        <MudPaper Class="pa-4" Outlined="true">
+            <MudText Typo="Typo.h6" Class="mb-1">Working place</MudText>
+            <MudText Typo="Typo.caption" Class="mud-text-secondary d-block mb-2">
+                Optional. Choosing the box or room you are working through helps prioritize likely matches.
+            </MudText>
+            <PlacementPicker Locations="_locations"
+                             LocationId="_workingLocationId" LocationIdChanged="SetWorkingLocationAsync"
+                             ContainerId="_workingContainerId" ContainerIdChanged="SetWorkingContainerAsync" />
+        </MudPaper>
+    </MudItem>
+    <MudItem xs="12" md="7">
+        <MudPaper Class="pa-4" Outlined="true">
+            <div class="d-flex align-center gap-2 mb-2">
+                <MudIcon Icon="@Icons.Material.Filled.PhotoCamera" Color="Color.Info" />
+                <MudText Typo="Typo.h6">Capture reminders</MudText>
+            </div>
+            <MudText Typo="Typo.body2" Class="mud-text-secondary mb-3">
+                Take or select several photos. One photo may contain several objects; focused copies are
+                created while the untouched original is retained.
+            </MudText>
+
+            <ResilientImageInput Id="modify-photo-camera" OwnerKey="modify:camera"
+                                 Kind="BrowserUploadKind.QueuedModifyPhoto"
+                                 MultipleItems="_options.SplitMultipleItems" AllowMultipleFiles="true"
+                                 Capture="environment" UploadStarted="OnUploadStarted"
+                                 UploadCompleted="OnUploaded" UploadFailed="OnUploadFailed" />
+            <ResilientImageInput Id="modify-photo-upload" OwnerKey="modify:library"
+                                 Kind="BrowserUploadKind.QueuedModifyPhoto"
+                                 MultipleItems="_options.SplitMultipleItems" AllowMultipleFiles="true"
+                                 UploadStarted="OnUploadStarted" UploadCompleted="OnUploaded"
+                                 UploadFailed="OnUploadFailed" />
+            <ResilientImageInput Id="modify-photo-clipboard" OwnerKey="modify:clipboard"
+                                 Kind="BrowserUploadKind.QueuedModifyPhoto"
+                                 MultipleItems="_options.SplitMultipleItems" CompletesClipboardQueue="true"
+                                 UploadStarted="OnUploadStarted" UploadCompleted="OnUploaded"
+                                 UploadFailed="OnUploadFailed" />
+
+            <div class="d-flex gap-2 flex-wrap">
+                <MudButton HtmlTag="label" for="modify-photo-camera" Variant="Variant.Filled"
+                           Color="Color.Info" StartIcon="@Icons.Material.Filled.PhotoCamera"
+                           Disabled="_busy">Take photos</MudButton>
+                <MudButton HtmlTag="label" for="modify-photo-upload" Variant="Variant.Outlined"
+                           Color="Color.Info" StartIcon="@Icons.Material.Filled.Upload"
+                           Disabled="_busy">Select photos</MudButton>
+            </div>
+            <MudText Typo="Typo.caption" Class="mud-text-secondary d-block mt-2">
+                You can also paste an image anywhere on this page (Ctrl+V). Each upload is durable before
+                the next camera or gallery selection begins.
+            </MudText>
+            @if (_busy)
+            {
+                <div class="d-flex align-center gap-2 mt-3">
+                    <MudProgressCircular Indeterminate="true" Size="Size.Small" /> Saving to Modify queue…
+                </div>
+            }
+            @if (!Ai.IsEnabled)
+            {
+                <MudAlert Severity="Severity.Warning" Dense="true" Class="mt-3">
+                    AI vision is off. Photos will still be queued and can be matched manually later.
+                </MudAlert>
+            }
+        </MudPaper>
+    </MudItem>
+</MudGrid>
+
+@code {
+    private readonly CancellationTokenSource _dispose = new();
+    private ModifyOptions _options = new();
+    private ModifySession? _session;
+    private List<Location> _locations = [];
+    private int? _workingLocationId;
+    private int? _workingContainerId;
+    private int _queueCount;
+    private bool _busy;
+    private bool _clipboardEnabled;
+
+    protected override async Task OnInitializedAsync()
+    {
+        _options = await SettingsSvc.GetModifyOptionsAsync();
+        _locations = await Containers.GetLocationsAsync();
+        _session = await ModifyQueue.GetCurrentSessionAsync();
+        _workingLocationId = _session.WorkingLocationId;
+        _workingContainerId = _session.WorkingContainerId;
+        await RefreshCountAsync();
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!firstRender) return;
+        await JS.InvokeVoidAsync("stashClipboardImages.enable", "modify-photo-clipboard");
+        _clipboardEnabled = true;
+    }
+
+    private Task OnUploadStarted(string _)
+    {
+        _busy = true;
+        return Task.CompletedTask;
+    }
+
+    private async Task OnUploaded(BrowserUploadResult upload)
+    {
+        _busy = false;
+        if (upload.ModifyQueueItemId is null)
+        {
+            Snackbar.Add("The photo upload did not create a Modify queue entry.", Severity.Error);
+            return;
+        }
+        await RefreshCountAsync();
+        Snackbar.Add("Saved to the Modify queue — ready for the next photo.", Severity.Success);
+    }
+
+    private Task OnUploadFailed(BrowserUploadFailure failure)
+    {
+        _busy = false;
+        Snackbar.Add(failure.Message, Severity.Error);
+        return Task.CompletedTask;
+    }
+
+    private async Task SetWorkingLocationAsync(int? locationId)
+    {
+        _workingLocationId = locationId;
+        if (locationId is not null) _workingContainerId = null;
+        await ModifyQueue.SetWorkingPlaceAsync(_workingLocationId, _workingContainerId);
+    }
+
+    private async Task SetWorkingContainerAsync(int? containerId)
+    {
+        _workingContainerId = containerId;
+        if (containerId is not null) _workingLocationId = null;
+        await ModifyQueue.SetWorkingPlaceAsync(_workingLocationId, _workingContainerId);
+    }
+
+    private async Task StartNewSessionAsync()
+    {
+        _session = await ModifyQueue.StartNewSessionAsync();
+        _workingLocationId = null;
+        _workingContainerId = null;
+        Snackbar.Add("New Modify session started. Matching context has been reset.", Severity.Success);
+    }
+
+    private async Task RefreshCountAsync() => _queueCount = (await ModifyQueue.GetCountsAsync()).Open;
+
+    public async ValueTask DisposeAsync()
+    {
+        if (_clipboardEnabled)
+        {
+            try { await JS.InvokeVoidAsync("stashClipboardImages.disable"); }
+            catch (JSDisconnectedException) { }
+        }
+        _dispose.Cancel();
+        _dispose.Dispose();
+    }
+}

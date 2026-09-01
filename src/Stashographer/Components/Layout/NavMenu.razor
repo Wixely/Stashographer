@@ -1,5 +1,6 @@
 @implements IAsyncDisposable
 @inject IntakeQueueService IntakeQueue
+@inject ModifyQueueService ModifyQueue
 @inject ILogger<NavMenu> Logger
 
 <MudNavMenu>
@@ -11,9 +12,12 @@
     <MudNavLink Href="meal-plans" Icon="@Icons.Material.Filled.CalendarMonth">Meal Plans</MudNavLink>
     <MudNavLink Href="boms" Icon="@Icons.Material.Filled.RestaurantMenu">Recipes &amp; Builds</MudNavLink>
     <MudNavLink Href="scan" Icon="@Icons.Material.Filled.QrCodeScanner">Scan &amp; Add</MudNavLink>
-    <MudNavLink Href="queue" Icon="@Icons.Material.Filled.PlaylistAddCheck">
-        <span>Intake Queue</span>
-        <span class="queue-count" aria-label="@($"{_queueCount} items in intake queue")">@_queueCount</span>
+    <MudNavLink Href="queues" Icon="@Icons.Material.Filled.Rule">
+        <span>Queues</span>
+        <span class="queue-count queue-count-intake"
+              aria-label="@($"{_intakeQueueCount} items in intake queue")">@_intakeQueueCount</span>
+        <span class="queue-count queue-count-modify"
+              aria-label="@($"{_modifyQueueCount} items in modify queue")">@_modifyQueueCount</span>
     </MudNavLink>
     <MudNavLink Href="places" Match="NavLinkMatch.Prefix" Icon="@Icons.Material.Filled.Room">Places</MudNavLink>
     <MudNavLink Href="checkouts" Icon="@Icons.Material.Filled.AssignmentReturn">Checkouts</MudNavLink>
@@ -22,7 +26,8 @@
 
 @code {
     private readonly CancellationTokenSource _dispose = new();
-    private int _queueCount;
+    private int _intakeQueueCount;
+    private int _modifyQueueCount;
 
     protected override async Task OnInitializedAsync()
     {
@@ -33,7 +38,9 @@
     private async Task RefreshQueueCountAsync()
     {
         var counts = await IntakeQueue.GetCountsAsync(_dispose.Token);
-        _queueCount = counts.Waiting + counts.Processing + counts.Ready + counts.Failed;
+        var modify = await ModifyQueue.GetCountsAsync(_dispose.Token);
+        _intakeQueueCount = counts.Waiting + counts.Processing + counts.Ready + counts.Failed;
+        _modifyQueueCount = modify.Open;
     }
 
     private async Task RefreshQueueCountLoopAsync()
@@ -54,7 +61,7 @@
                 }
                 catch (Exception ex) when (!ct.IsCancellationRequested)
                 {
-                    Logger.LogWarning(ex, "Could not refresh the intake queue navigation count");
+                    Logger.LogWarning(ex, "Could not refresh queue navigation counts");
                 }
             }
         }

@@ -162,6 +162,26 @@
 </MudPaper>
 
 <MudPaper Class="pa-4 mb-3" Outlined="true">
+    <MudText Typo="Typo.h6" Class="mb-2">Modify workflow</MudText>
+    <MudText Typo="Typo.body2" Class="mud-text-secondary mb-3">
+        Modify photos are always queued for an explicit item and action decision. AI may identify
+        existing stock but cannot apply a decrement, move, deletion, or image attachment.
+    </MudText>
+    <MudSwitch T="bool" @bind-Value="_autoProcessModifyPhotos"
+               Label="Identify Modify photos automatically when AI is active" Color="Color.Info" />
+    <MudSwitch T="bool" @bind-Value="_splitModifyPhotos"
+               Label="Split photos containing several objects" Color="Color.Info" />
+    <MudNumericField T="int" @bind-Value="_modifyContextItemCount"
+                     Label="Earlier Modify matches supplied as session context"
+                     Min="0" Max="25" Variant="Variant.Outlined" Margin="Margin.Dense" Class="mt-2"
+                     HelperText="The optional working container and recent confirmed items help prioritize matches." />
+    <MudButton Class="mt-2" Color="Color.Info" Variant="Variant.Filled"
+               StartIcon="@Icons.Material.Filled.Save" OnClick="SaveModifyAsync">
+        Save modify workflow
+    </MudButton>
+</MudPaper>
+
+<MudPaper Class="pa-4 mb-3" Outlined="true">
     <MudText Typo="Typo.h6" Class="mb-2">Intake workflow</MudText>
     <MudText Typo="Typo.body2" Class="mud-text-secondary mb-3">
         Queue-first capture keeps barcode scanners and phone cameras ready for the next item.
@@ -387,6 +407,9 @@
     private bool _autoProcessPhotos = true;
     private bool _requireReview = true;
     private int _contextItemCount = 8;
+    private bool _autoProcessModifyPhotos = true;
+    private bool _splitModifyPhotos = true;
+    private int _modifyContextItemCount = 8;
     private bool _continueLiveScanning = true;
     private bool _promptForConsecutiveBarcodeQuantity = true;
     private int _liveScanCooldownMilliseconds = 2000;
@@ -426,6 +449,10 @@
         _continueLiveScanning = intake.ContinueLiveScanning;
         _promptForConsecutiveBarcodeQuantity = intake.PromptForConsecutiveBarcodeQuantity;
         _liveScanCooldownMilliseconds = intake.LiveScanCooldownMilliseconds;
+        var modify = await SettingsSvc.GetModifyOptionsAsync();
+        _autoProcessModifyPhotos = modify.AutoProcessPhotos;
+        _splitModifyPhotos = modify.SplitMultipleItems;
+        _modifyContextItemCount = modify.ContextItemCount;
         var regional = await SettingsSvc.GetRegionalOptionsAsync();
         _defaultCurrency = regional.DefaultCurrency;
         _dateOrder = regional.DateOrder;
@@ -480,6 +507,18 @@
         });
         QueueSignal.Pulse();
         Snackbar.Add("Intake workflow saved.", Severity.Success);
+    }
+
+    private async Task SaveModifyAsync()
+    {
+        await SettingsSvc.SaveModifyOptionsAsync(new ModifyOptions
+        {
+            AutoProcessPhotos = _autoProcessModifyPhotos,
+            SplitMultipleItems = _splitModifyPhotos,
+            ContextItemCount = Math.Clamp(_modifyContextItemCount, 0, 25)
+        });
+        QueueSignal.Pulse();
+        Snackbar.Add("Modify workflow saved.", Severity.Success);
     }
 
     private void SetApiEnabled(bool enabled)

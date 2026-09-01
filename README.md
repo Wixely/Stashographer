@@ -29,9 +29,9 @@ All screenshots use the repository's wholly synthetic Development sample data.
 |---|---|
 | ![Recipes and builds — interchangeable requirements and availability](docs/screenshots/boms.png) | ![Use history — reversible manual and cooked-meal consumption](docs/screenshots/consumption.png) |
 
-| Scan & add | Intake queue |
+| Scan & add | Queues |
 |---|---|
-| ![Scan and add — queue-first barcode, batch photo, clipboard, and purchase-evidence capture](docs/screenshots/scan.png) | ![Intake queue — item-by-item verification of a synthetic automation draft](docs/screenshots/queue.png) |
+| ![Scan and add — queue-first barcode, batch photo, clipboard, and purchase-evidence capture](docs/screenshots/scan.png) | ![Queues — item-by-item intake and modify review](docs/screenshots/queue.png) |
 
 | Places (dark theme) | Container (dark theme) |
 |---|---|
@@ -63,6 +63,13 @@ All screenshots use the repository's wholly synthetic Development sample data.
   camera is open, circuit recovery waits for that handoff and a full page reload resumes the
   same selected file instead of asking the user to take the photo again. Disconnected circuits
   are also retained for 30 minutes as a convenience, but file recovery does not depend on them.
+- **Photo-first modification** — use **Modify** to photograph things while working through a
+  box, room, or shelf, then decide what to change later from the separate Modify queue. The
+  vision agent suggests existing inventory matches but cannot choose or apply an action. Review
+  can decrement with reversible use history, move a whole or partial quantity, attach the photo,
+  permanently delete a record after a second confirmation, or dismiss the reminder unchanged.
+  Multi-object captures receive focused copies while retaining the untouched original, and an
+  optional working room/container plus earlier session matches improve candidate selection.
 - **Batch photo selection** — in queue mode, the Scan page accepts multiple images from one
   gallery/file-picker action and camera apps that support multi-capture. Every selected image
   receives its own durable, idempotent upload and queue entry. Mobile camera apps that return
@@ -220,7 +227,7 @@ consecutive read opens a quantity dialog with `2` already selected; confirming u
 original durable queue capture instead of creating duplicate review entries. Pressing Stop,
 scanning a different code, or a short inactivity timeout releases the capture for processing.
 
-Open **Intake Queue** to verify one item at a time, edit its fields and placement, choose
+Open **Queues → Intake** to verify one item at a time, edit its fields and placement, choose
 between creating a new item or incrementing a match, then Accept or Reject it. Raw pending
 items can also be completed manually. **New session** resets context for the next inventory
 run without discarding unfinished work.
@@ -239,6 +246,26 @@ processing, live-camera continuation, repeat-scan quantity prompts, cooldown len
 context window, and mandatory review. Turning queueing off restores the
 original immediate lookup/validation flow. Review is on by default; disabling it allows only
 complete, unambiguous results to apply automatically.
+
+## Modify workflow
+
+Open **Modify** from Scan & add, optionally select the room or container you are working through,
+then take, select, or paste as many photos as needed. Each image is persisted through the same
+circuit-independent, idempotent upload path as intake, so opening a mobile camera or reconnecting
+Blazor cannot lose or duplicate the reminder. When multi-object splitting is enabled, the original
+photo is retained and each detected object gets a separate focused Modify queue entry.
+
+Open **Queues → Modify** later on a larger screen. Confirm the exact existing stock entry, choose
+the action and review its before/after effect. AI identification is only a suggestion: it cannot
+create an item, select an action, or change inventory. Decrements use the reversible Use History;
+moving less than the full quantity creates a linked stock entry in the new place; delete remains a
+separate destructive action with a second confirmation. Failed identification can be retried or
+bypassed with inventory search, and every reminder can be dismissed without changing anything.
+
+The left navigation shows separate theme-aware counts: green for Intake and blue for Modify. The
+Queues page respects explicit `?tab=intake` / `?tab=modify` links; otherwise it opens Modify when
+Intake is empty and Modify still has work. Both queue types share one oldest-first processor so a
+local vision model is never hit by competing intake and modify workers.
 
 Quantities are aggregated only when their stock facts are compatible. If a captured copy has
 a visible expiry different from the matched stock, intake creates a linked expiry lot instead
@@ -309,7 +336,7 @@ dependencies only (see [THIRD-PARTY-NOTICES](THIRD-PARTY-NOTICES.md)).
 ## Development
 
 ```bash
-dotnet test                    # 171 tests, no network access required
+dotnet test                    # 186 tests, no network access required
 dotnet build -c Release
 ```
 

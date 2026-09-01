@@ -22,9 +22,14 @@
                    title="Open a blank item form without a photo or AI processing">
             Add manually
         </MudButton>
+        <MudButton Href="modify" Variant="Variant.Filled" Color="Color.Info"
+                   StartIcon="@Icons.Material.Filled.PhotoCamera"
+                   title="Take photos now and choose inventory changes later">
+            Modify
+        </MudButton>
         @if (_intakeOptions.QueueEnabled)
         {
-            <MudButton Href="queue" Variant="Variant.Outlined" StartIcon="@Icons.Material.Filled.PlaylistAddCheck">
+            <MudButton Href="queues?tab=intake" Variant="Variant.Outlined" StartIcon="@Icons.Material.Filled.PlaylistAddCheck">
                 Queue (@_queuedCount)
             </MudButton>
         }

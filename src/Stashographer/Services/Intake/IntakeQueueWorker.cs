@@ -1,5 +1,6 @@
 using Stashographer.Services.Ai;
 using Stashographer.Services.Config;
+using Stashographer.Services.Modify;
 
 namespace Stashographer.Services.Intake;
 
@@ -12,8 +13,12 @@ public sealed class IntakeQueueWorker(
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         using (var recoveryScope = scopes.CreateScope())
+        {
             await recoveryScope.ServiceProvider.GetRequiredService<IntakeQueueService>()
                 .RecoverInterruptedAsync(stoppingToken);
+            await recoveryScope.ServiceProvider.GetRequiredService<ModifyQueueService>()
+                .RecoverInterruptedAsync(stoppingToken);
+        }
 
         while (!stoppingToken.IsCancellationRequested)
         {
@@ -24,11 +29,24 @@ public sealed class IntakeQueueWorker(
                 {
                     var settings = scope.ServiceProvider.GetRequiredService<SettingsService>();
                     var options = await settings.GetIntakeOptionsAsync(stoppingToken);
-                    if (options.QueueEnabled)
+                    var modifyOptions = await settings.GetModifyOptionsAsync(stoppingToken);
+                    var ai = scope.ServiceProvider.GetRequiredService<IAiEnrichmentService>();
+                    var intakeQueue = scope.ServiceProvider.GetRequiredService<IntakeQueueService>();
+                    var modifyQueue = scope.ServiceProvider.GetRequiredService<ModifyQueueService>();
+                    var intakeAt = options.QueueEnabled
+                        ? await intakeQueue.GetNextProcessableCreatedAtAsync(options, ai.IsEnabled, stoppingToken)
+                        : null;
+                    var modifyAt = await modifyQueue.GetNextProcessableCreatedAtAsync(
+                        modifyOptions, ai.IsEnabled, stoppingToken);
+                    if (modifyAt is not null && (intakeAt is null || modifyAt <= intakeAt))
                     {
-                        var ai = scope.ServiceProvider.GetRequiredService<IAiEnrichmentService>();
-                        var queue = scope.ServiceProvider.GetRequiredService<IntakeQueueService>();
-                        processedAny = await queue.ProcessNextAsync(options, ai.IsEnabled, stoppingToken);
+                        processedAny = await modifyQueue.ProcessNextAsync(
+                            modifyOptions, ai.IsEnabled, stoppingToken);
+                    }
+                    else if (intakeAt is not null)
+                    {
+                        processedAny = await intakeQueue.ProcessNextAsync(
+                            options, ai.IsEnabled, stoppingToken);
                     }
                 }
 
