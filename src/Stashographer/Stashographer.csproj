@@ -29,8 +29,8 @@
          longest-supported engine while the managed core/provider stay at the 2.1.x versions
          Microsoft.Data.Sqlite 10 targets. Runtime-verified below. -->
     <PackageReference Include="SQLitePCLRaw.lib.e_sqlite3" Version="3.53.3" />
-    <PackageReference Include="Microsoft.Extensions.AI" Version="10.8.0" />
-    <PackageReference Include="Microsoft.Extensions.AI.OpenAI" Version="10.8.0" />
+    <PackageReference Include="Microsoft.Extensions.AI" Version="10.9.0" />
+    <PackageReference Include="Microsoft.Extensions.AI.OpenAI" Version="10.9.0" />
     <PackageReference Include="ModelContextProtocol.AspNetCore" Version="2.2.0" />
     <PackageReference Include="MudBlazor" Version="9.7.0" />
     <PackageReference Include="QRCoder" Version="1.8.0" />
