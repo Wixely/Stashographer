@@ -2,6 +2,12 @@ html, body {
     font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
 }
 
+/* Keep centered content and tab controls in the same horizontal position when a page
+   switches between content that does and does not need a vertical scrollbar. */
+html {
+    scrollbar-gutter: stable;
+}
+
 /* Applied by theme.js in <head>, before the first page paint. MudBlazor supplies the
    component palette; this keeps the browser canvas dark while a first-time preference
    is synchronized into the server-rendering cookie. */
