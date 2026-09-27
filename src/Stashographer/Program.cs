@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.Antiforgery;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.RateLimiting;
+using DnaX.Uploads;
 using MudBlazor.Services;
 using Stashographer.Components;
 using Stashographer.Data;
@@ -17,6 +18,7 @@ using Stashographer.Services.Intake;
 using Stashographer.Services.Lookup;
 using Stashographer.Services.Modify;
 using Stashographer.Services.Security;
+using System.Security.Claims;
 using System.Text.Json.Serialization;
 using System.Threading.RateLimiting;
 
@@ -62,8 +64,30 @@ builder.Services.AddAuthentication(CookieAuthenticationDefaults.AuthenticationSc
                 await context.HttpContext.SignOutAsync();
             }
         };
+    })
+    .AddCookie(UploadOwnerAuthentication.Scheme, options =>
+    {
+        options.Cookie.Name = "stashographer.upload-owner";
+        options.Cookie.HttpOnly = true;
+        options.Cookie.IsEssential = true;
+        options.Cookie.SameSite = SameSiteMode.Strict;
+        options.Cookie.SecurePolicy = CookieSecurePolicy.SameAsRequest;
+        options.ExpireTimeSpan = TimeSpan.FromDays(365);
+        options.SlidingExpiration = true;
+        options.Events.OnRedirectToLogin = context =>
+        {
+            context.Response.StatusCode = StatusCodes.Status401Unauthorized;
+            return Task.CompletedTask;
+        };
+        options.Events.OnRedirectToAccessDenied = context =>
+        {
+            context.Response.StatusCode = StatusCodes.Status403Forbidden;
+            return Task.CompletedTask;
+        };
     });
-builder.Services.AddAuthorization();
+builder.Services.AddAuthorization(options =>
+    options.AddPolicy(UploadOwnerAuthentication.Policy, policy => policy
+        .RequireAuthenticatedUser()));
 builder.Services.AddAntiforgery();
 builder.Services.AddDataProtection()
     .SetApplicationName("Stashographer")
@@ -130,6 +154,39 @@ builder.Services.AddScoped<AutomationOperations>();
 // --- Image storage ------------------------------------------------------------
 var imageOptions = builder.Configuration.GetSection(ImageOptions.SectionName).Get<ImageOptions>() ?? new ImageOptions();
 builder.Services.AddSingleton(imageOptions);
+var imageRoot = Path.IsPathRooted(imageOptions.RootPath)
+    ? imageOptions.RootPath
+    : Path.Combine(builder.Environment.ContentRootPath, imageOptions.RootPath);
+builder.Services.AddDnaXUploads(options =>
+{
+    options.Root = Path.Combine(imageRoot, "upload-staging");
+    options.MaximumSessions = 512;
+    options.MaximumReservedBytes = Math.Max(
+        imageOptions.MaxUploadBytes * 256,
+        512L * 1024 * 1024);
+
+    foreach (var kind in Enum.GetValues<BrowserUploadKind>())
+    {
+        options.Profiles[kind.ToString()] = new UploadProfile
+        {
+            Multiple = true,
+            Chunking = true,
+            Resume = true,
+            AutomaticRetry = true,
+            PersistMetadata = true,
+            PersistFileBytes = imageOptions.MaxUploadBytes,
+            ConcurrentFiles = 2,
+            MaximumFiles = 100,
+            RetryLimit = 6,
+            ChunkBytes = 1024 * 1024,
+            MaximumFileBytes = imageOptions.MaxUploadBytes,
+            Lifetime = TimeSpan.FromDays(7),
+            ShowPause = false,
+            ShowCancel = false,
+            DragAndDrop = false
+        };
+    }
+});
 builder.Services.AddHttpClient(nameof(ImageService), c =>
 {
     c.DefaultRequestHeaders.UserAgent.ParseAdd("Stashographer/1.0 (household inventory app)");
@@ -189,6 +246,25 @@ if (!app.Environment.IsDevelopment())
 app.UseStatusCodePagesWithReExecute("/not-found", createScopeForStatusCodePages: true);
 app.UseHttpsRedirection();
 app.UseAuthentication();
+app.Use(async (context, next) =>
+{
+    var isUploadRequest = context.Request.Path.StartsWithSegments("/dnax-uploads")
+                          || context.Request.Path.StartsWithSegments("/browser-uploads");
+    var uploadOwner = await context.AuthenticateAsync(UploadOwnerAuthentication.Scheme);
+    if (uploadOwner.Succeeded && uploadOwner.Principal?.Identity is ClaimsIdentity existing)
+    {
+        if (isUploadRequest) context.User.AddIdentity(existing);
+    }
+    else
+    {
+        var identity = UploadOwnerAuthentication.CreateIdentity();
+        await context.SignInAsync(
+            UploadOwnerAuthentication.Scheme,
+            new ClaimsPrincipal(identity));
+        if (isUploadRequest) context.User.AddIdentity(identity);
+    }
+    await next();
+});
 app.UseAuthorization();
 app.UseMiddleware<AgentAccessMiddleware>();
 app.UseAntiforgery();
@@ -221,6 +297,9 @@ app.MapPost("/auth/logout", async (HttpContext context, IAntiforgery antiforgery
 
 app.MapAutomationApi();
 app.MapMcp("/mcp").DisableAntiforgery();
+app.MapDnaXUploads("/dnax-uploads")
+    .RequireAuthorization(UploadOwnerAuthentication.Policy)
+    .RequireRateLimiting("browser-uploads");
 app.MapBrowserUploads();
 
 app.MapStaticAssets();

@@ -16,6 +16,7 @@
          Color="Color.Primary" Border="true" Class="mb-4">
     <MudTabPanel Text="@($"Intake ({_intakeOpenCount})")" Icon="@Icons.Material.Filled.PlaylistAddCheck" />
     <MudTabPanel Text="@($"Modify ({_modifyOpenCount})")" Icon="@Icons.Material.Filled.Rule" />
+    <MudTabPanel Text="History" Icon="@Icons.Material.Filled.History" />
 </MudTabs>
 
 @if (_activeTab == 0)
@@ -132,15 +133,29 @@ else
                         {
                             <MudButton FullWidth="true" Class="mt-2" Variant="Variant.Outlined"
                                        StartIcon="@Icons.Material.Filled.AutoAwesome"
-                                       Disabled="@(_working || (queued.SourceType is IntakeSourceType.Photo or IntakeSourceType.Receipt
+                                       Disabled="@(IsWorking(queued.Id) || (queued.SourceType is IntakeSourceType.Photo or IntakeSourceType.Receipt
                                                                 && !Ai.IsEnabled))"
                                        OnClick="ProcessCurrentAsync">
-                                @(_working ? "Processing…" : queued.Status switch
+                                @(IsWorking(queued.Id) ? "Processing…" : queued.Status switch
                                 {
                                     IntakeQueueStatus.Failed => "Retry processing",
                                     IntakeQueueStatus.ReadyForReview => "Process again",
                                     _ => "Process now"
                                 })
+                            </MudButton>
+                        }
+                        @if (queued.SourceType == IntakeSourceType.Photo
+                             && !queued.IsMultiPhoto
+                             && queued.OriginalImageId is { } originalImageId
+                             && originalImageId != queued.ImageId
+                             && (queued.CaptureGroupId is null || queued.CaptureGroupId == queued.Id)
+                             && queued.Status is IntakeQueueStatus.ReadyForReview or IntakeQueueStatus.Failed)
+                        {
+                            <MudButton FullWidth="true" Class="mt-2" Variant="Variant.Outlined"
+                                       Color="Color.Info" StartIcon="@Icons.Material.Filled.SelectAll"
+                                       Disabled="@(IsWorking(queued.Id) || !Ai.IsEnabled)"
+                                       OnClick="RescanOriginalAsync">
+                                Rescan original for all items
                             </MudButton>
                         }
                         @if (queued.SourceType is IntakeSourceType.Photo or IntakeSourceType.Receipt && !Ai.IsEnabled)
@@ -156,7 +171,7 @@ else
                                        StartIcon="@(queued.SourceType == IntakeSourceType.Receipt
                                                         ? Icons.Material.Filled.Inventory2
                                                         : Icons.Material.Filled.ReceiptLong)"
-                                       Disabled="_working" OnClick="ReclassifyCurrentAsync">
+                                       Disabled="@IsWorking(queued.Id)" OnClick="ReclassifyCurrentAsync">
                                 @(queued.SourceType == IntakeSourceType.Receipt
                                     ? "Treat as item photo"
                                     : "Treat as receipt / order")
@@ -287,10 +302,10 @@ else
                             </MudSelect>
                         }
 
-                        <div class="d-flex gap-2 flex-wrap mt-4">
+                        <div class="queue-review-actions d-flex gap-2 flex-wrap mt-4">
                             <MudButton Color="Color.Success" Variant="Variant.Filled"
                                        StartIcon="@Icons.Material.Filled.Check"
-                                       Disabled="@(_working || (queued.ProposalAction != IntakeAction.AttachImage
+                                       Disabled="@(IsWorking(queued.Id) || (queued.ProposalAction != IntakeAction.AttachImage
                                                                 && _matchedItemId is null
                                                                 && string.IsNullOrWhiteSpace(queued.Draft.Name)))"
                                        OnClick="AcceptCurrentAsync">
@@ -305,7 +320,7 @@ else
                             {
                                 <MudButton Color="Color.Warning" Variant="Variant.Outlined"
                                            StartIcon="@Icons.Material.Filled.Add"
-                                           Disabled="_working" OnClick="AcceptCurrentAsCopyAsync">
+                                           Disabled="@IsWorking(queued.Id)" OnClick="AcceptCurrentAsCopyAsync">
                                     This is another copy (+@Math.Max(1, queued.Draft.Quantity).ToString("0.##"))
                                 </MudButton>
                             }
@@ -314,12 +329,12 @@ else
                             {
                                 <MudButton Color="Color.Primary" Variant="Variant.Outlined"
                                            StartIcon="@Icons.Material.Filled.AddPhotoAlternate"
-                                           Disabled="_working" OnClick="AcceptCurrentAsViewAsync">
+                                           Disabled="@IsWorking(queued.Id)" OnClick="AcceptCurrentAsViewAsync">
                                     Same item — attach photo (no count)
                                 </MudButton>
                             }
                             <MudButton Color="Color.Error" Variant="Variant.Outlined"
-                                       StartIcon="@Icons.Material.Filled.Close" Disabled="_working"
+                                       StartIcon="@Icons.Material.Filled.Close" Disabled="@IsWorking(queued.Id)"
                                        OnClick="RejectCurrentAsync">Reject</MudButton>
                         </div>
 
@@ -333,7 +348,7 @@ else
                                 {
                                     <MudButton Color="Color.Primary" Variant="Variant.Outlined"
                                                StartIcon="@Icons.Material.Filled.Room"
-                                               Disabled="@(_working || (_matchedItemId is null && string.IsNullOrWhiteSpace(queued.Draft.Name)))"
+                                               Disabled="@(IsWorking(queued.Id) || (_matchedItemId is null && string.IsNullOrWhiteSpace(queued.Draft.Name)))"
                                                OnClick="QuickAddToLocationAsync">
                                         Quick add to location: @rememberedLocation.Name
                                     </MudButton>
@@ -342,7 +357,7 @@ else
                                 {
                                     <MudButton Color="Color.Primary" Variant="Variant.Outlined"
                                                StartIcon="@Icons.Material.Filled.Inbox"
-                                               Disabled="@(_working || (_matchedItemId is null && string.IsNullOrWhiteSpace(queued.Draft.Name)))"
+                                               Disabled="@(IsWorking(queued.Id) || (_matchedItemId is null && string.IsNullOrWhiteSpace(queued.Draft.Name)))"
                                                OnClick="QuickAddToContainerAsync">
                                         Quick add to container: @ContainerLabel(rememberedContainer)
                                     </MudButton>
@@ -357,9 +372,124 @@ else
     }
 }
 }
-else
+else if (_activeTab == 1)
 {
     <ModifyQueuePanel OnChanged="RefreshQueueCountsAsync" />
+}
+else
+{
+    <div class="d-flex justify-space-between align-center flex-wrap gap-2 mb-4">
+        <div>
+            <MudText Typo="Typo.h4">Intake history</MudText>
+            <MudText Typo="Typo.body2" Class="mud-text-secondary">
+                Reviewed scan results grouped with their original capture and derived images.
+            </MudText>
+        </div>
+        <MudButton Variant="Variant.Outlined" StartIcon="@Icons.Material.Filled.Refresh"
+                   Disabled="_historyLoading" OnClick="LoadHistoryAsync">Refresh</MudButton>
+    </div>
+
+    @if (_historyLoading)
+    {
+        <MudProgressLinear Indeterminate="true" />
+    }
+    else if (_history.Count == 0)
+    {
+        <MudAlert Severity="Severity.Info">
+            No completed scans yet. Accepted and rejected intake captures will appear here.
+        </MudAlert>
+    }
+    else
+    {
+        <div class="d-flex flex-column gap-4">
+            @foreach (var capture in _history)
+            {
+                <MudPaper Class="pa-4" Outlined="true">
+                    <div class="d-flex justify-space-between align-start flex-wrap gap-2 mb-3">
+                        <div>
+                            <MudText Typo="Typo.h6">@HistorySourceLabel(capture)</MudText>
+                            <MudText Typo="Typo.caption" Class="mud-text-secondary">
+                                Captured @capture.CapturedAt.ToLocalTime().ToString("g") ·
+                                last reviewed @capture.LastReviewedAt.ToLocalTime().ToString("g")
+                            </MudText>
+                        </div>
+                        <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined">
+                            @capture.Entries.Count @(capture.Entries.Count == 1 ? "result" : "results")
+                        </MudChip>
+                    </div>
+
+                    <MudGrid Spacing="2">
+                        <MudItem xs="12" md="4">
+                            <MudText Typo="Typo.overline">Original capture</MudText>
+                            @if (capture.OriginalImageId is { } originalImageId)
+                            {
+                                <MudImage Src="@ImageUrls.For(originalImageId, width: 720)"
+                                          Width="360" Height="260" ObjectFit="ObjectFit.Contain"
+                                          Class="rounded" Style="max-width:100%" />
+                            }
+                            else
+                            {
+                                <div class="d-flex align-center gap-2 pa-4">
+                                    <MudIcon Icon="@(capture.SourceType == IntakeSourceType.Barcode
+                                                       ? Icons.Material.Filled.QrCode
+                                                       : Icons.Material.Filled.EditNote)"
+                                             Color="Color.Primary" />
+                                    <MudText Typo="Typo.body2">@(capture.SourceCode ?? "Manual entry")</MudText>
+                                </div>
+                            }
+                        </MudItem>
+                        <MudItem xs="12" md="8">
+                            <MudText Typo="Typo.overline">Derived items and images</MudText>
+                            <MudGrid Spacing="2">
+                                @foreach (var entry in capture.Entries)
+                                {
+                                    <MudItem xs="12" sm="6">
+                                        <MudPaper Class="pa-3 h-100" Outlined="true">
+                                            <div class="d-flex gap-3 align-start">
+                                                @if (entry.ImageId is { } entryImageId)
+                                                {
+                                                    <MudImage Src="@ImageUrls.For(entryImageId, width: 240)"
+                                                              Width="96" Height="96" ObjectFit="ObjectFit.Contain"
+                                                              Class="rounded flex-shrink-0" />
+                                                }
+                                                <div style="min-width:0" class="flex-grow-1">
+                                                    <MudChip T="string" Size="Size.Small"
+                                                             Color="@HistoryStatusColor(entry.Status)">
+                                                        @StatusLabel(entry.Status)
+                                                    </MudChip>
+                                                    <MudText Typo="Typo.subtitle2" Class="mt-1"
+                                                             Style="overflow-wrap:anywhere">
+                                                        @HistoryEntryName(entry)
+                                                    </MudText>
+                                                    @if (entry.AppliedItemId is { } appliedItemId)
+                                                    {
+                                                        <MudButton Href="@($"items/{appliedItemId}")"
+                                                                   Variant="Variant.Text" Size="Size.Small"
+                                                                   StartIcon="@Icons.Material.Filled.Inventory2"
+                                                                   Class="mt-1 px-0">
+                                                            View inventory item
+                                                        </MudButton>
+                                                    }
+                                                </div>
+                                            </div>
+                                        </MudPaper>
+                                    </MudItem>
+                                }
+                            </MudGrid>
+                        </MudItem>
+                    </MudGrid>
+                </MudPaper>
+            }
+        </div>
+
+        @if (_history.Count >= _historyTake && _historyTake < 100)
+        {
+            <div class="d-flex justify-center mt-4">
+                <MudButton Variant="Variant.Outlined" Disabled="_historyLoading"
+                           OnClick="LoadMoreHistoryAsync">Load more</MudButton>
+            </div>
+        }
+    }
 }
 
 @code {
@@ -369,6 +499,30 @@ else
         IntakeSourceType.Photo => item.IsMultiPhoto ? "Multi-item photo" : "Photo",
         IntakeSourceType.Receipt => "Purchase evidence",
         _ => "Automation draft"
+    };
+
+    private static string HistorySourceLabel(IntakeCaptureHistory capture) => capture.SourceType switch
+    {
+        IntakeSourceType.Barcode => capture.SourceCode ?? "Barcode scan",
+        IntakeSourceType.Photo => capture.Entries.Count > 1
+                                  || capture.Entries.Any(item => item.IsMultiPhoto
+                                      || item.CaptureGroupId != item.Id)
+            ? "Multi-item photo"
+            : "Photo",
+        IntakeSourceType.Receipt => "Purchase evidence",
+        _ => "Manual entry"
+    };
+
+    private static string HistoryEntryName(IntakeQueueItem item) =>
+        !string.IsNullOrWhiteSpace(item.Draft.Name)
+            ? item.Draft.Name
+            : item.SourceCode ?? "Unnamed item";
+
+    private static Color HistoryStatusColor(IntakeQueueStatus status) => status switch
+    {
+        IntakeQueueStatus.Accepted => Color.Success,
+        IntakeQueueStatus.Rejected => Color.Default,
+        _ => Color.Info
     };
 
     private readonly CancellationTokenSource _dispose = new();
@@ -386,11 +540,14 @@ else
     private int? _rememberedContainerId;
     private ItemImageRole _imageRole = ItemImageRole.Detail;
     private bool _loading = true;
-    private bool _working;
+    private readonly HashSet<int> _workingItemIds = [];
     private string _defaultCurrency = "GBP";
     private int _activeTab;
     private int _intakeOpenCount;
     private int _modifyOpenCount;
+    private List<IntakeCaptureHistory> _history = new();
+    private bool _historyLoading;
+    private int _historyTake = 25;
 
     [SupplyParameterFromQuery(Name = "tab")]
     public string? RequestedTab { get; set; }
@@ -412,15 +569,35 @@ else
         _session = await IntakeQueue.GetCurrentSessionAsync();
         await LoadRememberedDestinationsAsync();
         await LoadAsync(false);
+        if (_activeTab == 2) await LoadHistoryAsync();
         _ = RefreshLoopAsync();
     }
 
-    private Task ChangeTabAsync(int index)
+    private async Task ChangeTabAsync(int index)
     {
         _activeTab = index;
-        var tab = index == 1 ? "modify" : "intake";
+        var tab = index switch { 1 => "modify", 2 => "history", _ => "intake" };
         Navigation.NavigateTo($"queues?tab={tab}", replace: true);
-        return Task.CompletedTask;
+        if (index == 2) await LoadHistoryAsync();
+    }
+
+    private async Task LoadHistoryAsync()
+    {
+        _historyLoading = true;
+        try
+        {
+            _history = await IntakeQueue.GetHistoryAsync(_historyTake, _dispose.Token);
+        }
+        finally
+        {
+            _historyLoading = false;
+        }
+    }
+
+    private async Task LoadMoreHistoryAsync()
+    {
+        _historyTake = Math.Min(100, _historyTake + 25);
+        await LoadHistoryAsync();
     }
 
     private async Task RefreshQueueCountsAsync()
@@ -468,7 +645,7 @@ else
     private async Task ProcessCurrentAsync()
     {
         if (Current is not { } current) return;
-        _working = true;
+        if (!_workingItemIds.Add(current.Id)) return;
         try
         {
             if (current.LiveCaptureHoldUntil is not null)
@@ -477,7 +654,7 @@ else
                 Snackbar.Add("This queue item changed before it could be processed. Refresh and try again.", Severity.Warning);
             await LoadAsync(true);
         }
-        finally { _working = false; }
+        finally { _workingItemIds.Remove(current.Id); }
     }
 
     private async Task ReclassifyCurrentAsync()
@@ -486,7 +663,7 @@ else
         var sourceType = current.SourceType == IntakeSourceType.Receipt
             ? IntakeSourceType.Photo
             : IntakeSourceType.Receipt;
-        _working = true;
+        if (!_workingItemIds.Add(current.Id)) return;
         try
         {
             await IntakeQueue.ReclassifyImageAsync(current.Id, sourceType);
@@ -499,7 +676,26 @@ else
         {
             Snackbar.Add(ex.Message, Severity.Error);
         }
-        finally { _working = false; }
+        finally { _workingItemIds.Remove(current.Id); }
+    }
+
+    private async Task RescanOriginalAsync()
+    {
+        if (Current is not { } current) return;
+        if (!_workingItemIds.Add(current.Id)) return;
+        try
+        {
+            if (!await IntakeQueue.ReprocessOriginalAsMultiAsync(
+                    current.Id, _options, Ai.IsEnabled))
+                Snackbar.Add("This queue item changed before it could be rescanned. Refresh and try again.",
+                    Severity.Warning);
+            await LoadAsync(true);
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add(ex.Message, Severity.Error);
+        }
+        finally { _workingItemIds.Remove(current.Id); }
     }
 
     private async Task AcceptCurrentAsync()
@@ -508,7 +704,7 @@ else
     private async Task AcceptCurrentAtAsync(int? locationId, int? containerId)
     {
         if (Current is not { } current) return;
-        _working = true;
+        if (!_workingItemIds.Add(current.Id)) return;
         try
         {
             current.Draft.ContainerId = containerId;
@@ -524,13 +720,13 @@ else
         {
             Snackbar.Add(ex.Message, Severity.Error);
         }
-        finally { _working = false; }
+        finally { _workingItemIds.Remove(current.Id); }
     }
 
     private async Task AcceptCurrentAsViewAsync()
     {
         if (Current is not { } current) return;
-        _working = true;
+        if (!_workingItemIds.Add(current.Id)) return;
         try
         {
             var applied = await IntakeQueue.AcceptImageAttachmentAsync(current.Id, current.Draft, _imageRole);
@@ -541,13 +737,13 @@ else
         {
             Snackbar.Add(ex.Message, Severity.Error);
         }
-        finally { _working = false; }
+        finally { _workingItemIds.Remove(current.Id); }
     }
 
     private async Task AcceptCurrentAsCopyAsync()
     {
         if (Current is not { } current) return;
-        _working = true;
+        if (!_workingItemIds.Add(current.Id)) return;
         try
         {
             var applied = await IntakeQueue.AcceptAdditionalCopyAsync(current.Id, current.Draft);
@@ -558,7 +754,7 @@ else
         {
             Snackbar.Add(ex.Message, Severity.Error);
         }
-        finally { _working = false; }
+        finally { _workingItemIds.Remove(current.Id); }
     }
 
     private async Task ReceiptAcceptedAsync(ReceiptApplied applied)
@@ -591,14 +787,14 @@ else
     private async Task RejectCurrentAsync()
     {
         if (Current is not { } current) return;
-        _working = true;
+        if (!_workingItemIds.Add(current.Id)) return;
         try
         {
             await IntakeQueue.RejectAsync(current.Id);
             Snackbar.Add("Queue item rejected.", Severity.Info);
             await LoadAsync(false);
         }
-        finally { _working = false; }
+        finally { _workingItemIds.Remove(current.Id); }
     }
 
     private async Task StartNewSessionAsync()
@@ -618,7 +814,9 @@ else
             {
                 // Pending records may be being completed manually; do not reload underneath
                 // the user's typing. Processing records are read-only and safe to refresh.
-                if (!_working && Current?.Status == IntakeQueueStatus.Processing)
+                if (Current is { } current
+                    && !IsWorking(current.Id)
+                    && current.Status == IntakeQueueStatus.Processing)
                 {
                     await InvokeAsync(async () =>
                     {
@@ -644,6 +842,8 @@ else
         _index++;
         await LoadCurrentStateAsync();
     }
+
+    private bool IsWorking(int queueItemId) => _workingItemIds.Contains(queueItemId);
 
     private Task QuickAddToLocationAsync() =>
         AcceptCurrentAtAsync(_rememberedLocationId, null);

@@ -141,7 +141,8 @@ public class PhotoIntakeService(
             try
             {
                 var crop = await images.CropAsync(imageId, focus.X, focus.Y, focus.W, focus.H,
-                    padding: 0.08, targetAspectRatio: 1, ct: ct);
+                    padding: 0.08, targetAspectRatio: 1,
+                    rotateClockwise: focus.RotateClockwise, ct: ct);
                 if (crop is not null)
                 {
                     var cropBytes = await images.ReadOriginalBytesAsync(crop.Id, ct);
@@ -304,7 +305,8 @@ public class PhotoIntakeService(
                 // Give every detected object its own square-ish source image. The crop expands
                 // around the box rather than cutting into it, retaining a little visual context.
                 var crop = await images.CropAsync(fullPhoto.Id, box.X, box.Y, box.W, box.H,
-                    padding: 0.08, targetAspectRatio: 1, ct: ct);
+                    padding: 0.08, targetAspectRatio: 1,
+                    rotateClockwise: box.RotateClockwise, ct: ct);
                 if (crop is null) return null;
                 var cropBytes = await images.ReadOriginalBytesAsync(crop.Id, ct);
                 if (cropBytes is null) return null;
@@ -335,7 +337,10 @@ public class PhotoIntakeService(
                 var y = Math.Clamp(box.Y, 0, 1);
                 var w = Math.Clamp(box.W, 0, 1 - x);
                 var h = Math.Clamp(box.H, 0, 1 - y);
-                return new DetectedBox(box.Label, x, y, w, h);
+                var rotation = box.RotateClockwise is 90 or 180 or 270
+                    ? box.RotateClockwise
+                    : 0;
+                return new DetectedBox(box.Label, x, y, w, h, rotation);
             })
             .Where(box => box.W > 0.01 && box.H > 0.01)
             .OrderBy(box => Math.Round(box.Y / 0.1, MidpointRounding.AwayFromZero))

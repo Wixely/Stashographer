@@ -58,11 +58,12 @@ All screenshots use the repository's wholly synthetic Development sample data.
   can be captured without waiting. A photo containing several objects is split by default
   into individual, focused crops and queue entries. A sequential worker uses earlier session
   items as context, and the review queue presents every suggestion for item-by-item acceptance
-  or correction. Mobile file and camera selections are persisted in browser storage before
-  using the circuit-independent HTTP upload path. If the Blazor circuit expires while the
-  camera is open, circuit recovery waits for that handoff and a full page reload resumes the
-  same selected file instead of asking the user to take the photo again. Disconnected circuits
-  are also retained for 30 minutes as a convenience, but file recovery does not depend on them.
+  or correction. `DnaX.Uploads` owns the native mobile upload queue: selected files are persisted
+  in browser storage, transferred in verified chunks outside SignalR, and resumed from the
+  server's acknowledged offset after a disconnect or reload. If the Blazor circuit expires while
+  the camera is open, circuit recovery waits for the browser handoff instead of discarding the
+  selection. Disconnected circuits are also retained for 30 minutes as a convenience, but upload
+  recovery does not depend on them.
 - **Photo-first modification** — use **Modify** to photograph things while working through a
   box, room, or shelf, then decide what to change later from the separate Modify queue. The
   vision agent suggests existing inventory matches but cannot choose or apply an action. Review

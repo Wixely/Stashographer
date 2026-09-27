@@ -17,6 +17,15 @@ public record IntakeQueueCounts(int Waiting, int Processing, int Ready, int Fail
 
 public record ReceiptApplied(int MatchedLines, int MatchedItems, int CreatedItems = 0);
 
+public sealed record IntakeCaptureHistory(
+    int CaptureGroupId,
+    int? OriginalImageId,
+    IntakeSourceType SourceType,
+    string? SourceCode,
+    DateTimeOffset CapturedAt,
+    DateTimeOffset LastReviewedAt,
+    IReadOnlyList<IntakeQueueItem> Entries);
+
 /// <summary>
 /// Durable capture queue. Enqueue operations only persist input; lookup/model work happens
 /// later, preserving the fast capture loop used by phones and keyboard-wedge scanners.
@@ -94,6 +103,7 @@ public class IntakeQueueService(
             SessionId = await GetOrCreateActiveSessionIdAsync(ct),
             SourceType = IntakeSourceType.Photo,
             BrowserUploadToken = browserUploadToken,
+            OriginalImageId = stored.Id,
             ImageId = stored.Id,
             IsMultiPhoto = multipleItems,
             Status = IntakeQueueStatus.Pending,
@@ -101,6 +111,7 @@ public class IntakeQueueService(
             CreatedAt = DateTimeOffset.UtcNow
         };
         item.Id = await InsertIdempotentlyAsync(item, ct);
+        await EnsurePhotoCaptureGroupAsync(item, ct);
         signal.Pulse();
         return item;
     }
@@ -132,12 +143,14 @@ public class IntakeQueueService(
             SourceType = IntakeSourceType.Receipt,
             SourceTypeOverride = true,
             BrowserUploadToken = browserUploadToken,
+            OriginalImageId = stored.Id,
             ImageId = stored.Id,
             Status = IntakeQueueStatus.Pending,
             Draft = new Item { Name = string.Empty, ItemKindId = 7 },
             CreatedAt = DateTimeOffset.UtcNow
         };
         item.Id = await InsertIdempotentlyAsync(item, ct);
+        await EnsurePhotoCaptureGroupAsync(item, ct);
         signal.Pulse();
         return item;
     }
@@ -213,6 +226,7 @@ public class IntakeQueueService(
             CreatedAt = DateTimeOffset.UtcNow
         };
         item.Id = await InsertIdempotentlyAsync(item, ct);
+        await EnsurePhotoCaptureGroupAsync(item, ct);
         signal.Pulse();
         return item;
     }
@@ -252,6 +266,59 @@ public class IntakeQueueService(
             ORDER BY q.Id;
             """, new { accepted = (int)IntakeQueueStatus.Accepted, rejected = (int)IntakeQueueStatus.Rejected });
         return rows.Select(Map).ToList();
+    }
+
+    /// <summary>
+    /// Returns the capture groups with the most recently reviewed entries. Only accepted or
+    /// rejected rows are included, so a completed crop moves to history immediately while
+    /// unfinished siblings remain in the active queue. Page boundaries still operate on
+    /// capture groups rather than individual crops.
+    /// </summary>
+    public async Task<List<IntakeCaptureHistory>> GetHistoryAsync(
+        int take = 25, CancellationToken ct = default)
+    {
+        take = Math.Clamp(take, 1, 100);
+        using var conn = await db.OpenAsync(ct);
+        var rows = await conn.QueryAsync<QueueRow>("""
+            WITH RecentGroups AS (
+                SELECT COALESCE(CaptureGroupId, Id) AS GroupId,
+                       MAX(COALESCE(ReviewedAt, ProcessedAt, CreatedAt)) AS ActivityAt
+                FROM IntakeQueueItems
+                WHERE Status IN (@accepted, @rejected)
+                GROUP BY COALESCE(CaptureGroupId, Id)
+                ORDER BY ActivityAt DESC
+                LIMIT @take
+            )
+            """ + QueueSelect + " " + """
+            JOIN RecentGroups history
+              ON history.GroupId = COALESCE(q.CaptureGroupId, q.Id)
+            WHERE q.Status IN (@accepted, @rejected)
+            ORDER BY history.ActivityAt DESC, q.Id;
+            """, new
+        {
+            take,
+            accepted = (int)IntakeQueueStatus.Accepted,
+            rejected = (int)IntakeQueueStatus.Rejected
+        });
+
+        return rows.Select(Map)
+            .GroupBy(item => item.CaptureGroupId ?? item.Id)
+            .Select(group =>
+            {
+                var entries = group.OrderBy(item => item.Id).ToList();
+                var root = entries.FirstOrDefault(item => item.Id == group.Key) ?? entries[0];
+                return new IntakeCaptureHistory(
+                    group.Key,
+                    entries.Select(item => item.OriginalImageId).FirstOrDefault(id => id is not null)
+                    ?? root.ImageId,
+                    root.SourceType,
+                    root.SourceCode,
+                    entries.Min(item => item.CreatedAt),
+                    entries.Max(item => item.ReviewedAt ?? item.ProcessedAt ?? item.CreatedAt),
+                    entries);
+            })
+            .OrderByDescending(group => group.LastReviewedAt)
+            .ToList();
     }
 
     public async Task<IntakeQueueItem?> GetAsync(int id, CancellationToken ct = default)
@@ -366,8 +433,7 @@ public class IntakeQueueService(
                 if (!aiEnabled)
                     throw new InvalidOperationException("Configure an AI vision model, or enter this item manually.");
                 var analysis = await photoIntake.AnalyzeStoredAsync(
-                    queued.ImageId
-                    ?? throw new InvalidOperationException("Queued photo has no stored image."), ct);
+                    ProcessingImageId(queued), ct);
                 if (!queued.SourceTypeOverride && analysis.IsPurchaseEvidence)
                 {
                     await MarkAsPurchaseEvidenceAsync(queued.Id, ct);
@@ -388,6 +454,8 @@ public class IntakeQueueService(
 
             var first = processed.FirstOrDefault()
                 ?? throw new InvalidOperationException("No items were found in the queued photo.");
+            if (queued.SourceType == IntakeSourceType.Photo && queued.IsMultiPhoto)
+                await DeleteUnreviewedSplitChildrenAsync(queued, ct);
             await StoreProcessedAsync(id, first, ct);
             var processedIds = new List<(int Id, ProcessedCapture Capture)> { (id, first) };
             foreach (var additional in processed.Skip(1))
@@ -495,6 +563,55 @@ public class IntakeQueueService(
             WHERE Id = @id AND Status = @failed;
             """, new { id, pending = (int)IntakeQueueStatus.Pending, failed = (int)IntakeQueueStatus.Failed });
         signal.Pulse();
+    }
+
+    /// <summary>
+    /// Promotes an open photo (or its still-open group root) back to a multi-item capture and
+    /// detects the untouched original again. This is also the recovery path for historical
+    /// rows created before intake retained original-image and split-group metadata.
+    /// </summary>
+    public async Task<bool> ReprocessOriginalAsMultiAsync(
+        int id, IntakeOptions options, bool aiEnabled, CancellationToken ct = default)
+    {
+        if (!aiEnabled)
+            throw new InvalidOperationException("Configure an AI vision model before rescanning this image.");
+        var clicked = await GetAsync(id, ct)
+            ?? throw new InvalidOperationException("Queue item was not found.");
+        if (clicked.SourceType != IntakeSourceType.Photo)
+            throw new InvalidOperationException("Only item photos can be rescanned for multiple items.");
+        if (clicked.Status is IntakeQueueStatus.Accepted or IntakeQueueStatus.Rejected)
+            throw new InvalidOperationException("Completed queue items cannot be rescanned.");
+        if (clicked.Status == IntakeQueueStatus.Processing)
+            throw new InvalidOperationException("Wait for processing to finish before rescanning this image.");
+
+        var target = clicked;
+        if (clicked.CaptureGroupId is { } groupId && groupId != clicked.Id)
+        {
+            if (await GetAsync(groupId, ct) is not { } root
+                || root.Status is not (IntakeQueueStatus.Pending
+                    or IntakeQueueStatus.Failed
+                    or IntakeQueueStatus.ReadyForReview))
+                throw new InvalidOperationException(
+                    "The original capture has already been partly reviewed and cannot be safely rescanned as a group.");
+            target = root;
+        }
+
+        using (var conn = await db.OpenAsync(ct))
+        {
+            await conn.ExecuteAsync("""
+                UPDATE IntakeQueueItems
+                SET OriginalImageId = COALESCE(
+                        OriginalImageId,
+                        (SELECT d.ParentImageId FROM ImageDerivations d
+                         WHERE d.ChildImageId = IntakeQueueItems.ImageId AND d.Kind = 0
+                         ORDER BY d.CreatedAt LIMIT 1),
+                        ImageId),
+                    CaptureGroupId = @id,
+                    IsMultiPhoto = 1
+                WHERE Id = @id;
+                """, new { id = target.Id });
+        }
+        return await ProcessAsync(target.Id, options, aiEnabled, ct);
     }
 
     /// <summary>
@@ -944,7 +1061,7 @@ public class IntakeQueueService(
     private async Task ProcessReceiptAsync(
         IntakeQueueItem queued, int contextCount, CancellationToken ct)
     {
-        if (queued.ImageId is not { } imageId)
+        if ((queued.OriginalImageId ?? queued.ImageId) is not { } imageId)
             throw new InvalidOperationException("Queued purchase evidence has no stored image.");
         var candidates = await GetReceiptCandidatesAsync(
             queued.Id, Math.Clamp(contextCount, 0, 25), ct);
@@ -981,8 +1098,7 @@ public class IntakeQueueService(
         IntakeQueueItem queued, int contextCount, CaptureAnalysis analysis,
         CancellationToken ct)
     {
-        if (queued.ImageId is not { } imageId)
-            throw new InvalidOperationException("Queued photo has no stored image.");
+        var imageId = ProcessingImageId(queued);
 
         var recentCount = Math.Clamp(contextCount, 0, 25);
         var recent = await GetRecentDraftsAsync(queued, recentCount, ct);
@@ -1062,6 +1178,11 @@ public class IntakeQueueService(
         }
         return processed;
     }
+
+    private static int ProcessingImageId(IntakeQueueItem queued) =>
+        (queued.IsMultiPhoto ? queued.OriginalImageId : queued.ImageId)
+        ?? queued.OriginalImageId
+        ?? throw new InvalidOperationException("Queued photo has no stored image.");
 
     private async Task<List<RecentCaptureCandidate>> GetRecentPhotoCapturesAsync(
         IntakeQueueItem queued, int count, CancellationToken ct)
@@ -1166,6 +1287,25 @@ public class IntakeQueueService(
         return $"- {item.Name}; kind {KindName(item.ItemKindId)}{placement}{attributes}";
     }
 
+    private async Task DeleteUnreviewedSplitChildrenAsync(
+        IntakeQueueItem source, CancellationToken ct)
+    {
+        var groupId = source.CaptureGroupId ?? source.Id;
+        using var conn = await db.OpenAsync(ct);
+        await conn.ExecuteAsync("""
+            DELETE FROM IntakeQueueItems
+            WHERE CaptureGroupId = @groupId AND Id != @sourceId
+              AND Status IN (@pending, @failed, @ready);
+            """, new
+        {
+            groupId,
+            sourceId = source.Id,
+            pending = (int)IntakeQueueStatus.Pending,
+            failed = (int)IntakeQueueStatus.Failed,
+            ready = (int)IntakeQueueStatus.ReadyForReview
+        });
+    }
+
     private async Task StoreProcessedAsync(int id, ProcessedCapture processed, CancellationToken ct)
     {
         using var conn = await db.OpenAsync(ct);
@@ -1174,7 +1314,6 @@ public class IntakeQueueService(
                 DraftJson = CASE WHEN SourceType = @Barcode
                     THEN json_set(@Draft, '$.quantity', CaptureQuantity) ELSE @Draft END,
                 ImageId = @ImageId,
-                IsMultiPhoto = 0,
                 ProposalAction = @Action, MatchedItemId = @MatchedId,
                 MatchedItemName = @MatchedName,
                 IncrementBy = CASE WHEN SourceType = @Barcode
@@ -1212,12 +1351,14 @@ public class IntakeQueueService(
         using var conn = await db.OpenAsync(ct);
         return await conn.ExecuteScalarAsync<int>("""
             INSERT INTO IntakeQueueItems
-                (SessionId, SourceType, SourceTypeOverride, ImageId, IsMultiPhoto, Status, DraftJson, ProposalAction,
+                (SessionId, SourceType, SourceTypeOverride, OriginalImageId, CaptureGroupId,
+                 ImageId, IsMultiPhoto, Status, DraftJson, ProposalAction,
                  MatchedItemId, MatchedItemName, MatchedQueueItemId, CaptureRelationship,
                  RelationshipConfidence, RelationshipReason, SuggestedImageRole,
                  IncrementBy, CreatedAt, ProcessedAt)
             VALUES
-                (@SessionId, @SourceType, @SourceTypeOverride, @ImageId, 0, @Status, @Draft, @Action,
+                (@SessionId, @SourceType, @SourceTypeOverride, @OriginalImageId, @CaptureGroupId,
+                 @ImageId, 0, @Status, @Draft, @Action,
                  @MatchedId, @MatchedName, @MatchedQueueItemId, @CaptureRelationship,
                  @RelationshipConfidence, @RelationshipReason, @SuggestedImageRole,
                  @IncrementBy, @CreatedAt, @ProcessedAt);
@@ -1227,6 +1368,8 @@ public class IntakeQueueService(
             SessionId = source.SessionId,
             SourceType = (int)IntakeSourceType.Photo,
             SourceTypeOverride = source.SourceTypeOverride ? 1 : 0,
+            OriginalImageId = source.OriginalImageId ?? source.ImageId,
+            CaptureGroupId = source.CaptureGroupId ?? source.Id,
             ImageId = processed.Draft.ImageId,
             Status = (int)IntakeQueueStatus.ReadyForReview,
             Draft = JsonSerializer.Serialize(processed.Draft, Json),
@@ -1349,11 +1492,11 @@ public class IntakeQueueService(
         return await conn.ExecuteScalarAsync<int>("""
             INSERT INTO IntakeQueueItems
                 (SessionId, SourceType, SourceTypeOverride, SourceCode, CaptureQuantity, LiveCaptureHoldUntil,
-                 BrowserUploadToken, ImageId, IsMultiPhoto, Status, DraftJson,
+                 BrowserUploadToken, OriginalImageId, CaptureGroupId, ImageId, IsMultiPhoto, Status, DraftJson,
                  ProposalAction, IncrementBy, CreatedAt, ProcessedAt)
             VALUES
                 (@SessionId, @SourceType, @SourceTypeOverride, @SourceCode, @CaptureQuantity, @LiveCaptureHoldUntil,
-                 @BrowserUploadToken, @ImageId, @IsMultiPhoto, @Status, @DraftJson,
+                 @BrowserUploadToken, @OriginalImageId, @CaptureGroupId, @ImageId, @IsMultiPhoto, @Status, @DraftJson,
                  @ProposalAction, @IncrementBy, @CreatedAt, @ProcessedAt);
             SELECT last_insert_rowid();
             """, new
@@ -1365,6 +1508,8 @@ public class IntakeQueueService(
             item.CaptureQuantity,
             LiveCaptureHoldUntil = item.LiveCaptureHoldUntil?.ToString("O"),
             item.BrowserUploadToken,
+            item.OriginalImageId,
+            item.CaptureGroupId,
             item.ImageId,
             IsMultiPhoto = item.IsMultiPhoto ? 1 : 0,
             Status = (int)item.Status,
@@ -1374,6 +1519,21 @@ public class IntakeQueueService(
             CreatedAt = item.CreatedAt.ToString("O"),
             ProcessedAt = item.ProcessedAt?.ToString("O")
         });
+    }
+
+    private async Task EnsurePhotoCaptureGroupAsync(
+        IntakeQueueItem item, CancellationToken ct)
+    {
+        if (item.SourceType is not (IntakeSourceType.Photo or IntakeSourceType.Receipt)) return;
+        using var conn = await db.OpenAsync(ct);
+        await conn.ExecuteAsync("""
+            UPDATE IntakeQueueItems
+            SET OriginalImageId = COALESCE(OriginalImageId, ImageId),
+                CaptureGroupId = COALESCE(CaptureGroupId, Id)
+            WHERE Id = @id;
+            """, new { id = item.Id });
+        item.OriginalImageId ??= item.ImageId;
+        item.CaptureGroupId ??= item.Id;
     }
 
     private async Task<int> InsertIdempotentlyAsync(IntakeQueueItem item, CancellationToken ct)
@@ -1462,6 +1622,8 @@ public class IntakeQueueService(
         CaptureQuantity = Math.Max(1, row.CaptureQuantity),
         LiveCaptureHoldUntil = ParseDate(row.LiveCaptureHoldUntil),
         BrowserUploadToken = row.BrowserUploadToken,
+        OriginalImageId = row.OriginalImageId,
+        CaptureGroupId = row.CaptureGroupId,
         ImageId = row.ImageId,
         IsMultiPhoto = row.IsMultiPhoto,
         Status = (IntakeQueueStatus)row.Status,
@@ -1497,7 +1659,7 @@ public class IntakeQueueService(
     private const string QueueSelect = """
         SELECT q.Id, q.SessionId, q.SourceType, q.SourceTypeOverride, q.SourceCode,
                q.CaptureQuantity, q.LiveCaptureHoldUntil, q.BrowserUploadToken,
-               q.ImageId, q.IsMultiPhoto, q.Status,
+               q.OriginalImageId, q.CaptureGroupId, q.ImageId, q.IsMultiPhoto, q.Status,
                q.DraftJson, q.ReceiptJson, q.ProposalAction, q.MatchedItemId, q.MatchedItemName,
                q.MatchedQueueItemId, q.CaptureRelationship, q.RelationshipConfidence,
                q.RelationshipReason, q.SuggestedImageRole,
@@ -1516,6 +1678,8 @@ public class IntakeQueueService(
         public int CaptureQuantity { get; set; }
         public string? LiveCaptureHoldUntil { get; set; }
         public string? BrowserUploadToken { get; set; }
+        public int? OriginalImageId { get; set; }
+        public int? CaptureGroupId { get; set; }
         public int? ImageId { get; set; }
         public bool IsMultiPhoto { get; set; }
         public int Status { get; set; }

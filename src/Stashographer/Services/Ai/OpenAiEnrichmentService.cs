@@ -85,7 +85,8 @@ public class OpenAiEnrichmentService(
             "You classify an image before locating household inventory. Reply with ONLY a JSON object: " +
             "{\"captureType\":\"inventory_items\"|\"purchase_evidence\"|\"unknown\", " +
             "\"confidence\":\"high\"|\"medium\"|\"low\", " +
-            "\"items\":[{\"label\":string,\"box\":{\"x\":number,\"y\":number,\"w\":number,\"h\":number}}]}. " +
+            "\"items\":[{\"label\":string,\"box\":{\"x\":number,\"y\":number,\"w\":number,\"h\":number}," +
+            "\"rotateClockwise\":0|90|180|270}]}. " +
             "purchase_evidence means a paper receipt, invoice, placed-order confirmation, order-history/detail " +
             "page, or screenshot from a shop, email, or app that visibly records a purchase and its line items. " +
             "It need not look like a paper receipt. Product listings, catalogue pages, price labels, packaging, " +
@@ -93,7 +94,9 @@ public class OpenAiEnrichmentService(
             "For purchase_evidence return an empty items array so the document is never cropped. " +
             "For inventory_items, boxes are normalized to image dimensions (0..1), top-left origin. Return one " +
             "tight box for every separately countable physical object, including identical or adjacent copies; " +
-            "never group several objects into one box. Ignore surfaces, backgrounds, people, and printed pictures.";
+            "never group several objects into one box. For rotateClockwise, return the clockwise quarter-turn " +
+            "needed after cropping to make that object's text and natural top edge upright; use 0 when it is " +
+            "already upright or uncertain. Ignore surfaces, backgrounds, people, and printed pictures.";
 
         var messages = new List<ChatMessage>
         {
@@ -493,8 +496,15 @@ public class OpenAiEnrichmentService(
                     if (!el.TryGetProperty("box", out var b) || !TryReadBox(b, out var values)) continue;
                     var max = values.Max();
                     var scale = max > 100 ? 1000d : max > 1 ? 100d : 1d;
+                    var rotation = el.TryGetProperty("rotateClockwise", out var rotate)
+                                   && rotate.ValueKind == JsonValueKind.Number
+                                   && rotate.TryGetInt32(out var degrees)
+                                   && degrees is 90 or 180 or 270
+                        ? degrees
+                        : 0;
                     var box = new DetectedBox(GetString(el, "label"),
-                        values[0] / scale, values[1] / scale, values[2] / scale, values[3] / scale);
+                        values[0] / scale, values[1] / scale, values[2] / scale, values[3] / scale,
+                        rotation);
                     // Discard degenerate/out-of-range boxes rather than crop garbage.
                     if (box.W > 0.01 && box.H > 0.01 && box.X is >= 0 and < 1 && box.Y is >= 0 and < 1)
                         boxes.Add(box);

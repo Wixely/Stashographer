@@ -10,6 +10,7 @@ public class QuickLinksTests
     {
         Assert.Equal("dashboard", new QuickLink { Target = QuickLinkTarget.Dashboard }.ToUrl());
         Assert.Equal("scan", new QuickLink { Target = QuickLinkTarget.Scan }.ToUrl());
+        Assert.Equal("places", new QuickLink { Target = QuickLinkTarget.Places }.ToUrl());
 
         Assert.Equal("inventory?include=1",
             new QuickLink { Target = QuickLinkTarget.Inventory, IncludeKindIds = new() { 1 } }.ToUrl());
@@ -38,15 +39,18 @@ public class QuickLinksTests
     }
 
     [Fact]
-    public async Task Seeds_five_default_quick_links()
+    public async Task Seeds_default_quick_links_with_places_and_scan_last()
     {
         await using var db = await TestDb.CreateAsync();
         var svc = new QuickLinksService(db.Factory);
 
         var links = await svc.GetAllAsync();
 
-        Assert.Equal(5, links.Count);
-        Assert.Equal(new[] { "Items", "Groceries", "Books", "Dashboard", "Scan" }, links.Select(l => l.Label));
+        Assert.Equal(6, links.Count);
+        Assert.Equal(new[] { "Items", "Groceries", "Books", "Dashboard", "Places", "Scan" },
+            links.Select(l => l.Label));
+        Assert.Equal(QuickLinkTarget.Places, links[^2].Target);
+        Assert.Equal(QuickLinkTarget.Scan, links[^1].Target);
         // "Items" excludes groceries (1) and books (2).
         var items = links.Single(l => l.Label == "Items");
         Assert.Equal(new[] { 1, 2 }, items.ExcludeKindIds);
@@ -100,7 +104,7 @@ public class QuickLinksTests
             Label = "Tools", Icon = "Handyman", Target = QuickLinkTarget.Inventory, IncludeKindIds = new() { 3 }
         });
         Assert.True(created.Id > 0);
-        Assert.Equal(6, (await svc.GetAllAsync()).Count);
+        Assert.Equal(7, (await svc.GetAllAsync()).Count);
 
         // Move the new last item up one and confirm order changed.
         var before = await svc.GetAllAsync();

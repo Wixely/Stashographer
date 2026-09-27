@@ -473,11 +473,12 @@ public class PhotoIntakeTests
         var boxes = PhotoIntakeService.PrepareDetectedBoxes([
             new("right copy", 0.55, 0.1, 0.35, 0.7),
             new("left copy duplicate", 0.101, 0.101, 0.349, 0.699),
-            new("left copy", 0.1, 0.1, 0.35, 0.7)
+            new("left copy", 0.1, 0.1, 0.35, 0.7, 270)
         ]);
 
         Assert.Equal(2, boxes.Count);
         Assert.Equal("left copy", boxes[0].Label);
+        Assert.Equal(270, boxes[0].RotateClockwise);
         Assert.Equal("right copy", boxes[1].Label);
     }
 

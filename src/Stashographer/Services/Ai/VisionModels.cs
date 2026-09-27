@@ -45,8 +45,17 @@ public record VisionIdentification
     public int Count { get; init; } = 1;
 }
 
-/// <summary>A detected item in a multi-item photo. Coordinates are normalized 0–1, top-left origin.</summary>
-public record DetectedBox(string? Label, double X, double Y, double W, double H);
+/// <summary>
+/// A detected item in a photo. Coordinates are normalized 0–1 with a top-left origin;
+/// <see cref="RotateClockwise"/> is the quarter-turn needed to make the crop upright.
+/// </summary>
+public record DetectedBox(
+    string? Label,
+    double X,
+    double Y,
+    double W,
+    double H,
+    int RotateClockwise = 0);
 
 public enum MatchConfidence
 {

@@ -1,29 +1,32 @@
+using System.Security.Claims;
+using DnaX.Uploads;
 using Microsoft.AspNetCore.Antiforgery;
 
 namespace Stashographer.Services.Images;
 
+/// <summary>
+/// Converts a completed DNAX transport session into Stashographer's durable image/queue
+/// receipt. Transport completion and business completion are separately idempotent so either
+/// response can be lost without duplicating an image or queue item.
+/// </summary>
 public static class BrowserUploadEndpoints
 {
-    private const long MaximumRequestBytes = 22L * 1024 * 1024;
+    private const long MaximumLegacyRequestBytes = 22L * 1024 * 1024;
 
     public static RouteGroupBuilder MapBrowserUploads(this IEndpointRouteBuilder endpoints)
     {
         var uploads = endpoints.MapGroup("/browser-uploads")
+            .RequireAuthorization(UploadOwnerAuthentication.Policy)
             .RequireRateLimiting("browser-uploads");
         uploads.MapGet("/antiforgery-token", GetAntiforgeryToken);
-        uploads.MapPost(string.Empty, UploadAsync);
+        // One-release compatibility path for tabs loaded before the DNAX rollout.
+        uploads.MapPost(string.Empty, LegacyUploadAsync);
+        uploads.MapPost("/{id:guid}/complete", CompleteAsync);
         uploads.MapGet("/{token}", GetAsync);
         return uploads;
     }
 
-    private static IResult GetAntiforgeryToken(HttpContext context, IAntiforgery antiforgery)
-    {
-        context.Response.Headers.CacheControl = "no-store";
-        var tokens = antiforgery.GetAndStoreTokens(context);
-        return Results.Ok(new { token = tokens.RequestToken });
-    }
-
-    private static async Task<IResult> UploadAsync(
+    private static async Task<IResult> LegacyUploadAsync(
         HttpContext context,
         IAntiforgery antiforgery,
         BrowserUploadService uploads,
@@ -32,7 +35,7 @@ public static class BrowserUploadEndpoints
         try
         {
             await antiforgery.ValidateRequestAsync(context);
-            if (context.Request.ContentLength is > MaximumRequestBytes)
+            if (context.Request.ContentLength is > MaximumLegacyRequestBytes)
                 return Results.BadRequest(new { error = "The image is too large." });
             if (!context.Request.HasFormContentType)
                 return Results.BadRequest(new { error = "Send multipart/form-data with a photo field." });
@@ -70,7 +73,69 @@ public static class BrowserUploadEndpoints
         }
         catch (BrowserUploadInProgressException)
         {
-            return Results.Conflict(new { pending = true });
+            return Results.Conflict(new { pending = true, retryable = true });
+        }
+        catch (Exception ex) when (ex is ArgumentException or InvalidDataException
+                                       or InvalidOperationException)
+        {
+            return Results.BadRequest(new { error = ex.Message });
+        }
+    }
+
+    private static IResult GetAntiforgeryToken(HttpContext context, IAntiforgery antiforgery)
+    {
+        context.Response.Headers.CacheControl = "no-store";
+        var tokens = antiforgery.GetAndStoreTokens(context);
+        return Results.Ok(new { token = tokens.RequestToken });
+    }
+
+    private static async Task<IResult> CompleteAsync(
+        Guid id,
+        bool multipleItems,
+        HttpContext context,
+        IAntiforgery antiforgery,
+        DiskUploadStore transport,
+        BrowserUploadService uploads,
+        CancellationToken ct)
+    {
+        try
+        {
+            await antiforgery.ValidateRequestAsync(context);
+            var owner = context.User.FindFirstValue(ClaimTypes.NameIdentifier)
+                ?? throw new UploadException(401, "A stable upload owner is required.");
+            var status = transport.Get(owner, id);
+            if (!Enum.TryParse<BrowserUploadKind>(status.Profile, out var kind))
+                return Results.BadRequest(new { error = "The upload profile is not supported." });
+
+            BrowserUploadResult? result = null;
+            await transport.ReadCompletedAsync(owner, id, async (content, cancellationToken) =>
+            {
+                result = await uploads.ProcessAsync(
+                    id.ToString(),
+                    kind,
+                    content,
+                    ContentTypeFor(status.FileName),
+                    status.FileName,
+                    multipleItems,
+                    cancellationToken);
+            }, ct);
+            return Results.Ok(result);
+        }
+        catch (AntiforgeryValidationException)
+        {
+            return Results.BadRequest(new
+            {
+                error = "The upload authorization expired. Completion will retry automatically.",
+                retryable = true
+            });
+        }
+        catch (BrowserUploadInProgressException)
+        {
+            return Results.Conflict(new { pending = true, retryable = true });
+        }
+        catch (UploadException ex)
+        {
+            return Results.Json(new { error = ex.Message }, statusCode: ex.StatusCode);
         }
         catch (Exception ex) when (ex is ArgumentException or InvalidDataException
                                        or InvalidOperationException)
@@ -95,4 +160,15 @@ public static class BrowserUploadEndpoints
             return Results.BadRequest(new { error = ex.Message });
         }
     }
+
+    private static string ContentTypeFor(string fileName) =>
+        Path.GetExtension(fileName).ToLowerInvariant() switch
+        {
+            ".jpg" or ".jpeg" => "image/jpeg",
+            ".png" => "image/png",
+            ".gif" => "image/gif",
+            ".webp" => "image/webp",
+            ".bmp" => "image/bmp",
+            _ => "application/octet-stream"
+        };
 }

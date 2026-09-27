@@ -106,6 +106,21 @@ public class VisionParsingTests
     }
 
     [Fact]
+    public void Boxes_parse_only_supported_clockwise_quarter_turns()
+    {
+        var boxes = Service().ParseCaptureAnalysis("""
+            {"captureType":"inventory_items","confidence":"high","items":[
+              {"label":"sideways","box":{"x":0.1,"y":0.1,"w":0.3,"h":0.4},"rotateClockwise":90},
+              {"label":"upside down","box":{"x":0.5,"y":0.1,"w":0.3,"h":0.4},"rotateClockwise":180},
+              {"label":"invalid","box":{"x":0.1,"y":0.6,"w":0.3,"h":0.3},"rotateClockwise":45},
+              {"label":"omitted","box":{"x":0.5,"y":0.6,"w":0.3,"h":0.3}}
+            ]}
+            """).Items;
+
+        Assert.Equal([90, 180, 0, 0], boxes.Select(box => box.RotateClockwise));
+    }
+
+    [Fact]
     public void Capture_analysis_recognizes_order_screenshot_and_suppresses_crops()
     {
         var analysis = Service().ParseCaptureAnalysis("""

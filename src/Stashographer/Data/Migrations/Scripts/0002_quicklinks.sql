@@ -1,5 +1,5 @@
 -- Configurable home-screen quick links (large launcher tiles).
--- Target: 0 = Dashboard, 1 = Scan, 2 = Inventory (with optional kind filters).
+-- Target: 0 = Dashboard, 1 = Scan, 2 = Inventory (with optional kind filters), 3 = Places.
 -- IncludeKindIds / ExcludeKindIds are JSON arrays of ItemKind ids (1=Grocery, 2=Book, ...).
 
 CREATE TABLE QuickLinks (
@@ -17,4 +17,5 @@ INSERT INTO QuickLinks (Label, Icon, Target, IncludeKindIds, ExcludeKindIds, Sor
     ('Groceries', 'Kitchen',        2, '[1]', '[]',    2),
     ('Books',     'MenuBook',       2, '[2]', '[]',    3),
     ('Dashboard', 'Dashboard',      0, '[]',  '[]',    4),
-    ('Scan',      'QrCodeScanner',  1, '[]',  '[]',    5);
+    ('Places',    'Room',           3, '[]',  '[]',    5),
+    ('Scan',      'QrCodeScanner',  1, '[]',  '[]',    6);

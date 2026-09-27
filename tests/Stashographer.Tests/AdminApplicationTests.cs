@@ -1,5 +1,7 @@
 using System.Net;
 using System.Net.Http.Headers;
+using System.Net.Http.Json;
+using System.Security.Cryptography;
 using System.Text.RegularExpressions;
 using System.Text.Json;
 using Microsoft.AspNetCore.Hosting;
@@ -143,22 +145,54 @@ public sealed partial class AdminApplicationTests : IAsyncLifetime
     public async Task Browser_photo_upload_is_antiforgery_protected_and_idempotently_queued()
     {
         using var client = CreateClient();
-        var page = await client.GetStringAsync("/scan");
-        var antiforgery = AntiforgeryToken(page);
-        var token = Guid.NewGuid().ToString();
+        _ = await client.GetStringAsync("/scan"); // establishes the protected upload-owner cookie
+        var antiforgery = await DnaXAntiforgeryTokenAsync(client);
+        var token = Guid.NewGuid();
         var png = await PngAsync();
 
-        using (var unprotected = BrowserUploadForm(png, token, antiforgery: null))
-        using (var rejected = await client.PostAsync("/browser-uploads", unprotected))
+        using (var rejected = await client.PostAsJsonAsync("/dnax-uploads/sessions", new
+        {
+            id = token,
+            profile = "QueuedPhoto",
+            fileName = "mobile-camera.png",
+            length = png.LongLength
+        }))
         {
             Assert.Equal(HttpStatusCode.BadRequest, rejected.StatusCode);
-            using var json = JsonDocument.Parse(await rejected.Content.ReadAsStringAsync());
-            Assert.True(json.RootElement.GetProperty("retryable").GetBoolean());
         }
 
+        using (var created = await SendDnaxAsync(client, HttpMethod.Post, "/dnax-uploads/sessions",
+                   antiforgery, JsonContent.Create(new
+                   {
+                       id = token,
+                       profile = "QueuedPhoto",
+                       fileName = "mobile-camera.png",
+                       length = png.LongLength
+                   })))
+            Assert.Equal(HttpStatusCode.OK, created.StatusCode);
+
+        using (var bytes = new ByteArrayContent(png))
+        {
+            bytes.Headers.ContentType = new MediaTypeHeaderValue("application/octet-stream");
+            using var request = new HttpRequestMessage(HttpMethod.Put, $"/dnax-uploads/sessions/{token}/bytes")
+            {
+                Content = bytes
+            };
+            request.Headers.Add("X-DnaX-Antiforgery", antiforgery);
+            request.Headers.Add("Upload-Offset", "0");
+            request.Headers.Add("Upload-SHA256", Convert.ToHexString(SHA256.HashData(png)));
+            using var uploaded = await client.SendAsync(request);
+            Assert.Equal(HttpStatusCode.OK, uploaded.StatusCode);
+        }
+
+        using (var completed = await SendDnaxAsync(
+                   client, HttpMethod.Post, $"/dnax-uploads/sessions/{token}/complete", antiforgery))
+            Assert.Equal(HttpStatusCode.OK, completed.StatusCode);
+
         int queueItemId;
-        using (var form = BrowserUploadForm(png, token, antiforgery))
-        using (var response = await client.PostAsync("/browser-uploads", form))
+        using (var response = await SendDnaxAsync(
+                   client, HttpMethod.Post,
+                   $"/browser-uploads/{token}/complete?multipleItems=false", antiforgery))
         {
             Assert.Equal(HttpStatusCode.OK, response.StatusCode);
             using var json = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
@@ -167,10 +201,11 @@ public sealed partial class AdminApplicationTests : IAsyncLifetime
             queueItemId = json.RootElement.GetProperty("queueItemId").GetInt32();
         }
 
-        // A lost HTTP response can cause the browser to repeat the same request. The token
-        // must return the original durable receipt without creating another queue entry.
-        using (var retryForm = BrowserUploadForm(png, token, antiforgery))
-        using (var retry = await client.PostAsync("/browser-uploads", retryForm))
+        // A lost business-completion response can cause the browser to repeat conversion of
+        // the same DNAX transport receipt. It must return the original queue receipt.
+        using (var retry = await SendDnaxAsync(
+                   client, HttpMethod.Post,
+                   $"/browser-uploads/{token}/complete?multipleItems=false", antiforgery))
         {
             Assert.Equal(HttpStatusCode.OK, retry.StatusCode);
             using var json = JsonDocument.Parse(await retry.Content.ReadAsStringAsync());
@@ -187,27 +222,28 @@ public sealed partial class AdminApplicationTests : IAsyncLifetime
         await using var scope = _factory.Services.CreateAsyncScope();
         var queue = scope.ServiceProvider.GetRequiredService<IntakeQueueService>();
         Assert.Equal(queueItemId, Assert.Single(
-            await queue.GetOpenAsync(), item => item.BrowserUploadToken == token).Id);
+            await queue.GetOpenAsync(), item => item.BrowserUploadToken == token.ToString()).Id);
     }
 
     [Fact]
     public async Task Browser_upload_can_refresh_antiforgery_without_a_live_blazor_circuit()
     {
         using var client = CreateClient();
+        // A direct transport request also receives an isolated upload-owner identity; users
+        // do not need an administrator session or a live Blazor circuit.
+        using var capabilities = await client.GetAsync("/dnax-uploads/capabilities");
+        Assert.Equal(HttpStatusCode.OK, capabilities.StatusCode);
+        using var capabilitiesJson = JsonDocument.Parse(await capabilities.Content.ReadAsStringAsync());
+        Assert.True(capabilitiesJson.RootElement.GetProperty("profiles").TryGetProperty("QueuedPhoto", out _));
+        Assert.False(string.IsNullOrWhiteSpace(
+            capabilitiesJson.RootElement.GetProperty("ownerScope").GetString()));
+
         using var tokenResponse = await client.GetAsync("/browser-uploads/antiforgery-token");
         Assert.Equal(HttpStatusCode.OK, tokenResponse.StatusCode);
         using var tokenJson = JsonDocument.Parse(await tokenResponse.Content.ReadAsStringAsync());
         var antiforgery = tokenJson.RootElement.GetProperty("token").GetString();
         Assert.False(string.IsNullOrWhiteSpace(antiforgery));
 
-        using var form = BrowserUploadForm(
-            await PngAsync(), Guid.NewGuid().ToString(), antiforgery);
-        using var response = await client.PostAsync("/browser-uploads", form);
-
-        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
-        using var resultJson = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
-        Assert.Equal("QueuedPhoto", resultJson.RootElement.GetProperty("kind").GetString());
-        Assert.True(resultJson.RootElement.GetProperty("queueItemId").GetInt32() > 0);
     }
 
     private HttpClient CreateClient() => _factory.CreateClient(new WebApplicationFactoryClientOptions
@@ -216,19 +252,24 @@ public sealed partial class AdminApplicationTests : IAsyncLifetime
         HandleCookies = true
     });
 
-    private static MultipartFormDataContent BrowserUploadForm(
-        byte[] bytes, string token, string? antiforgery)
+    private static async Task<string> DnaXAntiforgeryTokenAsync(HttpClient client)
     {
-        var form = new MultipartFormDataContent();
-        if (antiforgery is not null)
-            form.Add(new StringContent(antiforgery), "__RequestVerificationToken");
-        form.Add(new StringContent(token), "token");
-        form.Add(new StringContent("QueuedPhoto"), "kind");
-        form.Add(new StringContent("false"), "multipleItems");
-        var file = new ByteArrayContent(bytes);
-        file.Headers.ContentType = new MediaTypeHeaderValue("image/png");
-        form.Add(file, "photo", "mobile-camera.png");
-        return form;
+        using var response = await client.GetAsync("/dnax-uploads/capabilities");
+        response.EnsureSuccessStatusCode();
+        using var json = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        return json.RootElement.GetProperty("token").GetString()!;
+    }
+
+    private static async Task<HttpResponseMessage> SendDnaxAsync(
+        HttpClient client,
+        HttpMethod method,
+        string path,
+        string antiforgery,
+        HttpContent? content = null)
+    {
+        using var request = new HttpRequestMessage(method, path) { Content = content };
+        request.Headers.Add("X-DnaX-Antiforgery", antiforgery);
+        return await client.SendAsync(request);
     }
 
     private static async Task<byte[]> PngAsync()

@@ -200,11 +200,13 @@ public class ImageService
 
     /// <summary>
     /// Crops a normalized (0–1) box out of a stored image — with padding, clamped to the
-    /// image bounds — and stores the crop as a new image (PNG, deduped like any upload).
+    /// image bounds — applies an optional clockwise quarter-turn, and stores the crop as a
+    /// new image (PNG, deduped like any upload).
     /// </summary>
     public async Task<Entities.Image?> CropAsync(
         int imageId, double x, double y, double w, double h, double padding = 0.08,
         double? targetAspectRatio = null,
+        int rotateClockwise = 0,
         CancellationToken ct = default)
     {
         var source = await GetAsync(imageId, ct);
@@ -247,6 +249,15 @@ public class ImageService
         var rh = Math.Clamp((int)(ph * img.Height), 1, img.Height - ry);
 
         img.Mutate(c => c.Crop(new SixLabors.ImageSharp.Rectangle(rx, ry, rw, rh)));
+        var rotateMode = rotateClockwise switch
+        {
+            90 => RotateMode.Rotate90,
+            180 => RotateMode.Rotate180,
+            270 => RotateMode.Rotate270,
+            _ => RotateMode.None
+        };
+        if (rotateMode != RotateMode.None)
+            img.Mutate(c => c.Rotate(rotateMode));
 
         using var ms = new MemoryStream();
         await img.SaveAsPngAsync(ms, ct);

@@ -32,6 +32,10 @@ public class IntakeQueueItem
     public int CaptureQuantity { get; set; } = 1;
     public DateTimeOffset? LiveCaptureHoldUntil { get; set; }
     public string? BrowserUploadToken { get; set; }
+    /// <summary>The untouched uploaded image used when the complete capture is detected again.</summary>
+    public int? OriginalImageId { get; set; }
+    /// <summary>Root queue row shared by all review entries generated from one capture.</summary>
+    public int? CaptureGroupId { get; set; }
     public int? ImageId { get; set; }
     public bool IsMultiPhoto { get; set; }
     public IntakeQueueStatus Status { get; set; }

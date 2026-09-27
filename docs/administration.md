@@ -35,9 +35,16 @@ two-stage activation model and supported operations.
 
 ## Browser image uploads
 
-Camera and library selections use a same-origin multipart endpoint instead of carrying image
-bytes over the Blazor Server SignalR circuit. This allows mobile browsers to suspend the page
-while their system picker is open without losing the selected file. Each request requires the
-page's antiforgery token, is concurrency-limited, validates the encoded size and decoded image
-dimensions, strips metadata, and uses a random idempotency token. Completed receipts remain
-recoverable across reconnects, while retries cannot create duplicate intake entries.
+Camera and library selections use `DnaX.Uploads` rather than carrying image bytes over the
+Blazor Server SignalR circuit. The native input and upload queue are browser-owned: images are
+persisted in IndexedDB, transferred in 1 MiB verified chunks, and resumed from the server's
+acknowledged offset after a disconnect or reload. Files remain limited to the configured image
+size (20 MiB by default), and completed transport sessions expire from staging after seven days.
+
+DNAX transport completion is deliberately separate from Stashographer business completion.
+After DNAX durably accepts the bytes, Stashographer sanitizes and re-encodes the image, stores
+it under the normal image root, and creates the requested intake/modify record. Both boundaries
+use the same random upload ID idempotently, so losing either HTTP response cannot duplicate an
+image or queue entry. Mutations remain same-origin, antiforgery-protected, owner-isolated, and
+concurrency-limited. A protected, random upload-owner cookie supplies DNAX's stable owner without
+requiring household users to sign in as the administrator.

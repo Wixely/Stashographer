@@ -4,7 +4,8 @@ public enum QuickLinkTarget
 {
     Dashboard = 0,
     Scan = 1,
-    Inventory = 2
+    Inventory = 2,
+    Places = 3
 }
 
 /// <summary>How the inventory presents itself: data-dense table or image-forward cover grid.</summary>
@@ -16,7 +17,7 @@ public enum InventoryView
 
 /// <summary>
 /// A configurable large button on the home launcher. Targets either a built-in page
-/// (Dashboard, Scan) or a pre-filtered Inventory view (include/exclude item kinds).
+/// (Dashboard, Scan, Places) or a pre-filtered Inventory view (include/exclude item kinds).
 /// </summary>
 public class QuickLink
 {
@@ -46,6 +47,7 @@ public class QuickLink
         QuickLinkTarget.Dashboard => "dashboard",
         QuickLinkTarget.Scan => "scan",
         QuickLinkTarget.Inventory => BuildInventoryUrl(),
+        QuickLinkTarget.Places => "places",
         _ => ""
     };
 

@@ -294,8 +294,110 @@ public class IntakeQueueTests
         var open = await harness.Queue.GetOpenAsync();
         Assert.Equal(2, open.Count);
         Assert.All(open, x => Assert.Equal(IntakeQueueStatus.ReadyForReview, x.Status));
-        Assert.All(open, x => Assert.False(x.IsMultiPhoto));
+        Assert.True(open.Single(x => x.Id == queued.Id).IsMultiPhoto);
+        Assert.False(open.Single(x => x.Id != queued.Id).IsMultiPhoto);
+        Assert.All(open, x => Assert.Equal(queued.ImageId, x.OriginalImageId));
+        Assert.All(open, x => Assert.Equal(queued.Id, x.CaptureGroupId));
         Assert.All(open, x => Assert.Equal("Detected item", x.Draft.Name));
+    }
+
+    [Fact]
+    public async Task Reprocessing_multi_item_root_uses_original_and_replaces_open_children()
+    {
+        await using var harness = await Harness.CreateAsync();
+        harness.Ai.Boxes =
+        [
+            new("left", 0, 0, 0.45, 1),
+            new("right", 0.55, 0, 0.45, 1)
+        ];
+        harness.Ai.Identification = new VisionIdentification { Name = "Detected item", Kind = "Other" };
+        await using var photo = await PhotoAsync();
+        var queued = await harness.Queue.EnqueuePhotoAsync(
+            photo, "image/png", "several.png", multipleItems: true);
+        await harness.Queue.ProcessAsync(queued.Id, new IntakeOptions(), aiEnabled: true);
+
+        var firstPass = await harness.Queue.GetOpenAsync();
+        Assert.Equal(2, firstPass.Count);
+        var originalImageId = firstPass.Single(x => x.Id == queued.Id).OriginalImageId;
+
+        harness.Ai.Boxes =
+        [
+            new("left", 0, 0, 0.3, 1),
+            new("middle", 0.35, 0, 0.3, 1),
+            new("right", 0.7, 0, 0.3, 1)
+        ];
+        Assert.True(await harness.Queue.ProcessAsync(
+            queued.Id, new IntakeOptions(), aiEnabled: true));
+
+        var rescanned = await harness.Queue.GetOpenAsync();
+        Assert.Equal(3, rescanned.Count);
+        Assert.All(rescanned, item => Assert.Equal(originalImageId, item.OriginalImageId));
+        Assert.All(rescanned, item => Assert.Equal(queued.Id, item.CaptureGroupId));
+        Assert.True(rescanned.Single(item => item.Id == queued.Id).IsMultiPhoto);
+    }
+
+    [Fact]
+    public async Task History_immediately_returns_reviewed_entries_and_keeps_capture_groups_intact()
+    {
+        await using var harness = await Harness.CreateAsync();
+        harness.Ai.Boxes =
+        [
+            new("left", 0, 0, 0.45, 1),
+            new("right", 0.55, 0, 0.45, 1)
+        ];
+        harness.Ai.Identification = new VisionIdentification { Name = "Detected item", Kind = "Other" };
+        await using var photo = await PhotoAsync();
+        var queued = await harness.Queue.EnqueuePhotoAsync(
+            photo, "image/png", "history.png", multipleItems: true);
+        await harness.Queue.ProcessAsync(queued.Id, new IntakeOptions(), aiEnabled: true);
+
+        var entries = (await harness.Queue.GetOpenAsync()).OrderBy(item => item.Id).ToList();
+        await harness.Queue.RejectAsync(entries[1].Id);
+
+        var partialCapture = Assert.Single(await harness.Queue.GetHistoryAsync(take: 1));
+        var declined = Assert.Single(partialCapture.Entries);
+        Assert.Equal(IntakeQueueStatus.Rejected, declined.Status);
+        Assert.Equal(entries[1].Id, declined.Id);
+
+        var accepted = entries[0];
+        var applied = await harness.Queue.AcceptAsync(accepted.Id, accepted.Draft, null);
+        var capture = Assert.Single(await harness.Queue.GetHistoryAsync(take: 1));
+
+        Assert.Equal(queued.Id, capture.CaptureGroupId);
+        Assert.Equal(queued.ImageId, capture.OriginalImageId);
+        Assert.Equal(2, capture.Entries.Count);
+        Assert.Equal(2, capture.Entries.Select(item => item.ImageId).Distinct().Count());
+        Assert.Contains(capture.Entries, item =>
+            item.Status == IntakeQueueStatus.Accepted && item.AppliedItemId == applied.ItemId);
+        Assert.Contains(capture.Entries, item => item.Status == IntakeQueueStatus.Rejected);
+    }
+
+    [Fact]
+    public async Task Focused_photo_can_explicitly_rescan_original_as_multi_item_capture()
+    {
+        await using var harness = await Harness.CreateAsync();
+        harness.Ai.Boxes = [new("first", 0.05, 0.1, 0.4, 0.8)];
+        harness.Ai.Identification = new VisionIdentification { Name = "Detected item", Kind = "Other" };
+        await using var photo = await PhotoAsync();
+        var queued = await harness.Queue.EnqueuePhotoAsync(
+            photo, "image/png", "missed-items.png", multipleItems: false);
+        await harness.Queue.ProcessAsync(queued.Id, new IntakeOptions(), aiEnabled: true);
+        var focused = (await harness.Queue.GetAsync(queued.Id))!;
+        Assert.NotEqual(focused.OriginalImageId, focused.ImageId);
+        Assert.False(focused.IsMultiPhoto);
+
+        harness.Ai.Boxes =
+        [
+            new("left", 0.05, 0.1, 0.4, 0.8),
+            new("right", 0.55, 0.1, 0.4, 0.8)
+        ];
+        Assert.True(await harness.Queue.ReprocessOriginalAsMultiAsync(
+            queued.Id, new IntakeOptions(), aiEnabled: true));
+
+        var rescanned = await harness.Queue.GetOpenAsync();
+        Assert.Equal(2, rescanned.Count);
+        Assert.True(rescanned.Single(item => item.Id == queued.Id).IsMultiPhoto);
+        Assert.All(rescanned, item => Assert.Equal(queued.ImageId, item.OriginalImageId));
     }
 
     [Fact]

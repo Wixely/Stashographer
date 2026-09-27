@@ -1,0 +1,12 @@
+.receipt-review-actions {
+    position: sticky;
+    bottom: 0.75rem;
+    z-index: 5;
+    margin-right: -0.75rem;
+    margin-left: -0.75rem;
+    padding: 0.75rem;
+    border: 1px solid var(--mud-palette-lines-default);
+    border-radius: var(--mud-default-borderradius);
+    background: var(--mud-palette-surface);
+    box-shadow: var(--mud-elevation-4);
+}

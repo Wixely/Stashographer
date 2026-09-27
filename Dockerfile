@@ -4,6 +4,8 @@
 FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
 WORKDIR /src
 
+COPY NuGet.config ./
+COPY vendor/packages/ vendor/packages/
 COPY src/Stashographer/Stashographer.csproj src/Stashographer/
 RUN dotnet restore src/Stashographer/Stashographer.csproj
 

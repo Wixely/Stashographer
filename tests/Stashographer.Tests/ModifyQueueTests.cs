@@ -310,6 +310,7 @@ public sealed class ModifyQueueTests
     [InlineData(null, 1, 2, 0)]
     [InlineData("intake", 0, 2, 0)]
     [InlineData("modify", 4, 0, 1)]
+    [InlineData("history", 4, 3, 2)]
     public void Queues_default_to_modify_only_when_requested_or_intake_is_empty(
         string? requested, int intake, int modify, int expected) =>
         Assert.Equal(expected, QueueTabSelection.InitialIndex(requested, intake, modify));

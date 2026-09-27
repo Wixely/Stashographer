@@ -1,198 +1,63 @@
-// Circuit-independent image uploads for Interactive Server components.
-// The browser owns the File, persists it before transmission, and posts it with fetch;
-// Blazor only receives a small, durable server receipt after the operation completes.
+// Stashographer adapter for DnaX.Uploads. DNAX owns file capture persistence, chunking,
+// resume, retry and transport receipts. This adapter maps a completed transport receipt to
+// Stashographer's existing idempotent image/queue operation and treats .NET callbacks as hints.
 window.stashResilientUpload = (() => {
     'use strict';
 
-    const storageKey = 'stashographer.pending-browser-uploads.v2';
-    const databaseName = 'stashographer-resilient-uploads';
-    const databaseVersion = 1;
-    const fileStoreName = 'files';
+    const assignmentStorageKey = 'stashographer.dnax-upload-assignments.v1';
+    const endpoint = 'dnax-uploads';
     const controllers = new Map();
-    const files = new Map();
-    const scheduled = new Set();
-    const delivering = new Set();
-    const transmitting = new Set();
-    const polling = new Set();
-    let databasePromise;
-    let pickerActive = false;
-    let persistenceCount = 0;
+    const profiles = new Map();
+    const completing = new Set();
+    let activeClaim = null;
+    let dnaxModulePromise;
 
-    function readPending() {
+    function dnaxModule() {
+        dnaxModulePromise ??= import(new URL('_content/DnaX.Uploads/uploads.js', document.baseURI).href);
+        return dnaxModulePromise;
+    }
+
+    function readAssignments() {
         try {
-            const value = JSON.parse(sessionStorage.getItem(storageKey) || '[]');
-            return Array.isArray(value) ? value : [];
+            const parsed = JSON.parse(localStorage.getItem(assignmentStorageKey) || '{}');
+            return parsed && typeof parsed === 'object' ? parsed : {};
         } catch {
-            return [];
+            return {};
         }
     }
 
-    function writePending(entries) {
+    function writeAssignments(assignments) {
         try {
-            if (entries.length === 0) sessionStorage.removeItem(storageKey);
-            else sessionStorage.setItem(storageKey, JSON.stringify(entries));
+            if (Object.keys(assignments).length === 0)
+                localStorage.removeItem(assignmentStorageKey);
+            else
+                localStorage.setItem(assignmentStorageKey, JSON.stringify(assignments));
         } catch {
-            // The upload remains safe when session storage is unavailable. Recovery still
-            // works while this document remains alive, but not across a complete reload.
+            // DNAX still retains transport metadata and bytes. The current document can
+            // finish delivery, but a full reload may require the user to select again.
         }
     }
 
-    function updatePending(token, update) {
-        const entries = readPending();
-        const index = entries.findIndex(entry => entry.token === token);
-        if (index < 0) return null;
-        entries[index] = { ...entries[index], ...update };
-        writePending(entries);
-        return entries[index];
+    function updateAssignment(id, update) {
+        const assignments = readAssignments();
+        if (!assignments[id]) return null;
+        assignments[id] = { ...assignments[id], ...update };
+        writeAssignments(assignments);
+        return assignments[id];
     }
 
-    function openDatabase() {
-        if (databasePromise) return databasePromise;
-        if (!window.indexedDB) return Promise.resolve(null);
-
-        databasePromise = new Promise(resolve => {
-            let request;
-            try {
-                request = window.indexedDB.open(databaseName, databaseVersion);
-            } catch {
-                resolve(null);
-                return;
-            }
-            request.onupgradeneeded = () => {
-                if (!request.result.objectStoreNames.contains(fileStoreName))
-                    request.result.createObjectStore(fileStoreName, { keyPath: 'token' });
-            };
-            request.onsuccess = () => resolve(request.result);
-            request.onerror = () => resolve(null);
-            request.onblocked = () => resolve(null);
-        });
-        return databasePromise;
+    function removeAssignment(id) {
+        const assignments = readAssignments();
+        delete assignments[id];
+        writeAssignments(assignments);
     }
 
-    async function storeFile(token, file) {
-        const database = await openDatabase();
-        if (!database) return false;
-        try {
-            await new Promise((resolve, reject) => {
-                const transaction = database.transaction(fileStoreName, 'readwrite');
-                transaction.objectStore(fileStoreName).put({
-                    token,
-                    file,
-                    fileName: file.name || 'image',
-                    contentType: file.type || 'application/octet-stream',
-                    lastModified: file.lastModified || Date.now(),
-                    storedAt: Date.now()
-                });
-                transaction.oncomplete = () => resolve();
-                transaction.onerror = () => reject(transaction.error);
-                transaction.onabort = () => reject(transaction.error);
-            });
-            return true;
-        } catch {
-            return false;
-        }
-    }
-
-    async function loadStoredFile(token) {
-        const database = await openDatabase();
-        if (!database) return null;
-        try {
-            const record = await new Promise((resolve, reject) => {
-                const request = database.transaction(fileStoreName, 'readonly')
-                    .objectStore(fileStoreName).get(token);
-                request.onsuccess = () => resolve(request.result || null);
-                request.onerror = () => reject(request.error);
-            });
-            if (!record || !(record.file instanceof Blob)) return null;
-            if (record.file instanceof File) return record.file;
-            return new File([record.file], record.fileName || 'image', {
-                type: record.contentType || record.file.type || 'application/octet-stream',
-                lastModified: record.lastModified || Date.now()
-            });
-        } catch {
-            return null;
-        }
-    }
-
-    async function hasStoredFile(token) {
-        const database = await openDatabase();
-        if (!database) return false;
-        try {
-            return await new Promise((resolve, reject) => {
-                const request = database.transaction(fileStoreName, 'readonly')
-                    .objectStore(fileStoreName).getKey(token);
-                request.onsuccess = () => resolve(request.result !== undefined);
-                request.onerror = () => reject(request.error);
-            });
-        } catch {
-            return false;
-        }
-    }
-
-    async function deleteStoredFile(token) {
-        const database = await openDatabase();
-        if (!database) return;
-        try {
-            await new Promise((resolve, reject) => {
-                const transaction = database.transaction(fileStoreName, 'readwrite');
-                transaction.objectStore(fileStoreName).delete(token);
-                transaction.oncomplete = () => resolve();
-                transaction.onerror = () => reject(transaction.error);
-                transaction.onabort = () => reject(transaction.error);
-            });
-        } catch {
-            // A stale browser copy is harmless because tokens are unguessable and the
-            // server operation is idempotent. A later successful cleanup can remove it.
-        }
-    }
-
-    async function cleanupAbandonedFiles() {
-        const database = await openDatabase();
-        if (!database) return;
-        const cutoff = Date.now() - (7 * 24 * 60 * 60 * 1000);
-        try {
-            await new Promise((resolve, reject) => {
-                const transaction = database.transaction(fileStoreName, 'readwrite');
-                const request = transaction.objectStore(fileStoreName).openCursor();
-                request.onsuccess = () => {
-                    const cursor = request.result;
-                    if (!cursor) return;
-                    if (!cursor.value.storedAt || cursor.value.storedAt < cutoff)
-                        cursor.delete();
-                    cursor.continue();
-                };
-                request.onerror = () => reject(request.error);
-                transaction.oncomplete = () => resolve();
-                transaction.onerror = () => reject(transaction.error);
-                transaction.onabort = () => reject(transaction.error);
-            });
-        } catch {
-            // Cleanup must never prevent a current upload.
-        }
-    }
-
-    function removePending(token) {
-        writePending(readPending().filter(entry => entry.token !== token));
-        files.delete(token);
-        scheduled.delete(token);
-        void deleteStoredFile(token);
-    }
-
-    function createToken() {
-        if (window.crypto && typeof window.crypto.randomUUID === 'function') return window.crypto.randomUUID();
-        return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, character => {
-            const random = Math.random() * 16 | 0;
-            const value = character === 'x' ? random : (random & 0x3) | 0x8;
-            return value.toString(16);
-        });
-    }
-
-    function controllerFor(ownerKey) {
-        return Array.from(controllers.values()).find(controller => controller.ownerKey === ownerKey);
+    function controllerForOwner(ownerKey) {
+        return [...controllers.values()].find(controller => controller.ownerKey === ownerKey);
     }
 
     async function notify(controller, method, ...args) {
-        if (!controller || !controller.dotNetRef) return false;
+        if (!controller?.dotNetRef) return false;
         try {
             await controller.dotNetRef.invokeMethodAsync(method, ...args);
             return true;
@@ -201,281 +66,213 @@ window.stashResilientUpload = (() => {
         }
     }
 
-    function schedule(token, delay = 1500) {
-        if (scheduled.has(token)) return;
-        scheduled.add(token);
-        setTimeout(() => {
-            scheduled.delete(token);
-            const entry = readPending().find(candidate => candidate.token === token);
-            if (entry) void resume(entry);
-        }, delay);
+    function captureAssignments(profile, snapshot) {
+        if (!activeClaim || activeClaim.profile !== profile) return;
+        const assignments = readAssignments();
+        let changed = false;
+        for (const job of snapshot.jobs) {
+            if (activeClaim.before.has(job.id) || assignments[job.id]) continue;
+            assignments[job.id] = {
+                ownerKey: activeClaim.controller.ownerKey,
+                kind: activeClaim.controller.kind,
+                multipleItems: activeClaim.controller.multipleItems,
+                fileName: job.name,
+                createdAt: new Date().toISOString()
+            };
+            changed = true;
+        }
+        if (changed) writeAssignments(assignments);
     }
 
-    async function deliver(entry) {
-        if (delivering.has(entry.token)) return;
-        const controller = controllerFor(entry.ownerKey);
-        if (!controller || !entry.result) {
-            schedule(entry.token);
-            return;
-        }
-        delivering.add(entry.token);
-        try {
-            if (await notify(controller, 'OnBrowserUploadCompleted', entry.result)) {
-                removePending(entry.token);
-                return;
-            }
-        } finally {
-            delivering.delete(entry.token);
-        }
-        schedule(entry.token);
+    async function antiforgeryToken() {
+        const response = await fetch(new URL('browser-uploads/antiforgery-token', document.baseURI), {
+            credentials: 'same-origin',
+            cache: 'no-store'
+        });
+        if (!response.ok) throw new Error('Upload authorization is unavailable.');
+        const body = await response.json();
+        if (!body?.token) throw new Error('Upload authorization is unavailable.');
+        return body.token;
     }
 
-    async function poll(entry) {
-        if (polling.has(entry.token)) return;
-        polling.add(entry.token);
+    async function completeBusiness(job, assignment, profileState) {
+        if (completing.has(job.id)) return;
+        completing.add(job.id);
         try {
-            await pollCore(entry);
-        } finally {
-            polling.delete(entry.token);
-        }
-    }
-
-    async function pollCore(entry) {
-        try {
-            const response = await fetch(
-                new URL(`browser-uploads/${encodeURIComponent(entry.token)}`, document.baseURI),
-                { credentials: 'same-origin', cache: 'no-store' });
-            if (response.ok) {
-                const result = await response.json();
-                const completed = updatePending(entry.token, {
-                    state: 'complete', result, error: null, retryable: false
-                });
-                files.delete(entry.token);
-                void deleteStoredFile(entry.token);
-                if (completed) await deliver(completed);
-                return;
-            }
-            if (response.status === 202 || response.status === 409) {
-                schedule(entry.token);
-                return;
-            }
-            if (response.status === 404
-                && !files.has(entry.token)
-                && !await hasStoredFile(entry.token)) {
-                const message = 'The interrupted upload did not reach the server. Choose the image again.';
-                updatePending(entry.token, { state: 'failed', error: message, retryable: false });
-                await notify(controllerFor(entry.ownerKey), 'OnBrowserUploadFailed', message, false);
-                removePending(entry.token);
-                return;
-            }
-        } catch {
-            // Offline/reconnecting: keep the durable token and browser file, then retry.
-        }
-        schedule(entry.token);
-    }
-
-    async function upload(entry, file) {
-        if (transmitting.has(entry.token)) return;
-        transmitting.add(entry.token);
-        try {
-            await uploadCore(entry, file);
-        } finally {
-            transmitting.delete(entry.token);
-        }
-    }
-
-    async function freshAntiforgeryToken() {
-        try {
-            const response = await fetch(new URL('browser-uploads/antiforgery-token', document.baseURI), {
-                credentials: 'same-origin',
-                cache: 'no-store'
-            });
-            if (response.ok) {
-                const body = await response.json();
-                if (body && typeof body.token === 'string' && body.token) return body.token;
-            }
-        } catch {
-            // Fall back to the server-rendered token below.
-        }
-        const antiforgery = document.querySelector(
-            '#stash-upload-antiforgery input[name="__RequestVerificationToken"]');
-        return antiforgery && antiforgery.value ? antiforgery.value : null;
-    }
-
-    async function uploadCore(entry, file) {
-        const controller = controllerFor(entry.ownerKey);
-        updatePending(entry.token, { state: 'uploading', error: null });
-        await notify(controller, 'OnBrowserUploadStarted', file.name || entry.fileName || 'image');
-
-        const antiforgeryToken = await freshAntiforgeryToken();
-        if (!antiforgeryToken) {
-            const message = 'The upload connection is not ready; the selected image will retry automatically.';
-            updatePending(entry.token, { state: 'failed', error: message, retryable: true });
-            await notify(controller, 'OnBrowserUploadFailed', message, true);
-            schedule(entry.token, 2500);
-            return;
-        }
-
-        const form = new FormData();
-        form.append('__RequestVerificationToken', antiforgeryToken);
-        form.append('token', entry.token);
-        form.append('kind', entry.kind);
-        form.append('multipleItems', String(entry.multipleItems));
-        form.append('photo', file, file.name || entry.fileName || 'image');
-
-        try {
-            const response = await fetch(new URL('browser-uploads', document.baseURI), {
+            const token = await antiforgeryToken();
+            const url = new URL(`browser-uploads/${encodeURIComponent(job.id)}/complete`, document.baseURI);
+            url.searchParams.set('multipleItems', String(assignment.multipleItems));
+            const response = await fetch(url, {
                 method: 'POST',
-                body: form,
-                credentials: 'same-origin'
+                credentials: 'same-origin',
+                cache: 'no-store',
+                headers: { 'X-DnaX-Antiforgery': token }
             });
-            if (response.ok) {
-                const result = await response.json();
-                const completed = updatePending(entry.token, {
-                    state: 'complete', result, error: null, retryable: false
-                });
-                files.delete(entry.token);
-                void deleteStoredFile(entry.token);
-                if (completed) await deliver(completed);
-                return;
+            if (!response.ok) {
+                let message = 'The uploaded image could not be saved.';
+                let retryable = response.status === 409 || response.status === 429 || response.status >= 500;
+                try {
+                    const body = await response.json();
+                    if (typeof body?.error === 'string') message = body.error;
+                    retryable ||= body?.retryable === true;
+                } catch { /* retain safe message */ }
+                throw Object.assign(new Error(message), { retryable });
             }
-            if (response.status === 409) {
-                await poll(entry);
-                return;
-            }
-
-            let message = 'The image could not be uploaded.';
-            let serverRetryable = false;
-            try {
-                const body = await response.json();
-                if (body && typeof body.error === 'string') message = body.error;
-                serverRetryable = body && body.retryable === true;
-            } catch { /* keep the safe generic message */ }
-            const retryable = serverRetryable || response.status >= 500 || response.status === 429;
-            updatePending(entry.token, { state: 'failed', error: message, retryable });
-            await notify(controller, 'OnBrowserUploadFailed', message, retryable);
-            if (retryable) schedule(entry.token, 2500);
-            else removePending(entry.token);
-        } catch {
-            const message = 'Connection interrupted; the selected image will retry automatically.';
-            updatePending(entry.token, { state: 'failed', error: message, retryable: true });
-            await notify(controller, 'OnBrowserUploadFailed', message, true);
-            schedule(entry.token, 2000);
-        }
-    }
-
-    async function resume(entry) {
-        if (entry.state === 'complete' && entry.result) {
-            await deliver(entry);
-            return;
-        }
-        let file = files.get(entry.token);
-        if (!file && entry.retryable !== false) {
-            file = await loadStoredFile(entry.token);
-            if (file) files.set(entry.token, file);
-        }
-        if (file && entry.retryable !== false) {
-            await upload(entry, file);
-            return;
-        }
-        if (entry.state === 'uploading' || entry.retryable) await poll(entry);
-    }
-
-    async function persistSelection(entry, file) {
-        files.set(entry.token, file);
-        persistenceCount++;
-        try {
-            const stored = await storeFile(entry.token, file);
-            updatePending(entry.token, { fileStored: stored });
-            return stored;
+            const result = await response.json();
+            assignment = updateAssignment(job.id, {
+                result,
+                businessError: null,
+                retryable: false
+            }) || assignment;
+            await deliver(job, assignment, profileState);
+        } catch (error) {
+            const retryable = error.retryable !== false;
+            updateAssignment(job.id, {
+                businessError: error.message || 'The uploaded image could not be saved.',
+                retryable
+            });
+            await notify(
+                controllerForOwner(assignment.ownerKey),
+                'OnBrowserUploadFailed',
+                error.message || 'The uploaded image could not be saved.',
+                retryable);
+            if (retryable)
+                setTimeout(() => {
+                    updateAssignment(job.id, { businessError: null });
+                    reconcile(profileState);
+                }, 2500);
         } finally {
-            persistenceCount--;
+            completing.delete(job.id);
+        }
+    }
+
+    async function deliver(job, assignment, profileState) {
+        if (!assignment.result) return;
+        const delivered = await notify(
+            controllerForOwner(assignment.ownerKey),
+            'OnBrowserUploadCompleted',
+            assignment.result);
+        if (!delivered) return;
+        removeAssignment(job.id);
+        try {
+            await profileState.actions?.dismiss(job.id);
+        } catch {
+            // A stale DNAX receipt is harmless; Stashographer's operation is idempotent.
+        }
+    }
+
+    function reconcile(profileState) {
+        if (!profileState?.snapshot?.jobs) return;
+        const assignments = readAssignments();
+        for (const job of profileState.snapshot.jobs) {
+            const assignment = assignments[job.id];
+            if (!assignment) continue;
+            if (assignment.result) {
+                void deliver(job, assignment, profileState);
+                continue;
+            }
+            if (job.state === 'complete' && !assignment.businessError)
+                void completeBusiness(job, assignment, profileState);
+            else if ((job.state === 'failed' || job.state === 'reselect')
+                     && assignment.lastTransportState !== job.state) {
+                updateAssignment(job.id, { lastTransportState: job.state });
+                void notify(
+                    controllerForOwner(assignment.ownerKey),
+                    'OnBrowserUploadFailed',
+                    job.error || (job.state === 'reselect'
+                        ? 'Select the original image again to resume the upload.'
+                        : 'The image upload failed.'),
+                    true);
+            }
         }
     }
 
     async function selected(controller) {
-        const selectedFiles = Array.from(controller.input.files || []);
+        const files = Array.from(controller.input.files || []);
         controller.input.value = '';
-        pickerActive = false;
-        if (selectedFiles.length === 0) return;
+        controller.actions?.setPickerOpen(false);
+        if (files.length === 0) return;
 
         if (controller.completesClipboardQueue
             && window.stashClipboardImages
-            && typeof window.stashClipboardImages.complete === 'function') {
+            && typeof window.stashClipboardImages.complete === 'function')
             window.stashClipboardImages.complete();
+
+        for (const file of files)
+            await notify(controller, 'OnBrowserUploadStarted', file.name || 'image');
+
+        const before = new Set(controller.profileState.snapshot?.jobs.map(job => job.id) || []);
+        activeClaim = { profile: controller.profile, controller, before };
+        let adding;
+        try {
+            // DNAX publishes the new jobs synchronously before its first persistence await,
+            // allowing this adapter to bind them to the initiating Stashographer control.
+            adding = controller.actions.addFiles(files);
+        } finally {
+            activeClaim = null;
         }
-
-        // Register every selected file before asynchronous work so a batch cannot lose its
-        // later entries. IndexedDB persistence then makes each File survive a full page reload.
-        const selections = selectedFiles.map(file => {
-            const entry = {
-                token: createToken(),
-                ownerKey: controller.ownerKey,
-                kind: controller.kind,
-                multipleItems: controller.multipleItems,
-                fileName: file.name || 'image',
-                createdAt: new Date().toISOString(),
-                state: 'persisting',
-                retryable: true,
-                fileStored: false
-            };
-            const entries = readPending();
-            entries.push(entry);
-            writePending(entries);
-            files.set(entry.token, file);
-            return { entry, file };
-        });
-
-        await Promise.all(selections.map(selection =>
-            persistSelection(selection.entry, selection.file)));
-
-        // Keep network uploads sequential for predictable progress and queue ordering. A
-        // reload can safely interrupt these fetches because the files now live in IndexedDB.
-        for (const selection of selections) {
-            const current = readPending().find(entry => entry.token === selection.entry.token);
-            if (current) await upload(current, selection.file);
+        try {
+            await adding;
+        } catch (error) {
+            await notify(controller, 'OnBrowserUploadFailed', error.message || 'The image upload failed.', true);
         }
     }
 
-    function markPickerOpened() {
-        pickerActive = true;
-    }
-
-    function markPickerCancelled() {
-        pickerActive = false;
-    }
-
-    function register(inputId, ownerKey, kind, multipleItems, completesClipboardQueue, dotNetRef) {
+    async function register(
+        inputId,
+        ownerKey,
+        kind,
+        multipleItems,
+        completesClipboardQueue,
+        host,
+        dotNetRef) {
         const input = document.getElementById(inputId);
-        if (!(input instanceof HTMLInputElement)) return false;
+        if (!(input instanceof HTMLInputElement) || !(host instanceof HTMLElement)) return false;
 
-        const previous = controllers.get(inputId);
-        if (previous) {
-            previous.input.removeEventListener('click', previous.onClick);
-            previous.input.removeEventListener('cancel', previous.onCancel);
-            previous.input.removeEventListener('change', previous.onChange);
-        }
+        unregister(inputId);
+        const profile = kind;
         const controller = {
+            inputId,
             input,
+            host,
             ownerKey,
             kind,
+            profile,
             multipleItems: !!multipleItems,
             completesClipboardQueue: !!completesClipboardQueue,
             dotNetRef,
-            onClick: markPickerOpened,
-            onCancel: markPickerCancelled,
-            onChange: null
+            actions: null,
+            profileState: null
         };
+        controller.onClick = () => controller.actions?.setPickerOpen(true);
+        controller.onCancel = () => controller.actions?.setPickerOpen(false);
         controller.onChange = () => { void selected(controller); };
         input.addEventListener('click', controller.onClick);
         input.addEventListener('cancel', controller.onCancel);
         input.addEventListener('change', controller.onChange);
         controllers.set(inputId, controller);
 
-        for (const entry of readPending().filter(candidate => candidate.ownerKey === ownerKey)) {
-            void resume(entry);
+        try {
+            const module = await dnaxModule();
+            let profileState = profiles.get(profile);
+            if (!profileState) {
+                profileState = { profile, snapshot: null, actions: null };
+                profiles.set(profile, profileState);
+            }
+            controller.profileState = profileState;
+            await module.mountCustom(host, endpoint, profile, (snapshot, actions) => {
+                profileState.snapshot = snapshot;
+                profileState.actions = actions;
+                controller.actions = actions;
+                captureAssignments(profile, snapshot);
+                reconcile(profileState);
+            });
+            return true;
+        } catch (error) {
+            await notify(controller, 'OnBrowserUploadFailed', error.message || 'Uploads are unavailable.', true);
+            unregister(inputId);
+            return false;
         }
-        return true;
     }
 
     function unregister(inputId) {
@@ -488,50 +285,32 @@ window.stashResilientUpload = (() => {
     }
 
     function retry(ownerKey) {
-        for (const entry of readPending().filter(candidate => candidate.ownerKey === ownerKey)) {
-            if (entry.state === 'failed') {
-                entry.retryable = true;
-                updatePending(entry.token, entry);
+        const assignments = readAssignments();
+        for (const profileState of profiles.values()) {
+            for (const job of profileState.snapshot?.jobs || []) {
+                const assignment = assignments[job.id];
+                if (assignment?.ownerKey !== ownerKey) continue;
+                if (assignment.businessError) {
+                    updateAssignment(job.id, { businessError: null, retryable: null });
+                    void completeBusiness(job, assignment, profileState);
+                } else if (job.state === 'failed' || job.state === 'paused' || job.state === 'reselect') {
+                    void profileState.actions?.resume(job.id);
+                }
             }
-            void resume(entry);
         }
-    }
-
-    function memoryOnlyUploadExists() {
-        return readPending().some(entry =>
-            entry.state !== 'complete'
-            && entry.fileStored !== true
-            && files.has(entry.token));
     }
 
     async function beforeCircuitReload() {
-        // A native camera can suspend the page longer than Blazor retains its circuit. When
-        // it returns, give the input change event time to run and IndexedDB time to commit.
-        // If IndexedDB is unavailable, also let the in-memory HTTP upload finish when possible.
-        const pickerDeadline = Date.now() + 15000;
-        const overallDeadline = Date.now() + 45000;
-        while (Date.now() < overallDeadline) {
-            if (pickerActive && Date.now() >= pickerDeadline) pickerActive = false;
-            if (!pickerActive && persistenceCount === 0 && !memoryOnlyUploadExists()) return;
-            await new Promise(resolve => setTimeout(resolve, 100));
+        try {
+            const module = await dnaxModule();
+            const deadline = Date.now() + 15000;
+            while (!module.canReloadSafely() && Date.now() < deadline)
+                await new Promise(resolve => setTimeout(resolve, 100));
+        } catch {
+            // Reload remains the only way to recover a rejected Blazor circuit. DNAX will
+            // reconcile persisted transport state when the page mounts again.
         }
     }
-
-    window.addEventListener('online', () => {
-        for (const entry of readPending()) void resume(entry);
-    });
-    document.addEventListener('visibilitychange', () => {
-        if (document.visibilityState === 'visible') {
-            for (const entry of readPending()) void resume(entry);
-        }
-    });
-    setInterval(() => {
-        if (document.visibilityState === 'visible') {
-            for (const entry of readPending()) void resume(entry);
-        }
-    }, 3000);
-
-    void cleanupAbandonedFiles();
 
     return { register, unregister, retry, beforeCircuitReload };
 })();

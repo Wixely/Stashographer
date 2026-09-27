@@ -4,6 +4,7 @@ Stashographer is MIT-licensed and depends only on permissive (non-copyleft) comp
 
 | Component | License | Use |
 |-----------|---------|-----|
+| DnaX.Uploads 10.0.0-alpha.7 | MIT | Browser-owned, circuit-independent chunked uploads with resume and recovery; package vendored from the Wixely/DnaX `v10.0.0-alpha.7` release (SHA-256 `268E99ACFF4B033C7D0B1D37CFD6C7529953717EAEE35488B3FFFC9B54658308`) |
 | MudBlazor | MIT | UI component library, theming (light/dark) |
 | Dapper | Apache-2.0 | Micro-ORM for data access |
 | Microsoft.Data.Sqlite | MIT | SQLite ADO.NET provider |

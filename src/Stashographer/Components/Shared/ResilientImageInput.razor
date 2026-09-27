@@ -1,8 +1,10 @@
 @implements IAsyncDisposable
 @inject IJSRuntime JS
 
-<input id="@Id" type="file" hidden accept="@Accept" capture="@Capture"
-       multiple="@AllowMultipleFiles" />
+<span id="@($"{Id}-dnax-host")" @ref="_host" data-permanent>
+    <input id="@Id" type="file" hidden accept="@Accept" capture="@Capture"
+           multiple="@AllowMultipleFiles" />
+</span>
 
 @code {
     [Parameter, EditorRequired] public string Id { get; set; } = string.Empty;
@@ -18,6 +20,7 @@
     [Parameter] public EventCallback<BrowserUploadFailure> UploadFailed { get; set; }
 
     private DotNetObjectReference<ResilientImageInput>? _self;
+    private ElementReference _host;
     private string? _registeredId;
     private string? _registeredSignature;
 
@@ -35,6 +38,7 @@
             Kind.ToString(),
             MultipleItems,
             CompletesClipboardQueue,
+            _host,
             _self);
         if (registered)
         {

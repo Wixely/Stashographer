@@ -116,6 +116,31 @@ public class ImageServiceTests
     }
 
     [Fact]
+    public async Task Crop_applies_clockwise_quarter_turn_before_storage()
+    {
+        await using var db = await TestDb.CreateAsync();
+        var root = Path.Combine(Path.GetTempPath(), $"stash_img_{Guid.NewGuid():N}");
+        try
+        {
+            var svc = Create(db, root);
+            var source = await svc.SaveAsync(
+                new MemoryStream(await PngAsync(120, 60)), "image/png", "sideways.png");
+
+            var crop = await svc.CropAsync(
+                source.Id, 0, 0, 1, 1, padding: 0, rotateClockwise: 90);
+
+            Assert.NotNull(crop);
+            Assert.Equal(60, crop!.Width);
+            Assert.Equal(120, crop.Height);
+            var storedBytes = await svc.ReadOriginalBytesAsync(crop.Id);
+            using var stored = Image.Load<Rgba32>(storedBytes!);
+            Assert.Equal(60, stored.Width);
+            Assert.Equal(120, stored.Height);
+        }
+        finally { if (Directory.Exists(root)) Directory.Delete(root, true); }
+    }
+
+    [Fact]
     public async Task Item_can_hold_multiple_semantic_views_without_changing_quantity()
     {
         await using var db = await TestDb.CreateAsync();
