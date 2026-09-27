@@ -35,7 +35,8 @@
     <div class="place-card-media">
         @if (!string.IsNullOrEmpty(ImageUrl))
         {
-            <img src="@ImageUrl" alt="@Title" loading="lazy" />
+            <img src="@ImageUrl" alt="@Title" loading="lazy"
+                 class="@(ContainImage ? "place-card-image-contain" : null)" />
         }
         else
         {
@@ -62,6 +63,7 @@
     [Parameter] public string? Subtitle { get; set; }
     [Parameter] public string? Chip { get; set; }
     [Parameter] public string? ImageUrl { get; set; }
+    [Parameter] public bool ContainImage { get; set; }
     [Parameter] public string? Icon { get; set; }
     [Parameter] public Color IconColor { get; set; } = Color.Primary;
 

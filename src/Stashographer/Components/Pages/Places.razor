@@ -85,7 +85,7 @@
                 }
             </div>
 
-            <div class="d-flex align-center gap-2">
+            <div class="d-flex align-center justify-end flex-wrap gap-2">
                 <MudButton Href="scan?resume=true" Variant="Variant.Outlined" Color="Color.Primary"
                            Size="Size.Small" StartIcon="@Icons.Material.Filled.AddCircle"
                            title="Open Scan &amp; add at the last-used photo or barcode section">
@@ -175,6 +175,7 @@
                                        Subtitle="@c.ContainerType.ToString()"
                                        Chip="@($"{_counts.ItemsByContainer.GetValueOrDefault(c.Id)} items")"
                                        ImageUrl="@(ImageUrls.For(c.ImageId, null, 360) ?? ContainerService.GenerateQrDataUri(Nav.ToAbsoluteUri($"c/{c.QrSlug}").ToString(), 4))"
+                                       ContainImage="@(c.ImageId is null)"
                                        Selectable="true"
                                        Selected="@_selectedContainers.Contains(c.Id)"
                                        SelectedChanged="@(v => ToggleContainerSelection(c.Id, v))"

@@ -9,7 +9,7 @@
 
 <PageTitle>Inventory · Stashographer</PageTitle>
 
-<div class="d-flex justify-space-between align-center mb-4">
+<div class="d-flex justify-space-between align-center flex-wrap gap-2 mb-4">
     <MudText Typo="Typo.h4">Inventory</MudText>
     <div class="d-flex gap-2 align-center flex-wrap">
         @if (_selectedIds.Count > 0)
@@ -25,7 +25,7 @@
 </div>
 
 <MudPaper Class="pa-3 mb-3" Outlined="true">
-    <div class="d-flex gap-2 align-center mb-2">
+    <div class="d-flex gap-2 align-center flex-wrap mb-2">
         <MudTextField @bind-Value="_search" Placeholder="Search name, code, description, tags" Immediate="true"
                       Adornment="Adornment.Start" AdornmentIcon="@Icons.Material.Filled.Search"
                       Variant="Variant.Outlined" Margin="Margin.Dense" DebounceInterval="300"

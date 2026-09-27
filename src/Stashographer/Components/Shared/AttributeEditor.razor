@@ -9,7 +9,7 @@
 
 @foreach (var key in Attributes.Keys.ToList())
 {
-    <div class="d-flex gap-2 align-center mb-2">
+    <div class="d-flex gap-2 align-center flex-wrap mb-2">
         <MudTextField T="string" Value="@key" Label="Field" Variant="Variant.Outlined" Margin="Margin.Dense"
                       ValueChanged="@(v => RenameKey(key, v))" Style="max-width:220px" />
         <MudTextField T="string" Value="@Attributes[key]" Label="Value" Variant="Variant.Outlined" Margin="Margin.Dense"
@@ -19,7 +19,7 @@
     </div>
 }
 
-<div class="d-flex gap-2 align-center mt-2">
+<div class="d-flex gap-2 align-center flex-wrap mt-2">
     @if (Suggestions is { Count: > 0 })
     {
         <MudMenu Label="Add suggested" Variant="Variant.Outlined" Size="Size.Small" EndIcon="@Icons.Material.Filled.ArrowDropDown">

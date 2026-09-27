@@ -4,9 +4,9 @@
 @inject ISnackbar Snackbar
 
 <MudPaper Class="pa-3" Outlined="true">
-    <div class="d-flex justify-space-between align-center mb-2">
+    <div class="d-flex justify-space-between align-center flex-wrap gap-2 mb-2">
         <MudText Typo="Typo.h6">Detected items (@_cards.Count(c => !c.Discarded))</MudText>
-        <div class="d-flex gap-2">
+        <div class="d-flex gap-2 flex-wrap">
             <MudButton Variant="Variant.Text" OnClick="@(() => OnDone.InvokeAsync())">Cancel</MudButton>
             <MudButton Color="Color.Primary" Variant="Variant.Filled" StartIcon="@Icons.Material.Filled.DoneAll"
                        OnClick="ApplyAllAsync" Disabled="@(_applying || _cards.All(c => c.Discarded))">

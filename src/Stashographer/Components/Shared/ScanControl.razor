@@ -73,9 +73,9 @@
     <MudDivider Class="my-3" />
 
     <MudText Typo="Typo.subtitle2" Class="mb-1">Enter a barcode / ISBN manually</MudText>
-    <div class="d-flex gap-2 align-center">
+    <div class="d-flex gap-2 align-center flex-wrap">
         <MudTextField @ref="_manualField" @bind-Value="_manual" Placeholder="e.g. 9780262033848" Variant="Variant.Outlined"
-                      Margin="Margin.Dense" Immediate="true" OnKeyDown="OnManualKey" />
+                      Margin="Margin.Dense" Immediate="true" OnKeyDown="OnManualKey" Class="flex-grow-1" />
         <MudButton Color="Color.Primary" Variant="Variant.Filled" OnClick="SubmitManual"
                    Disabled="@string.IsNullOrWhiteSpace(_manual)">Look up</MudButton>
     </div>
