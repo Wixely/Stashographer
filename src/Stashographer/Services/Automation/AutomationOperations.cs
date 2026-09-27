@@ -1,7 +1,10 @@
 using Stashographer.Data.Entities;
+using Stashographer.Services.Ai;
 using Stashographer.Services.Config;
+using Stashographer.Services.Diagnostics;
 using Stashographer.Services.Intake;
 using Stashographer.Services.Inventory;
+using Stashographer.Services.Modify;
 
 namespace Stashographer.Services.Automation;
 
@@ -15,13 +18,17 @@ public sealed class AutomationOperations(
     IntakeQueueService intake,
     SettingsService settings,
     ConsumptionService consumption,
-    TagService tags)
+    TagService tags,
+    ModifyQueueService modify,
+    IAiEnrichmentService ai,
+    TemporaryLogStore logs)
 {
     public async Task<IReadOnlyList<AutomationItem>> SearchInventoryAsync(
         string? search = null,
         int? itemKindId = null,
         int? locationId = null,
         int? containerId = null,
+        bool includeOutOfStock = false,
         int limit = 100,
         CancellationToken ct = default)
     {
@@ -29,7 +36,8 @@ public sealed class AutomationOperations(
             Search: Clean(search),
             IncludeKindIds: itemKindId is null ? null : [itemKindId.Value],
             LocationId: locationId,
-            ContainerId: containerId), ct);
+            ContainerId: containerId,
+            IncludeOutOfStock: includeOutOfStock), ct);
         return items.Take(Math.Clamp(limit, 1, 200)).Select(ToAutomationItem).ToList();
     }
 
@@ -60,6 +68,20 @@ public sealed class AutomationOperations(
     public async Task<IReadOnlyList<AutomationQueueItem>> ListIntakeQueueAsync(
         CancellationToken ct = default) =>
         (await intake.GetOpenAsync(ct)).Select(ToAutomationQueueItem).ToList();
+
+    public async Task<IReadOnlyList<AutomationCaptureHistory>> ListIntakeHistoryAsync(
+        int limit = 25, CancellationToken ct = default) =>
+        (await intake.GetHistoryAsync(Math.Clamp(limit, 1, 100), ct))
+        .Select(history => new AutomationCaptureHistory(
+            history.CaptureGroupId,
+            history.OriginalImageId,
+            history.SourceType,
+            history.SourceCode,
+            history.CapturedAt,
+            history.LastActivityAt,
+            history.IsComplete,
+            history.Entries.Select(ToAutomationQueueItem).ToList()))
+        .ToList();
 
     public async Task<AutomationQueueItem> GetIntakeItemAsync(int id, CancellationToken ct = default)
     {
@@ -109,7 +131,8 @@ public sealed class AutomationOperations(
     {
         var queued = await intake.GetAsync(id, ct)
             ?? throw new KeyNotFoundException("The intake item does not exist.");
-        if (queued.Status is IntakeQueueStatus.Accepted or IntakeQueueStatus.Rejected)
+        if (queued.Status is IntakeQueueStatus.Accepted or IntakeQueueStatus.Rejected
+            or IntakeQueueStatus.Undone)
             throw new InvalidOperationException("The intake item has already been reviewed.");
 
         var draft = await BuildDraftAsync(request, queued.Draft, ct);
@@ -119,6 +142,74 @@ public sealed class AutomationOperations(
 
     public Task<IntakeSession> StartIntakeSessionAsync(CancellationToken ct = default) =>
         intake.StartNewSessionAsync(ct);
+
+    public async Task<AutomationQueueItem> RetryIntakeAsync(
+        int id, CancellationToken ct = default)
+    {
+        var queued = await intake.GetAsync(id, ct)
+            ?? throw new KeyNotFoundException("The intake item does not exist.");
+        if (queued.Status != IntakeQueueStatus.Failed)
+            throw new InvalidOperationException("Only a failed intake item can be retried.");
+        await intake.RetryAsync(id, ct);
+        return ToAutomationQueueItem((await intake.GetAsync(id, ct))!);
+    }
+
+    public async Task<AutomationQueueItem> RerunIntakeCaptureAsync(
+        int captureGroupId, CancellationToken ct = default) =>
+        ToAutomationQueueItem(await intake.RerunHistoryCaptureAsync(
+            captureGroupId,
+            await settings.GetIntakeOptionsAsync(ct),
+            ai.IsEnabled,
+            ct));
+
+    public async Task<AutomationUndoPreview> GetIntakeUndoPreviewAsync(
+        int id, CancellationToken ct = default)
+    {
+        var preview = await intake.GetUndoPreviewAsync(id, ct);
+        return new AutomationUndoPreview(preview.QueueItemId, preview.CanUndo, preview.Effects);
+    }
+
+    public Task<ModifyWorkingPlace?> GetWorkingPlaceAsync(CancellationToken ct = default) =>
+        modify.GetCurrentWorkingPlaceAsync(ct);
+
+    public async Task<ModifyWorkingPlace?> SetWorkingPlaceAsync(
+        int? locationId, int? containerId, CancellationToken ct = default)
+    {
+        await modify.SetWorkingPlaceAsync(locationId, containerId, ct);
+        return await modify.GetCurrentWorkingPlaceAsync(ct);
+    }
+
+    public async Task<IReadOnlyList<AutomationModifyQueueItem>> ListModifyQueueAsync(
+        CancellationToken ct = default) =>
+        (await modify.GetOpenAsync(ct)).Select(ToAutomationModifyQueueItem).ToList();
+
+    public async Task<AutomationModifyQueueItem> GetModifyQueueItemAsync(
+        int id, CancellationToken ct = default)
+    {
+        var queued = await modify.GetAsync(id, ct)
+            ?? throw new KeyNotFoundException("The Modify queue item does not exist.");
+        return ToAutomationModifyQueueItem(queued);
+    }
+
+    public IReadOnlyList<AutomationProcessingLog> ListProcessingLogs(
+        LogLevel minimumLevel = LogLevel.Warning,
+        int limit = 100,
+        bool includeException = false) =>
+        logs.GetEntries()
+            .Where(entry => entry.Level >= minimumLevel
+                && (entry.Category.StartsWith("Stashographer.Services.Intake", StringComparison.Ordinal)
+                    || entry.Category.StartsWith("Stashographer.Services.Ai", StringComparison.Ordinal)
+                    || entry.Category.StartsWith("Stashographer.Services.Modify", StringComparison.Ordinal)
+                    || entry.Category.StartsWith("Stashographer.Services.Images", StringComparison.Ordinal)))
+            .Take(Math.Clamp(limit, 1, 250))
+            .Select(entry => new AutomationProcessingLog(
+                entry.Sequence,
+                entry.Timestamp,
+                entry.Level.ToString(),
+                entry.Category,
+                entry.Message,
+                includeException ? entry.Exception : null))
+            .ToList();
 
     public async Task<IReadOnlyList<AutomationConsumptionEvent>> ListConsumptionAsync(
         string? search = null,
@@ -207,6 +298,8 @@ public sealed class AutomationOperations(
         item.SessionId,
         item.SourceType,
         item.SourceCode,
+        item.OriginalImageId,
+        item.CaptureGroupId,
         item.ImageId,
         item.IsMultiPhoto,
         item.Status,
@@ -221,9 +314,15 @@ public sealed class AutomationOperations(
         item.RelationshipReason,
         item.SuggestedImageRole,
         item.IncrementBy,
+        item.AppliedItemId,
+        item.AppliedAction?.ToString(),
+        item.AppliedQuantity,
+        item.AppliedImageId,
         item.Error,
         item.CreatedAt,
-        item.ProcessedAt);
+        item.ProcessedAt,
+        item.ReviewedAt,
+        item.UndoneAt);
 
     private static AutomationItem ToAutomationItem(Item item) => new(
         item.Id,
@@ -234,6 +333,7 @@ public sealed class AutomationOperations(
         item.ItemKindId,
         item.Kind?.Name,
         item.Quantity,
+        item.IsInStock,
         item.Unit,
         item.LowStockThreshold,
         item.ExpiryDate,
@@ -249,6 +349,25 @@ public sealed class AutomationOperations(
         item.IsCheckedOut,
         item.CreatedAt,
         item.UpdatedAt);
+
+    private static AutomationModifyQueueItem ToAutomationModifyQueueItem(ModifyQueueItem item) => new(
+        item.Id,
+        item.SessionId,
+        item.OriginalImageId,
+        item.ImageId,
+        item.IsMultiPhoto,
+        item.Status,
+        item.Identification,
+        item.MatchedItemId,
+        item.MatchedItemName,
+        item.MatchConfidence,
+        item.MatchReason,
+        item.MatchedItemUpdatedAt,
+        item.AppliedAction?.ToString(),
+        item.Error,
+        item.CreatedAt,
+        item.ProcessedAt,
+        item.ReviewedAt);
 
     private static AutomationConsumptionEvent ToAutomationConsumptionEvent(ConsumptionEvent consumption) => new(
         consumption.Id,

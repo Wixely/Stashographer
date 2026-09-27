@@ -355,21 +355,198 @@ public class IntakeQueueTests
         await harness.Queue.RejectAsync(entries[1].Id);
 
         var partialCapture = Assert.Single(await harness.Queue.GetHistoryAsync(take: 1));
-        var declined = Assert.Single(partialCapture.Entries);
+        Assert.False(partialCapture.IsComplete);
+        Assert.Equal(2, partialCapture.Entries.Count);
+        var declined = Assert.Single(partialCapture.Entries, item =>
+            item.Status == IntakeQueueStatus.Rejected);
         Assert.Equal(IntakeQueueStatus.Rejected, declined.Status);
         Assert.Equal(entries[1].Id, declined.Id);
+        Assert.Contains(partialCapture.Entries, item =>
+            item.Id == entries[0].Id && item.Status == IntakeQueueStatus.ReadyForReview);
 
         var accepted = entries[0];
         var applied = await harness.Queue.AcceptAsync(accepted.Id, accepted.Draft, null);
         var capture = Assert.Single(await harness.Queue.GetHistoryAsync(take: 1));
 
         Assert.Equal(queued.Id, capture.CaptureGroupId);
+        Assert.True(capture.IsComplete);
         Assert.Equal(queued.ImageId, capture.OriginalImageId);
         Assert.Equal(2, capture.Entries.Count);
         Assert.Equal(2, capture.Entries.Select(item => item.ImageId).Distinct().Count());
         Assert.Contains(capture.Entries, item =>
             item.Status == IntakeQueueStatus.Accepted && item.AppliedItemId == applied.ItemId);
         Assert.Contains(capture.Entries, item => item.Status == IntakeQueueStatus.Rejected);
+    }
+
+    [Fact]
+    public async Task Rejected_history_photo_can_be_rerun_without_changing_history()
+    {
+        await using var harness = await Harness.CreateAsync();
+        harness.Ai.Identification = new VisionIdentification { Name = "First attempt", Kind = "Other" };
+        await using var photo = await PhotoAsync();
+        var queued = await harness.Queue.EnqueuePhotoAsync(
+            photo, "image/png", "rejected.png", multipleItems: false);
+        await harness.Queue.ProcessAsync(queued.Id, new IntakeOptions(), aiEnabled: true);
+        await harness.Queue.RejectAsync(queued.Id);
+
+        harness.Ai.Identification = new VisionIdentification { Name = "Recovered item", Kind = "Other" };
+        var rerun = await harness.Queue.RerunHistoryCaptureAsync(
+            queued.Id, new IntakeOptions(), aiEnabled: true);
+
+        Assert.NotEqual(queued.Id, rerun.Id);
+        Assert.Equal(IntakeQueueStatus.ReadyForReview, rerun.Status);
+        Assert.Equal("Recovered item", rerun.Draft.Name);
+        Assert.Equal(queued.ImageId, rerun.ImageId);
+        Assert.Equal(rerun.Id, rerun.CaptureGroupId);
+        Assert.False(rerun.IsMultiPhoto);
+
+        var historical = await harness.Queue.GetAsync(queued.Id);
+        Assert.NotNull(historical);
+        Assert.Equal(IntakeQueueStatus.Rejected, historical!.Status);
+        var history = await harness.Queue.GetHistoryAsync(take: 2);
+        var capture = Assert.Single(history, group => group.CaptureGroupId == queued.Id);
+        Assert.Single(capture.Entries);
+        Assert.Equal(queued.Id, capture.Entries[0].Id);
+        Assert.Contains(history, group => group.CaptureGroupId == rerun.Id
+            && group.Entries.Single().Status == IntakeQueueStatus.ReadyForReview);
+    }
+
+    [Fact]
+    public async Task Completed_multi_item_history_reruns_the_untouched_original()
+    {
+        await using var harness = await Harness.CreateAsync();
+        harness.Ai.Boxes =
+        [
+            new("left", 0, 0, 0.45, 1),
+            new("right", 0.55, 0, 0.45, 1)
+        ];
+        harness.Ai.Identification = new VisionIdentification { Name = "Detected item", Kind = "Other" };
+        await using var photo = await PhotoAsync();
+        var queued = await harness.Queue.EnqueuePhotoAsync(
+            photo, "image/png", "several.png", multipleItems: true);
+        await harness.Queue.ProcessAsync(queued.Id, new IntakeOptions(), aiEnabled: true);
+
+        var entries = (await harness.Queue.GetOpenAsync()).OrderBy(item => item.Id).ToList();
+        await harness.Queue.AcceptAsync(entries[0].Id, entries[0].Draft, null);
+        await harness.Queue.RejectAsync(entries[1].Id);
+        harness.Ai.Identification = new VisionIdentification { Name = "Recovered crop", Kind = "Other" };
+
+        var rerun = await harness.Queue.RerunHistoryCaptureAsync(
+            queued.Id, new IntakeOptions(), aiEnabled: true);
+
+        Assert.Equal(IntakeQueueStatus.ReadyForReview, rerun.Status);
+        Assert.Equal("Recovered crop", rerun.Draft.Name);
+        Assert.Equal(queued.ImageId, rerun.OriginalImageId);
+        Assert.True(rerun.IsMultiPhoto);
+        var rerunEntries = await harness.Queue.GetOpenAsync();
+        Assert.Equal(2, rerunEntries.Count);
+        Assert.All(rerunEntries, item => Assert.Equal(queued.ImageId, item.OriginalImageId));
+
+        var history = await harness.Queue.GetHistoryAsync(take: 2);
+        var originalHistory = Assert.Single(history, group => group.CaptureGroupId == queued.Id);
+        Assert.Equal(2, originalHistory.Entries.Count);
+        Assert.Contains(originalHistory.Entries, item => item.Status == IntakeQueueStatus.Accepted);
+        Assert.Contains(originalHistory.Entries, item => item.Status == IntakeQueueStatus.Rejected);
+        Assert.Contains(history, group => group.CaptureGroupId == rerun.CaptureGroupId
+            && !group.IsComplete && group.Entries.Count == 2);
+    }
+
+    [Fact]
+    public async Task Rejected_receipt_history_reruns_its_original_image()
+    {
+        await using var harness = await Harness.CreateAsync();
+        harness.Ai.Receipt = new ReceiptExtraction
+        {
+            Merchant = "Example Market",
+            Lines = [new ReceiptLineSuggestion { LineIndex = 0, Description = "SOAP" }]
+        };
+        await using var photo = await PhotoAsync();
+        var queued = await harness.Queue.EnqueueReceiptAsync(photo, "image/png", "receipt.png");
+        await harness.Queue.ProcessAsync(queued.Id, new IntakeOptions(), aiEnabled: true);
+        await harness.Queue.RejectAsync(queued.Id);
+
+        var rerun = await harness.Queue.RerunHistoryCaptureAsync(
+            queued.Id, new IntakeOptions(), aiEnabled: true);
+
+        Assert.NotEqual(queued.Id, rerun.Id);
+        Assert.Equal(IntakeSourceType.Receipt, rerun.SourceType);
+        Assert.Equal(IntakeQueueStatus.ReadyForReview, rerun.Status);
+        Assert.Equal(queued.ImageId, rerun.OriginalImageId);
+        Assert.Equal("Example Market", rerun.Receipt!.Merchant);
+        Assert.Equal(IntakeQueueStatus.Rejected, (await harness.Queue.GetAsync(queued.Id))!.Status);
+    }
+
+    [Fact]
+    public async Task Rejected_barcode_history_can_repeat_its_lookup()
+    {
+        await using var harness = await Harness.CreateAsync();
+        harness.Lookup.Result = new LookupResult
+        {
+            Found = true, Code = "5000000000094", Name = "Recovered barcode", SuggestedKind = "Other"
+        };
+        var queued = await harness.Queue.EnqueueBarcodeAsync("5000000000094");
+        await harness.Queue.ProcessAsync(queued.Id, new IntakeOptions(), aiEnabled: false);
+        await harness.Queue.RejectAsync(queued.Id);
+
+        var rerun = await harness.Queue.RerunHistoryCaptureAsync(
+            queued.Id, new IntakeOptions(), aiEnabled: false);
+
+        Assert.NotEqual(queued.Id, rerun.Id);
+        Assert.Equal(IntakeSourceType.Barcode, rerun.SourceType);
+        Assert.Equal(IntakeQueueStatus.ReadyForReview, rerun.Status);
+        Assert.Equal("Recovered barcode", rerun.Draft.Name);
+    }
+
+    [Fact]
+    public async Task Undo_accepted_increment_previews_and_restores_quantity()
+    {
+        await using var harness = await Harness.CreateAsync();
+        var existing = await harness.Inventory.SaveAsync(new Item
+        {
+            Name = "Tinned tomatoes", Code = "5000000000001", ItemKindId = 1, Quantity = 2
+        });
+        harness.Lookup.Result = new LookupResult
+        {
+            Found = true, Code = existing.Code, Name = existing.Name, SuggestedKind = "Grocery"
+        };
+        var queued = await harness.Queue.EnqueueBarcodeAsync(existing.Code!);
+        await harness.Queue.ProcessAsync(queued.Id, new IntakeOptions(), aiEnabled: false);
+        var review = (await harness.Queue.GetAsync(queued.Id))!;
+        await harness.Queue.AcceptAsync(review.Id, review.Draft, existing.Id);
+
+        var preview = await harness.Queue.GetUndoPreviewAsync(queued.Id);
+        Assert.True(preview.CanUndo);
+        Assert.Contains(preview.Effects, effect => effect.Contains("from 3 to 2"));
+
+        await harness.Queue.UndoAcceptedAsync(queued.Id);
+
+        Assert.Equal(2, (await harness.Inventory.GetAsync(existing.Id))!.Quantity);
+        Assert.Equal(IntakeQueueStatus.Undone, (await harness.Queue.GetAsync(queued.Id))!.Status);
+        Assert.Empty(await harness.Queue.GetOpenAsync());
+    }
+
+    [Fact]
+    public async Task Undo_accepted_new_item_retains_it_as_not_in_stock()
+    {
+        await using var harness = await Harness.CreateAsync();
+        harness.Ai.Identification = new VisionIdentification { Name = "Mistaken item", Kind = "Other" };
+        await using var photo = await PhotoAsync();
+        var queued = await harness.Queue.EnqueuePhotoAsync(
+            photo, "image/png", "mistake.png", multipleItems: false);
+        await harness.Queue.ProcessAsync(queued.Id, new IntakeOptions(), aiEnabled: true);
+        var review = (await harness.Queue.GetAsync(queued.Id))!;
+        var applied = await harness.Queue.AcceptAsync(review.Id, review.Draft, null);
+
+        await harness.Queue.UndoAcceptedAsync(queued.Id);
+
+        var retained = await harness.Inventory.GetAsync(applied.ItemId);
+        Assert.NotNull(retained);
+        Assert.False(retained!.IsInStock);
+        Assert.Empty(await harness.Inventory.QueryAsync(new ItemQuery(Search: "Mistaken item")));
+        Assert.Single(await harness.Inventory.QueryAsync(
+            new ItemQuery(Search: "Mistaken item", IncludeOutOfStock: true)));
+        var history = Assert.Single(await harness.Queue.GetHistoryAsync(take: 1));
+        Assert.Equal(IntakeQueueStatus.Undone, Assert.Single(history.Entries).Status);
     }
 
     [Fact]
@@ -758,6 +935,47 @@ public class IntakeQueueTests
         Assert.Equal(new DateOnly(2026, 8, 24), purchase.PurchasedOn);
         Assert.Equal(ItemImageRole.Receipt,
             Assert.Single(await harness.Inventory.GetImagesAsync(created.Id)).Role);
+    }
+
+    [Fact]
+    public async Task Undo_receipt_removes_purchase_links_and_retires_items_it_created()
+    {
+        await using var harness = await Harness.CreateAsync();
+        harness.Ai.Receipt = new ReceiptExtraction
+        {
+            Merchant = "Example Market",
+            Currency = "GBP",
+            Lines =
+            [
+                new ReceiptLineSuggestion
+                {
+                    LineIndex = 0,
+                    Description = "CREATED FROM RECEIPT",
+                    Quantity = 1,
+                    CreateNewItem = true,
+                    NewItemKindId = 7,
+                    Selected = true
+                }
+            ]
+        };
+        await using var photo = await PhotoAsync();
+        var queued = await harness.Queue.EnqueueReceiptAsync(photo, "image/png", "undo-receipt.png");
+        await harness.Queue.ProcessAsync(queued.Id, new IntakeOptions(), aiEnabled: true);
+        var review = (await harness.Queue.GetAsync(queued.Id))!;
+        await harness.Queue.AcceptReceiptAsync(review.Id, review.Receipt!);
+        var created = Assert.Single(await harness.Inventory.QueryAsync(
+            new ItemQuery(Search: "CREATED FROM RECEIPT")));
+
+        var preview = await harness.Queue.GetUndoPreviewAsync(queued.Id);
+        Assert.True(preview.CanUndo);
+        Assert.Contains(preview.Effects, effect => effect.Contains("purchase link"));
+        Assert.Contains(preview.Effects, effect => effect.Contains("not in stock"));
+        await harness.Queue.UndoAcceptedAsync(queued.Id);
+
+        Assert.Empty(await harness.Queue.GetPurchasesAsync(created.Id));
+        Assert.Empty(await harness.Inventory.GetImagesAsync(created.Id));
+        Assert.False((await harness.Inventory.GetAsync(created.Id))!.IsInStock);
+        Assert.Equal(IntakeQueueStatus.Undone, (await harness.Queue.GetAsync(queued.Id))!.Status);
     }
 
     [Fact]

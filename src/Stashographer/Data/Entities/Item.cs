@@ -29,6 +29,9 @@ public class Item
 
     public decimal Quantity { get; set; } = 1;
 
+    /// <summary>False when the retained catalogue record is no longer part of active stock.</summary>
+    public bool IsInStock { get; set; } = true;
+
     /// <summary>Free-text unit (each, g, ml, pack…).</summary>
     public string? Unit { get; set; }
 

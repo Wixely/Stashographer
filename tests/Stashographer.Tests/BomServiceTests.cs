@@ -119,7 +119,7 @@ public class BomServiceTests
 
         var availability = Assert.Single(evaluation!.Requirements);
         Assert.Equal(BomMatchMode.ExplicitCandidates, availability.Requirement.MatchMode);
-        Assert.Empty(availability.Requirement.CandidateItemIds);
+        Assert.Contains(allowed.Id, availability.Requirement.CandidateItemIds);
         Assert.Empty(availability.MatchingItems);
         Assert.False(evaluation.CanMakeOne);
     }

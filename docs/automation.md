@@ -1,9 +1,10 @@
 # API and MCP automation
 
-Stashographer exposes the same inventory and intake operations through a versioned HTTP API
+Stashographer exposes review-safe inventory and intake operations through a versioned HTTP API
 and a stateless Streamable HTTP MCP server. Both surfaces are off by default. Automation may
-inspect inventory and create or refine intake drafts, but it cannot accept or reject them:
-final acceptance stays item-by-item in **Intake Queue**.
+inspect inventory, queue or rerun processing, manage the working-place context, and create or
+refine intake drafts, but it cannot accept, reject, undo, or apply inventory modifications:
+those decisions stay in the interactive review screens.
 
 ## Activate access
 
@@ -48,7 +49,7 @@ The API base is `/api/v1`. JSON enums are represented by names such as `Manual` 
 | Method | Path | Purpose |
 |---|---|---|
 | `GET` | `/api/v1` | Identity, version and review policy |
-| `GET` | `/api/v1/inventory` | Search names, codes, descriptions, and tags; optionally filter by kind or place |
+| `GET` | `/api/v1/inventory` | Search names, codes, descriptions, and tags; optionally filter by kind/place or include retained out-of-stock items |
 | `GET` | `/api/v1/inventory/{id}` | Get an inventory item |
 | `GET` | `/api/v1/item-kinds` | List valid kinds and their known attribute vocabulary |
 | `GET` | `/api/v1/tags` | List reusable tags and their item counts |
@@ -107,13 +108,29 @@ the bearer token for that connection.
 | `list_places` | Discover valid locations and containers |
 | `list_consumption_history` | Read exact-lot manual and meal use history; optionally filter by item or source |
 | `list_intake_queue` | Read captures and drafts awaiting work or review |
+| `list_intake_history` | Read complete capture groups, including reviewed and still-open derived results |
 | `get_intake_item` | Read one queue entry and its current draft |
+| `retry_intake_item` | Return a failed entry to background processing |
+| `rerun_intake_capture` | Process a completed capture again from its untouched original |
+| `get_intake_undo_preview` | Describe the reversible effects of an accepted result without applying the undo |
 | `queue_barcode` | Queue a barcode, ISBN, or scanned code |
 | `queue_item_draft` | Propose a complete reviewable item |
 | `update_intake_draft` | Refine a pending draft without losing its source image |
 | `start_intake_session` | Reset the queue context window |
+| `get_working_place` | Read the location/container currently guiding photo matching |
+| `set_working_place` | Set the working location or container |
+| `clear_working_place` | Clear working-place context |
+| `list_modify_queue` | Read photo reminders awaiting processing or review |
+| `get_modify_queue_item` | Inspect one reminder, its AI result, match, or failure |
+| `list_processing_logs` | Read bounded temporary intake/AI/image/Modify logs; exceptions are opt-in |
 
-There is intentionally no acceptance, rejection, delete, or arbitrary SQL tool. Photo upload
+Inventory search hides inactive stock by default; pass `includeOutOfStock=true` when retained
+records are relevant. Inventory results include `isInStock`. Intake results expose original and
+capture-group image identifiers plus recorded applied-effect metadata so an agent can explain
+history without guessing.
+
+There is intentionally no acceptance, rejection, actual undo, Modify apply/dismiss, delete, or
+arbitrary SQL tool. Photo upload
 uses the HTTP API because MCP tool arguments are JSON rather than multipart binary content.
 
 ## Audit and trust boundary

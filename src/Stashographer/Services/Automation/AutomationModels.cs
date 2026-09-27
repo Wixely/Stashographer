@@ -12,6 +12,7 @@ public sealed record AutomationItem(
     int ItemKindId,
     string? ItemKind,
     decimal Quantity,
+    bool IsInStock,
     string? Unit,
     decimal LowStockThreshold,
     DateOnly? ExpiryDate,
@@ -45,6 +46,8 @@ public sealed record AutomationQueueItem(
     int SessionId,
     IntakeSourceType SourceType,
     string? SourceCode,
+    int? OriginalImageId,
+    int? CaptureGroupId,
     int? ImageId,
     bool IsMultiPhoto,
     IntakeQueueStatus Status,
@@ -59,9 +62,57 @@ public sealed record AutomationQueueItem(
     string? RelationshipReason,
     ItemImageRole? SuggestedImageRole,
     decimal IncrementBy,
+    int? AppliedItemId,
+    string? AppliedAction,
+    decimal? AppliedQuantity,
+    int? AppliedImageId,
     string? Error,
     DateTimeOffset CreatedAt,
-    DateTimeOffset? ProcessedAt);
+    DateTimeOffset? ProcessedAt,
+    DateTimeOffset? ReviewedAt,
+    DateTimeOffset? UndoneAt);
+
+public sealed record AutomationCaptureHistory(
+    int CaptureGroupId,
+    int? OriginalImageId,
+    IntakeSourceType SourceType,
+    string? SourceCode,
+    DateTimeOffset CapturedAt,
+    DateTimeOffset LastActivityAt,
+    bool IsComplete,
+    IReadOnlyList<AutomationQueueItem> Entries);
+
+public sealed record AutomationUndoPreview(
+    int QueueItemId,
+    bool CanUndo,
+    IReadOnlyList<string> Effects);
+
+public sealed record AutomationModifyQueueItem(
+    int Id,
+    int SessionId,
+    int OriginalImageId,
+    int ImageId,
+    bool IsMultiPhoto,
+    ModifyQueueStatus Status,
+    VisionIdentification? Identification,
+    int? MatchedItemId,
+    string? MatchedItemName,
+    MatchConfidence MatchConfidence,
+    string? MatchReason,
+    string? MatchedItemUpdatedAt,
+    string? AppliedAction,
+    string? Error,
+    DateTimeOffset CreatedAt,
+    DateTimeOffset? ProcessedAt,
+    DateTimeOffset? ReviewedAt);
+
+public sealed record AutomationProcessingLog(
+    long Sequence,
+    DateTimeOffset Timestamp,
+    string Level,
+    string Category,
+    string Message,
+    string? Exception);
 
 public sealed record AutomationConsumptionLine(
     int Id,

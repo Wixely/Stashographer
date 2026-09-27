@@ -9,6 +9,7 @@
 @inject ISnackbar Snackbar
 @inject ModifyQueueService ModifyQueue
 @inject NavigationManager Navigation
+@inject IDialogService Dialogs
 
 <PageTitle>Queues · Stashographer</PageTitle>
 
@@ -382,7 +383,7 @@ else
         <div>
             <MudText Typo="Typo.h4">Intake history</MudText>
             <MudText Typo="Typo.body2" Class="mud-text-secondary">
-                Reviewed scan results grouped with their original capture and derived images.
+                All scan results grouped with their original capture and derived images.
             </MudText>
         </div>
         <MudButton Variant="Variant.Outlined" StartIcon="@Icons.Material.Filled.Refresh"
@@ -396,7 +397,7 @@ else
     else if (_history.Count == 0)
     {
         <MudAlert Severity="Severity.Info">
-            No completed scans yet. Accepted and rejected intake captures will appear here.
+            No scans yet. New and reviewed intake captures will appear here.
         </MudAlert>
     }
     else
@@ -410,12 +411,37 @@ else
                             <MudText Typo="Typo.h6">@HistorySourceLabel(capture)</MudText>
                             <MudText Typo="Typo.caption" Class="mud-text-secondary">
                                 Captured @capture.CapturedAt.ToLocalTime().ToString("g") ·
-                                last reviewed @capture.LastReviewedAt.ToLocalTime().ToString("g")
+                                last activity @capture.LastActivityAt.ToLocalTime().ToString("g")
                             </MudText>
                         </div>
-                        <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined">
-                            @capture.Entries.Count @(capture.Entries.Count == 1 ? "result" : "results")
-                        </MudChip>
+                        <div class="d-flex align-center gap-2 flex-wrap">
+                            <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined">
+                                @capture.Entries.Count @(capture.Entries.Count == 1 ? "result" : "results")
+                            </MudChip>
+                            @if (!capture.IsComplete)
+                            {
+                                var awaitingReview = capture.Entries.Count(IsOpenHistoryEntry);
+                                <MudChip T="string" Size="Size.Small" Color="Color.Info">
+                                    @awaitingReview awaiting review
+                                </MudChip>
+                            }
+                            @if (capture.SourceType != IntakeSourceType.Manual)
+                            {
+                                <MudButton Variant="Variant.Filled" Color="Color.Primary" Size="Size.Small"
+                                           StartIcon="@Icons.Material.Filled.Replay"
+                                           Disabled="@(!capture.IsComplete
+                                                       || _historyRerunIds.Contains(capture.CaptureGroupId)
+                                                       || (capture.SourceType is IntakeSourceType.Photo or IntakeSourceType.Receipt
+                                                           && !Ai.IsEnabled))"
+                                           OnClick="@(() => RerunHistoryCaptureAsync(capture.CaptureGroupId))">
+                                    @(_historyRerunIds.Contains(capture.CaptureGroupId)
+                                        ? "Rerunning..."
+                                        : capture.OriginalImageId is not null
+                                            ? "Rerun original"
+                                            : "Rerun scan")
+                                </MudButton>
+                            }
+                        </div>
                     </div>
 
                     <MudGrid Spacing="2">
@@ -470,6 +496,25 @@ else
                                                             View inventory item
                                                         </MudButton>
                                                     }
+                                                    @if (entry.Status == IntakeQueueStatus.Accepted)
+                                                    {
+                                                        <MudButton Variant="Variant.Text" Color="Color.Warning"
+                                                                   Size="Size.Small" StartIcon="@Icons.Material.Filled.Undo"
+                                                                   Disabled="@_historyUndoIds.Contains(entry.Id)"
+                                                                   OnClick="@(() => UndoHistoryEntryAsync(entry.Id))"
+                                                                   Class="mt-1">
+                                                            @(_historyUndoIds.Contains(entry.Id) ? "Undoing..." : "Undo changes")
+                                                        </MudButton>
+                                                    }
+                                                    else if (IsOpenHistoryEntry(entry))
+                                                    {
+                                                        <MudButton Variant="Variant.Text" Color="Color.Primary"
+                                                                   Size="Size.Small" StartIcon="@Icons.Material.Filled.RateReview"
+                                                                   OnClick="@(() => ReviewHistoryEntryAsync(entry.Id))"
+                                                                   Class="mt-1">
+                                                            Review in Intake
+                                                        </MudButton>
+                                                    }
                                                 </div>
                                             </div>
                                         </MudPaper>
@@ -522,8 +567,13 @@ else
     {
         IntakeQueueStatus.Accepted => Color.Success,
         IntakeQueueStatus.Rejected => Color.Default,
+        IntakeQueueStatus.Undone => Color.Warning,
+        IntakeQueueStatus.Failed => Color.Error,
         _ => Color.Info
     };
+
+    private static bool IsOpenHistoryEntry(IntakeQueueItem item) => item.Status is not
+        (IntakeQueueStatus.Accepted or IntakeQueueStatus.Rejected or IntakeQueueStatus.Undone);
 
     private readonly CancellationTokenSource _dispose = new();
     private List<IntakeQueueItem> _items = new();
@@ -548,6 +598,8 @@ else
     private List<IntakeCaptureHistory> _history = new();
     private bool _historyLoading;
     private int _historyTake = 25;
+    private readonly HashSet<int> _historyRerunIds = [];
+    private readonly HashSet<int> _historyUndoIds = [];
 
     [SupplyParameterFromQuery(Name = "tab")]
     public string? RequestedTab { get; set; }
@@ -598,6 +650,75 @@ else
     {
         _historyTake = Math.Min(100, _historyTake + 25);
         await LoadHistoryAsync();
+    }
+
+    private async Task RerunHistoryCaptureAsync(int captureGroupId)
+    {
+        if (!_historyRerunIds.Add(captureGroupId)) return;
+        try
+        {
+            var rerun = await IntakeQueue.RerunHistoryCaptureAsync(
+                captureGroupId, _options, Ai.IsEnabled, _dispose.Token);
+            Snackbar.Add(rerun.Status == IntakeQueueStatus.Failed
+                ? "The original capture was added back to Intake, but processing failed. Open Intake to review the error."
+                : "The original capture was rerun and added to the Intake queue for review.",
+                rerun.Status == IntakeQueueStatus.Failed ? Severity.Warning : Severity.Success);
+            await RefreshQueueCountsAsync();
+            await LoadAsync(false);
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add(ex.Message, Severity.Error);
+        }
+        finally
+        {
+            _historyRerunIds.Remove(captureGroupId);
+        }
+    }
+
+    private async Task ReviewHistoryEntryAsync(int id)
+    {
+        await LoadAsync(false);
+        var index = _items.FindIndex(item => item.Id == id);
+        if (index >= 0)
+        {
+            _index = index;
+            await LoadCurrentStateAsync();
+        }
+        await ChangeTabAsync(0);
+    }
+
+    private async Task UndoHistoryEntryAsync(int id)
+    {
+        if (!_historyUndoIds.Add(id)) return;
+        try
+        {
+            var preview = await IntakeQueue.GetUndoPreviewAsync(id, _dispose.Token);
+            if (!preview.CanUndo)
+            {
+                Snackbar.Add(string.Join(" ", preview.Effects), Severity.Warning);
+                return;
+            }
+            var summary = "This will:\n\n- " + string.Join("\n- ", preview.Effects);
+            var confirmed = await Dialogs.ShowMessageBoxAsync(
+                "Undo accepted import", summary,
+                yesText: "Undo changes", cancelText: "Keep changes");
+            if (confirmed != true) return;
+
+            await IntakeQueue.UndoAcceptedAsync(id, _dispose.Token);
+            Snackbar.Add("The accepted import changes were undone.", Severity.Success);
+            await LoadHistoryAsync();
+            await RefreshQueueCountsAsync();
+            await LoadAsync(false);
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add(ex.Message, Severity.Error);
+        }
+        finally
+        {
+            _historyUndoIds.Remove(id);
+        }
     }
 
     private async Task RefreshQueueCountsAsync()
@@ -897,6 +1018,7 @@ else
         IntakeQueueStatus.Processing => "Processing",
         IntakeQueueStatus.ReadyForReview => "Ready to verify",
         IntakeQueueStatus.Failed => "Needs attention",
+        IntakeQueueStatus.Undone => "Undone",
         _ => status.ToString()
     };
 

@@ -112,7 +112,7 @@ else
                                 }
                                 else
                                 {
-                                    <MudText Typo="Typo.body2">@line.ItemName (lot deleted)</MudText>
+                                    <MudText Typo="Typo.body2">@line.ItemName (not in stock)</MudText>
                                 }
                                 <MudChip T="string" Size="Size.Small">@QuantityLabel(line)</MudChip>
                                 @if (line.ExpiryDate is { } expiry)
@@ -133,7 +133,7 @@ else
                     else if (!consumption.CanUndo)
                     {
                         <MudText Typo="Typo.caption" Color="Color.Warning" Class="d-block mt-2">
-                            This event cannot be restored automatically because a source stock lot was deleted.
+                            This event cannot be restored automatically because a source stock lot is no longer active stock.
                         </MudText>
                     }
                 </div>

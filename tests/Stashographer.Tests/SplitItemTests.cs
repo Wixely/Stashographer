@@ -123,7 +123,7 @@ public class SplitItemTests
     }
 
     [Fact]
-    public async Task Deleting_one_of_two_parts_collapses_the_remaining_collection_marker()
+    public async Task Removing_one_of_two_parts_retains_history_but_hides_it_from_active_collection()
     {
         await using var db = await TestDb.CreateAsync();
         var inventory = new InventoryService(db.Factory);
@@ -137,7 +137,7 @@ public class SplitItemTests
 
         var remaining = await inventory.GetAsync(item.Id);
         Assert.NotNull(remaining);
-        Assert.Null(remaining!.CollectionKey);
+        Assert.NotNull(remaining!.CollectionKey);
         Assert.Single(await inventory.GetCollectionMembersAsync(item.Id));
     }
 }

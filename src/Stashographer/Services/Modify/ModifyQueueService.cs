@@ -407,9 +407,7 @@ public sealed class ModifyQueueService(
                     throw new ArgumentOutOfRangeException(nameof(request.Action));
             }
 
-            var after = request.Action == ModifyAction.Delete
-                ? null
-                : await inventory.GetAsync(createdItemId ?? itemId, ct);
+            var after = await inventory.GetAsync(createdItemId ?? itemId, ct);
             await FinalizeAppliedAsync(
                 queueItemId, itemId, item.Name, request.Action,
                 after, createdItemId, consumptionEventId, ct);

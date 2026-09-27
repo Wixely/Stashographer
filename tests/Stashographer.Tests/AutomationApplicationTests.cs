@@ -98,6 +98,31 @@ public sealed class AutomationApplicationTests
             var taggedItem = Assert.Single(taggedInventoryJson.RootElement.EnumerateArray());
             Assert.Equal("Automation-visible", Assert.Single(
                 taggedItem.GetProperty("tags").EnumerateArray()).GetString());
+            Assert.True(taggedItem.GetProperty("isInStock").GetBoolean());
+        }
+
+        await using (var inactiveScope = app.Factory.Services.CreateAsyncScope())
+        {
+            var inventoryService = inactiveScope.ServiceProvider.GetRequiredService<InventoryService>();
+            var inactive = await inventoryService.SaveAsync(new Item
+            {
+                Name = "Retained automation item",
+                ItemKindId = 7,
+                Quantity = 1
+            });
+            await inventoryService.DeleteAsync(inactive.Id);
+        }
+        using (var hiddenResponse = await client.GetAsync(
+                   "/api/v1/inventory?search=Retained%20automation%20item"))
+        {
+            Assert.Empty((await hiddenResponse.Content.ReadFromJsonAsync<JsonElement>()).EnumerateArray());
+        }
+        using (var retainedResponse = await client.GetAsync(
+                   "/api/v1/inventory?search=Retained%20automation%20item&includeOutOfStock=true"))
+        {
+            var retained = Assert.Single(
+                (await retainedResponse.Content.ReadFromJsonAsync<JsonElement>()).EnumerateArray());
+            Assert.False(retained.GetProperty("isInStock").GetBoolean());
         }
 
         using var created = await client.PostAsJsonAsync("/api/v1/intake/items", new ItemDraftRequest
@@ -204,7 +229,18 @@ public sealed class AutomationApplicationTests
             Assert.Contains(tools, tool => tool.Name == "list_tags");
             Assert.Contains(tools, tool => tool.Name == "list_consumption_history");
             Assert.Contains(tools, tool => tool.Name == "queue_item_draft");
+            Assert.Contains(tools, tool => tool.Name == "list_intake_history");
+            Assert.Contains(tools, tool => tool.Name == "retry_intake_item");
+            Assert.Contains(tools, tool => tool.Name == "rerun_intake_capture");
+            Assert.Contains(tools, tool => tool.Name == "get_intake_undo_preview");
+            Assert.Contains(tools, tool => tool.Name == "get_working_place");
+            Assert.Contains(tools, tool => tool.Name == "set_working_place");
+            Assert.Contains(tools, tool => tool.Name == "clear_working_place");
+            Assert.Contains(tools, tool => tool.Name == "list_modify_queue");
+            Assert.Contains(tools, tool => tool.Name == "get_modify_queue_item");
+            Assert.Contains(tools, tool => tool.Name == "list_processing_logs");
             Assert.DoesNotContain(tools, tool => tool.Name.Contains("accept", StringComparison.OrdinalIgnoreCase));
+            Assert.DoesNotContain(tools, tool => tool.Name == "undo_intake_item");
 
             var result = await mcp.CallToolAsync(
                 "list_item_kinds",
@@ -223,6 +259,34 @@ public sealed class AutomationApplicationTests
                 new Dictionary<string, object?>());
             Assert.False(historyResult.IsError ?? false);
             Assert.NotNull(historyResult.StructuredContent);
+
+            var intakeHistoryResult = await mcp.CallToolAsync(
+                "list_intake_history",
+                new Dictionary<string, object?>());
+            Assert.False(intakeHistoryResult.IsError ?? false);
+            Assert.NotNull(intakeHistoryResult.StructuredContent);
+
+            var modifyResult = await mcp.CallToolAsync(
+                "list_modify_queue",
+                new Dictionary<string, object?>());
+            Assert.False(modifyResult.IsError ?? false);
+            Assert.NotNull(modifyResult.StructuredContent);
+
+            var workingPlaceResult = await mcp.CallToolAsync(
+                "get_working_place",
+                new Dictionary<string, object?>());
+            Assert.False(workingPlaceResult.IsError ?? false);
+
+            var clearWorkingPlaceResult = await mcp.CallToolAsync(
+                "clear_working_place",
+                new Dictionary<string, object?>());
+            Assert.False(clearWorkingPlaceResult.IsError ?? false);
+
+            var logsResult = await mcp.CallToolAsync(
+                "list_processing_logs",
+                new Dictionary<string, object?>());
+            Assert.False(logsResult.IsError ?? false);
+            Assert.NotNull(logsResult.StructuredContent);
         }
     }
 

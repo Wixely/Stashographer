@@ -21,7 +21,8 @@ public record ItemQuery(
     bool LooseOnly = false,
     ItemSort Sort = ItemSort.Name,
     IReadOnlyList<int>? IncludeTagIds = null,
-    IReadOnlyList<int>? ExcludeTagIds = null);
+    IReadOnlyList<int>? ExcludeTagIds = null,
+    bool IncludeOutOfStock = false);
 
 public enum ItemSort
 {
@@ -80,7 +81,7 @@ public class InventoryService(
 
     // Shared projection: item columns + joined display names + open-checkout flag.
     private const string SelectItem = """
-        SELECT i.Id, i.CollectionKey, i.Code, i.Name, i.Description, i.ItemKindId, i.Quantity, i.Unit,
+        SELECT i.Id, i.CollectionKey, i.Code, i.Name, i.Description, i.ItemKindId, i.Quantity, i.IsInStock, i.Unit,
                i.LowStockThreshold, i.ExpiryDate, i.LocationId, i.ContainerId, i.ThumbnailUrl,
                i.PhotoPath, i.ImageId, i.AttributesJson, i.SpecialAttributesJson, i.Notes, i.CreatedAt, i.UpdatedAt,
                k.Name AS KindName, k.Icon AS KindIcon,
@@ -98,6 +99,7 @@ public class InventoryService(
     public async Task<List<Item>> QueryAsync(ItemQuery query, CancellationToken ct = default)
     {
         var where = new List<string>();
+        if (!query.IncludeOutOfStock) where.Add("i.IsInStock = 1");
         if (query.IncludeKindIds is { Count: > 0 }) where.Add("i.ItemKindId IN @IncludeKindIds");
         if (query.ExcludeKindIds is { Count: > 0 }) where.Add("i.ItemKindId NOT IN @ExcludeKindIds");
         if (query.IncludeTagIds is { Count: > 0 })
@@ -170,7 +172,7 @@ public class InventoryService(
         if (!string.IsNullOrWhiteSpace(barcode))
         {
             var exact = (await conn.QueryAsync<ItemRow>(
-                SelectItem + " WHERE i.Code = @barcode", new { barcode })).Select(Map).ToList();
+                SelectItem + " WHERE i.IsInStock = 1 AND i.Code = @barcode", new { barcode })).Select(Map).ToList();
             if (exact.Count > 0) return exact;
         }
 
@@ -188,7 +190,7 @@ public class InventoryService(
         }
 
         var rows = (await conn.QueryAsync<ItemRow>(
-            SelectItem + " WHERE " + string.Join(" OR ", clauses), parameters)).Select(Map);
+            SelectItem + " WHERE i.IsInStock = 1 AND (" + string.Join(" OR ", clauses) + ")", parameters)).Select(Map);
 
         // Score in memory: number of query tokens the item name contains.
         return rows
@@ -248,7 +250,7 @@ public class InventoryService(
         }
 
         var rows = await conn.QueryAsync<ItemRow>(
-            SelectItem + " WHERE i.CollectionKey = @collectionKey ORDER BY i.Id", new { collectionKey });
+            SelectItem + " WHERE i.CollectionKey = @collectionKey AND i.IsInStock = 1 ORDER BY i.Id", new { collectionKey });
         var items = rows.Select(Map).ToList();
         if (tagService is not null) await tagService.PopulateAsync(items, ct);
         return items;
@@ -273,6 +275,7 @@ public class InventoryService(
             item.Description,
             item.ItemKindId,
             item.Quantity,
+            item.IsInStock,
             item.Unit,
             item.LowStockThreshold,
             ExpiryDate = item.ExpiryDate?.ToString("yyyy-MM-dd"),
@@ -292,10 +295,10 @@ public class InventoryService(
         if (item.Id == 0)
         {
             item.Id = await conn.ExecuteScalarAsync<int>("""
-                INSERT INTO Items (CollectionKey, Code, Name, Description, ItemKindId, Quantity, Unit, LowStockThreshold,
+                INSERT INTO Items (CollectionKey, Code, Name, Description, ItemKindId, Quantity, IsInStock, Unit, LowStockThreshold,
                                    ExpiryDate, LocationId, ContainerId, ThumbnailUrl, PhotoPath, ImageId, AttributesJson,
                                    SpecialAttributesJson, Notes, CreatedAt, UpdatedAt)
-                VALUES (@CollectionKey, @Code, @Name, @Description, @ItemKindId, @Quantity, @Unit, @LowStockThreshold,
+                VALUES (@CollectionKey, @Code, @Name, @Description, @ItemKindId, @Quantity, @IsInStock, @Unit, @LowStockThreshold,
                         @ExpiryDate, @LocationId, @ContainerId, @ThumbnailUrl, @PhotoPath, @ImageId, @AttributesJson,
                         @SpecialAttributesJson, @Notes, @CreatedAt, @UpdatedAt);
                 SELECT last_insert_rowid();
@@ -305,7 +308,7 @@ public class InventoryService(
         {
             await conn.ExecuteAsync("""
                 UPDATE Items SET CollectionKey=@CollectionKey, Code=@Code, Name=@Name, Description=@Description, ItemKindId=@ItemKindId,
-                    Quantity=@Quantity, Unit=@Unit, LowStockThreshold=@LowStockThreshold, ExpiryDate=@ExpiryDate,
+                    Quantity=@Quantity, IsInStock=@IsInStock, Unit=@Unit, LowStockThreshold=@LowStockThreshold, ExpiryDate=@ExpiryDate,
                     LocationId=@LocationId, ContainerId=@ContainerId, ThumbnailUrl=@ThumbnailUrl, PhotoPath=@PhotoPath,
                     ImageId=@ImageId, AttributesJson=@AttributesJson, SpecialAttributesJson=@SpecialAttributesJson,
                     Notes=@Notes, UpdatedAt=@UpdatedAt
@@ -471,7 +474,7 @@ public class InventoryService(
             SELECT i.Id, i.Quantity, i.LocationId, i.ContainerId, i.CollectionKey,
                    i.ExpiryDate, i.SpecialAttributesJson,
                    EXISTS (SELECT 1 FROM Checkouts c WHERE c.ItemId = i.Id AND c.ReturnedAt IS NULL) AS IsCheckedOut
-            FROM Items i WHERE i.Id = @itemId;
+            FROM Items i WHERE i.Id = @itemId AND i.IsInStock = 1;
             """, new { itemId }, tx);
         if (source is null) throw new InvalidOperationException("The item no longer exists.");
         if (source.IsCheckedOut) throw new InvalidOperationException("Check the item in before splitting its quantity.");
@@ -511,7 +514,7 @@ public class InventoryService(
         var now = DateTimeOffset.UtcNow.ToString("O");
         var changed = await conn.ExecuteAsync("""
             UPDATE Items SET Quantity = Quantity - @quantity, CollectionKey = @collectionKey, UpdatedAt = @now
-            WHERE Id = @itemId AND Quantity > @quantity;
+            WHERE Id = @itemId AND IsInStock = 1 AND Quantity > @quantity;
             """, new { itemId, quantity, collectionKey, now }, tx);
         if (changed != 1)
             throw new InvalidOperationException("The item quantity changed before it could be split. Reload and try again.");
@@ -704,7 +707,7 @@ public class InventoryService(
         using var conn = await db.OpenAsync(ct);
 
         var previous = (await conn.QueryAsync<(int Id, int? LocationId, int? ContainerId)>(
-                "SELECT Id, LocationId, ContainerId FROM Items WHERE Id IN @itemIds",
+                "SELECT Id, LocationId, ContainerId FROM Items WHERE Id IN @itemIds AND IsInStock = 1",
                 new { itemIds }))
             .Select(r => new ItemPlacement(r.Id, r.LocationId, r.ContainerId))
             .ToList();
@@ -714,7 +717,7 @@ public class InventoryService(
                 ContainerId = @containerId,
                 LocationId  = @locationId,
                 UpdatedAt   = @now
-            WHERE Id IN @itemIds;
+            WHERE Id IN @itemIds AND IsInStock = 1;
             """, new
         {
             itemIds,
@@ -770,27 +773,32 @@ public class InventoryService(
     {
         using var conn = await db.OpenAsync(ct);
         await conn.ExecuteAsync("""
-            UPDATE Items SET Quantity = MAX(0, Quantity + @delta), UpdatedAt = @now WHERE Id = @id;
+            UPDATE Items SET Quantity = MAX(0, Quantity + @delta),
+                IsInStock = CASE WHEN @delta > 0 THEN 1 ELSE IsInStock END,
+                UpdatedAt = @now WHERE Id = @id;
             """, new { id, delta, now = DateTimeOffset.UtcNow.ToString("O") });
     }
 
     public async Task DeleteAsync(int id, CancellationToken ct = default)
     {
         using var conn = await db.OpenAsync(ct);
-        using var tx = conn.BeginTransaction();
-        var collectionKey = await conn.QuerySingleOrDefaultAsync<string?>(
-            "SELECT CollectionKey FROM Items WHERE Id = @id", new { id }, tx);
-        await conn.ExecuteAsync("DELETE FROM Items WHERE Id = @id", new { id }, tx);
-        if (!string.IsNullOrWhiteSpace(collectionKey))
+        await conn.ExecuteAsync("""
+            UPDATE Items SET IsInStock = 0, UpdatedAt = @now WHERE Id = @id;
+            """, new { id, now = DateTimeOffset.UtcNow.ToString("O") });
+    }
+
+    public async Task SetInStockAsync(int id, bool isInStock, CancellationToken ct = default)
+    {
+        using var conn = await db.OpenAsync(ct);
+        var changed = await conn.ExecuteAsync("""
+            UPDATE Items SET IsInStock = @isInStock, UpdatedAt = @now WHERE Id = @id;
+            """, new
         {
-            // A one-entry product no longer needs a collection marker.
-            await conn.ExecuteAsync("""
-                UPDATE Items SET CollectionKey = NULL
-                WHERE CollectionKey = @collectionKey
-                  AND (SELECT COUNT(*) FROM Items WHERE CollectionKey = @collectionKey) = 1;
-                """, new { collectionKey }, tx);
-        }
-        tx.Commit();
+            id,
+            isInStock = isInStock ? 1 : 0,
+            now = DateTimeOffset.UtcNow.ToString("O")
+        });
+        if (changed != 1) throw new InvalidOperationException("The inventory item no longer exists.");
     }
 
     private static async Task SynchronizePrimaryImageAsync(
@@ -900,13 +908,14 @@ public class InventoryService(
         using var conn = await db.OpenAsync(ct);
 
         var total = await conn.QuerySingleAsync<int>("""
-            SELECT COUNT(DISTINCT COALESCE(CollectionKey, 'item:' || Id)) FROM Items;
+            SELECT COUNT(DISTINCT COALESCE(CollectionKey, 'item:' || Id)) FROM Items WHERE IsInStock = 1;
             """);
-        var totalQty = await conn.ExecuteScalarAsync<decimal?>("SELECT SUM(Quantity) FROM Items") ?? 0m;
+        var totalQty = await conn.ExecuteScalarAsync<decimal?>("SELECT SUM(Quantity) FROM Items WHERE IsInStock = 1") ?? 0m;
 
         var lowGroups = (await conn.QueryAsync<LowStockGroup>("""
             SELECT MIN(Id) AS RepresentativeId, SUM(Quantity) AS TotalQuantity
             FROM Items
+            WHERE IsInStock = 1
             GROUP BY COALESCE(CollectionKey, 'item:' || Id)
             HAVING MAX(LowStockThreshold) > 0 AND SUM(Quantity) <= MAX(LowStockThreshold)
             ORDER BY TotalQuantity LIMIT 20;
@@ -915,7 +924,7 @@ public class InventoryService(
             ? []
             : (await conn.QueryAsync<ItemRow>(SelectItem + " " + """
                  WHERE i.Id IN (
-                     SELECT MIN(Id) FROM Items
+                     SELECT MIN(Id) FROM Items WHERE IsInStock = 1
                      GROUP BY COALESCE(CollectionKey, 'item:' || Id)
                      HAVING MAX(LowStockThreshold) > 0
                         AND SUM(Quantity) <= MAX(LowStockThreshold)
@@ -927,12 +936,12 @@ public class InventoryService(
             item.Quantity = lowGroups.Single(group => group.RepresentativeId == item.Id).TotalQuantity;
 
         var expiring = (await conn.QueryAsync<ItemRow>(
-            SelectItem + " WHERE i.ExpiryDate IS NOT NULL AND i.ExpiryDate <= @soon ORDER BY i.ExpiryDate LIMIT 20",
+            SelectItem + " WHERE i.IsInStock = 1 AND i.ExpiryDate IS NOT NULL AND i.ExpiryDate <= @soon ORDER BY i.ExpiryDate LIMIT 20",
             new { soon }))
             .Select(Map).ToList();
 
         var checkedOut = (await conn.QueryAsync<ItemRow>(
-            SelectItem + " WHERE EXISTS (SELECT 1 FROM Checkouts co WHERE co.ItemId = i.Id AND co.ReturnedAt IS NULL)"
+            SelectItem + " WHERE i.IsInStock = 1 AND EXISTS (SELECT 1 FROM Checkouts co WHERE co.ItemId = i.Id AND co.ReturnedAt IS NULL)"
                        + " ORDER BY i.Name LIMIT 20"))
             .Select(Map).ToList();
 
@@ -943,7 +952,7 @@ public class InventoryService(
                    MIN(CAST(json_extract(SpecialAttributesJson, '$.price.decimalValue') AS NUMERIC)) AS MinimumUnitPrice,
                    MAX(CAST(json_extract(SpecialAttributesJson, '$.price.decimalValue') AS NUMERIC)) AS MaximumUnitPrice
             FROM Items
-            WHERE json_extract(SpecialAttributesJson, '$.price.decimalValue') IS NOT NULL
+            WHERE IsInStock = 1 AND json_extract(SpecialAttributesJson, '$.price.decimalValue') IS NOT NULL
             GROUP BY json_extract(SpecialAttributesJson, '$.price.currencyCode')
             ORDER BY CurrencyCode;
             """)).ToList();
@@ -964,7 +973,7 @@ public class InventoryService(
             : "i.ItemKindId = @groceryKindId";
         using var conn = await db.OpenAsync(ct);
         var rows = await conn.QueryAsync<ItemRow>(
-            SelectItem + $" WHERE i.Quantity > 0 AND {scope}" +
+            SelectItem + $" WHERE i.IsInStock = 1 AND i.Quantity > 0 AND {scope}" +
             " ORDER BY CASE WHEN i.ExpiryDate IS NULL THEN 1 ELSE 0 END, i.ExpiryDate, i.Name COLLATE NOCASE",
             new { groceryKindId });
         var items = rows.Select(Map).ToList();
@@ -990,6 +999,7 @@ public class InventoryService(
         Description = r.Description,
         ItemKindId = r.ItemKindId,
         Quantity = r.Quantity,
+        IsInStock = r.IsInStock,
         Unit = r.Unit,
         LowStockThreshold = r.LowStockThreshold,
         ExpiryDate = string.IsNullOrEmpty(r.ExpiryDate) ? null : DateOnly.Parse(r.ExpiryDate),
@@ -1042,6 +1052,7 @@ public class InventoryService(
         public string? Description { get; set; }
         public int ItemKindId { get; set; }
         public decimal Quantity { get; set; }
+        public bool IsInStock { get; set; }
         public string? Unit { get; set; }
         public decimal LowStockThreshold { get; set; }
         public string? ExpiryDate { get; set; }

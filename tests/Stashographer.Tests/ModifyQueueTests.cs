@@ -286,7 +286,7 @@ public sealed class ModifyQueueTests
     }
 
     [Fact]
-    public async Task Delete_requires_an_explicit_action_and_completes_the_reminder()
+    public async Task Remove_marks_item_out_of_stock_and_completes_the_reminder()
     {
         await using var harness = await Harness.CreateAsync();
         var item = await harness.Inventory.SaveAsync(new Item
@@ -301,7 +301,8 @@ public sealed class ModifyQueueTests
                 ModifyAction.Delete,
                 ExpectedItemUpdatedAt: item.UpdatedAt.ToString("O")));
 
-        Assert.Null(await harness.Inventory.GetAsync(item.Id));
+        Assert.False((await harness.Inventory.GetAsync(item.Id))!.IsInStock);
+        Assert.Empty(await harness.Inventory.QueryAsync(new ItemQuery()));
         Assert.Empty(await harness.Queue.GetOpenAsync());
     }
 

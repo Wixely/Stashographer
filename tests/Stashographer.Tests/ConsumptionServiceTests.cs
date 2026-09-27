@@ -47,7 +47,7 @@ public class ConsumptionServiceTests
     }
 
     [Fact]
-    public async Task Deleted_lot_keeps_history_but_prevents_unsafe_undo()
+    public async Task Out_of_stock_lot_keeps_history_but_prevents_unsafe_undo()
     {
         await using var db = await TestDb.CreateAsync();
         var inventory = new InventoryService(db.Factory);
@@ -71,7 +71,7 @@ public class ConsumptionServiceTests
         Assert.False(history.CanUndo);
         var error = await Assert.ThrowsAsync<InvalidOperationException>(() =>
             consumption.UndoAsync(applied.EventId));
-        Assert.Contains("deleted", error.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("exist", error.Message, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]

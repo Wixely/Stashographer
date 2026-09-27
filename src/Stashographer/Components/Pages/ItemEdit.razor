@@ -47,10 +47,28 @@ else
                     <MudButton Color="Color.Secondary" Variant="Variant.Outlined"
                                StartIcon="@Icons.Material.Filled.AssignmentReturn" OnClick="CheckOut">Check out</MudButton>
                 }
-                <MudIconButton Icon="@Icons.Material.Filled.Delete" Color="Color.Error" OnClick="Delete" />
+                @if (_item.IsInStock)
+                {
+                    <MudButton Variant="Variant.Outlined" Color="Color.Warning"
+                               StartIcon="@Icons.Material.Filled.Inventory2"
+                               OnClick="MarkNotInStock">Mark not in stock</MudButton>
+                }
+                else
+                {
+                    <MudButton Variant="Variant.Filled" Color="Color.Success"
+                               StartIcon="@Icons.Material.Filled.Restore"
+                               OnClick="RestoreToStock">Restore to stock</MudButton>
+                }
             </div>
         }
     </div>
+
+    @if (!_item.IsInStock)
+    {
+        <MudAlert Severity="Severity.Warning" Class="mb-3">
+            This retained item is marked not in stock and is hidden from inventory searches by default.
+        </MudAlert>
+    }
 
     @if (_item.IsCheckedOut && _openCheckout is not null)
     {
@@ -387,15 +405,25 @@ else
         }
     }
 
-    private async Task Delete()
+    private async Task MarkNotInStock()
     {
-        var ok = await Dialogs.ShowMessageBoxAsync("Delete item", $"Delete \"{_item.Name}\"?", yesText: "Delete", cancelText: "Cancel");
+        var ok = await Dialogs.ShowMessageBoxAsync(
+            "Mark item as not in stock",
+            $"Mark \"{_item.Name}\" as not in stock? Its details, images, and history will be retained.",
+            yesText: "Mark not in stock", cancelText: "Cancel");
         if (ok == true)
         {
             await Inventory.DeleteAsync(_item.Id);
-            Snackbar.Add("Deleted.", Severity.Info);
+            Snackbar.Add("Marked as not in stock.", Severity.Info);
             Nav.NavigateTo("inventory");
         }
+    }
+
+    private async Task RestoreToStock()
+    {
+        await Inventory.SetInStockAsync(_item.Id, true);
+        Snackbar.Add("Restored to active inventory.", Severity.Success);
+        await Reload();
     }
 
     private async Task CheckOut()

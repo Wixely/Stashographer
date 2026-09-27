@@ -57,10 +57,13 @@ public sealed class ConsumptionService(IDbConnectionFactory db)
 
         var eventIds = events.Select(consumption => consumption.Id).ToArray();
         var lines = (await conn.QueryAsync<ConsumptionLine>("""
-            SELECT Id, ConsumptionEventId, ItemId, ItemName, Quantity, Unit, ExpiryDate
-            FROM ConsumptionLines
-            WHERE ConsumptionEventId IN @eventIds
-            ORDER BY Id;
+            SELECT l.Id, l.ConsumptionEventId,
+                   CASE WHEN i.IsInStock = 1 THEN l.ItemId ELSE NULL END AS ItemId,
+                   l.ItemName, l.Quantity, l.Unit, l.ExpiryDate
+            FROM ConsumptionLines l
+            LEFT JOIN Items i ON i.Id = l.ItemId
+            WHERE l.ConsumptionEventId IN @eventIds
+            ORDER BY l.Id;
             """, new { eventIds })).ToList();
         foreach (var consumption in events)
             consumption.Lines = lines.Where(line => line.ConsumptionEventId == consumption.Id).ToList();
@@ -86,7 +89,7 @@ public sealed class ConsumptionService(IDbConnectionFactory db)
         using var tx = conn.BeginTransaction();
         var item = await conn.QuerySingleOrDefaultAsync<Item>("""
             SELECT Id, Name, Quantity, Unit, ExpiryDate
-            FROM Items WHERE Id = @itemId;
+            FROM Items WHERE Id = @itemId AND IsInStock = 1;
             """, new { itemId }, tx)
             ?? throw new KeyNotFoundException("The inventory item does not exist.");
         var now = DateTimeOffset.UtcNow;
@@ -140,7 +143,7 @@ public sealed class ConsumptionService(IDbConnectionFactory db)
             throw new InvalidOperationException("This event has no stock lines to restore.");
         if (lines.Any(line => line.ItemId is null))
             throw new InvalidOperationException(
-                "An inventory lot used by this event was deleted, so it cannot be restored automatically.");
+                "An inventory lot used by this event is no longer active stock, so it cannot be restored automatically.");
 
         var now = DateTimeOffset.UtcNow;
         var claimed = await conn.ExecuteAsync("""
@@ -152,7 +155,8 @@ public sealed class ConsumptionService(IDbConnectionFactory db)
         foreach (var line in lines)
         {
             var changed = await conn.ExecuteAsync("""
-                UPDATE Items SET Quantity = Quantity + @quantity, UpdatedAt = @now WHERE Id = @itemId;
+                UPDATE Items SET Quantity = Quantity + @quantity, UpdatedAt = @now
+                WHERE Id = @itemId AND IsInStock = 1;
                 """, new { quantity = line.Quantity, now, itemId = line.ItemId }, tx);
             if (changed != 1)
                 throw new InvalidOperationException(

@@ -17,7 +17,8 @@ public enum IntakeQueueStatus
     ReadyForReview,
     Failed,
     Accepted,
-    Rejected
+    Rejected,
+    Undone
 }
 
 /// <summary>A capture persisted in the intake queue before enrichment begins.</summary>
@@ -51,6 +52,10 @@ public class IntakeQueueItem
     public ItemImageRole? SuggestedImageRole { get; set; }
     public decimal IncrementBy { get; set; } = 1;
     public int? AppliedItemId { get; set; }
+    public IntakeAction? AppliedAction { get; set; }
+    public decimal? AppliedQuantity { get; set; }
+    public int? AppliedImageId { get; set; }
+    public DateTimeOffset? UndoneAt { get; set; }
     public string? Error { get; set; }
     public DateTimeOffset CreatedAt { get; set; }
     public DateTimeOffset? ProcessingStartedAt { get; set; }

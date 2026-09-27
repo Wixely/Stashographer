@@ -23,8 +23,14 @@ public sealed record IntakeCaptureHistory(
     IntakeSourceType SourceType,
     string? SourceCode,
     DateTimeOffset CapturedAt,
-    DateTimeOffset LastReviewedAt,
+    DateTimeOffset LastActivityAt,
+    bool IsComplete,
     IReadOnlyList<IntakeQueueItem> Entries);
+
+public sealed record IntakeUndoPreview(
+    int QueueItemId,
+    bool CanUndo,
+    IReadOnlyList<string> Effects);
 
 /// <summary>
 /// Durable capture queue. Enqueue operations only persist input; lookup/model work happens
@@ -168,7 +174,7 @@ public class IntakeQueueService(
                 IncrementBy = @quantity,
                 LiveCaptureHoldUntil = @holdUntil
             WHERE Id = @id AND SourceType = @barcode AND SourceCode = @code
-              AND Status NOT IN (@accepted, @rejected);
+              AND Status NOT IN (@accepted, @rejected, @undone);
             """, new
         {
             id,
@@ -177,7 +183,8 @@ public class IntakeQueueService(
             holdUntil = DateTimeOffset.UtcNow.Add(holdFor).ToString("O"),
             barcode = (int)IntakeSourceType.Barcode,
             accepted = (int)IntakeQueueStatus.Accepted,
-            rejected = (int)IntakeQueueStatus.Rejected
+            rejected = (int)IntakeQueueStatus.Rejected,
+            undone = (int)IntakeQueueStatus.Undone
         });
         if (changed == 0)
             throw new InvalidOperationException("That barcode capture is no longer available to update.");
@@ -190,13 +197,14 @@ public class IntakeQueueService(
         await conn.ExecuteAsync("""
             UPDATE IntakeQueueItems SET LiveCaptureHoldUntil = NULL
             WHERE Id = @id AND SourceType = @barcode
-              AND Status NOT IN (@accepted, @rejected);
+              AND Status NOT IN (@accepted, @rejected, @undone);
             """, new
         {
             id,
             barcode = (int)IntakeSourceType.Barcode,
             accepted = (int)IntakeQueueStatus.Accepted,
-            rejected = (int)IntakeQueueStatus.Rejected
+            rejected = (int)IntakeQueueStatus.Rejected,
+            undone = (int)IntakeQueueStatus.Undone
         });
         signal.Pulse();
     }
@@ -262,17 +270,21 @@ public class IntakeQueueService(
     {
         using var conn = await db.OpenAsync(ct);
         var rows = await conn.QueryAsync<QueueRow>(QueueSelect + " " + """
-            WHERE q.Status NOT IN (@accepted, @rejected)
+            WHERE q.Status NOT IN (@accepted, @rejected, @undone)
             ORDER BY q.Id;
-            """, new { accepted = (int)IntakeQueueStatus.Accepted, rejected = (int)IntakeQueueStatus.Rejected });
+            """, new
+        {
+            accepted = (int)IntakeQueueStatus.Accepted,
+            rejected = (int)IntakeQueueStatus.Rejected,
+            undone = (int)IntakeQueueStatus.Undone
+        });
         return rows.Select(Map).ToList();
     }
 
     /// <summary>
-    /// Returns the capture groups with the most recently reviewed entries. Only accepted or
-    /// rejected rows are included, so a completed crop moves to history immediately while
-    /// unfinished siblings remain in the active queue. Page boundaries still operate on
-    /// capture groups rather than individual crops.
+    /// Returns capture groups ordered by their most recent activity. Every derived row is
+    /// included so History explains unfinished siblings that still require Intake review.
+    /// Page boundaries operate on capture groups rather than individual crops.
     /// </summary>
     public async Task<List<IntakeCaptureHistory>> GetHistoryAsync(
         int take = 25, CancellationToken ct = default)
@@ -284,7 +296,6 @@ public class IntakeQueueService(
                 SELECT COALESCE(CaptureGroupId, Id) AS GroupId,
                        MAX(COALESCE(ReviewedAt, ProcessedAt, CreatedAt)) AS ActivityAt
                 FROM IntakeQueueItems
-                WHERE Status IN (@accepted, @rejected)
                 GROUP BY COALESCE(CaptureGroupId, Id)
                 ORDER BY ActivityAt DESC
                 LIMIT @take
@@ -292,16 +303,11 @@ public class IntakeQueueService(
             """ + QueueSelect + " " + """
             JOIN RecentGroups history
               ON history.GroupId = COALESCE(q.CaptureGroupId, q.Id)
-            WHERE q.Status IN (@accepted, @rejected)
             ORDER BY history.ActivityAt DESC, q.Id;
-            """, new
-        {
-            take,
-            accepted = (int)IntakeQueueStatus.Accepted,
-            rejected = (int)IntakeQueueStatus.Rejected
-        });
+            """, new { take });
 
-        return rows.Select(Map)
+        var mapped = rows.Select(Map).ToList();
+        return mapped
             .GroupBy(item => item.CaptureGroupId ?? item.Id)
             .Select(group =>
             {
@@ -315,9 +321,11 @@ public class IntakeQueueService(
                     root.SourceCode,
                     entries.Min(item => item.CreatedAt),
                     entries.Max(item => item.ReviewedAt ?? item.ProcessedAt ?? item.CreatedAt),
+                    entries.All(item => item.Status is IntakeQueueStatus.Accepted
+                        or IntakeQueueStatus.Rejected or IntakeQueueStatus.Undone),
                     entries);
             })
-            .OrderByDescending(group => group.LastReviewedAt)
+            .OrderByDescending(group => group.LastActivityAt)
             .ToList();
     }
 
@@ -339,7 +347,9 @@ public class IntakeQueueService(
             counts.GetValueOrDefault(IntakeQueueStatus.Processing),
             counts.GetValueOrDefault(IntakeQueueStatus.ReadyForReview),
             counts.GetValueOrDefault(IntakeQueueStatus.Failed),
-            counts.GetValueOrDefault(IntakeQueueStatus.Accepted) + counts.GetValueOrDefault(IntakeQueueStatus.Rejected));
+            counts.GetValueOrDefault(IntakeQueueStatus.Accepted)
+            + counts.GetValueOrDefault(IntakeQueueStatus.Rejected)
+            + counts.GetValueOrDefault(IntakeQueueStatus.Undone));
     }
 
     public async Task<IntakeSession> GetCurrentSessionAsync(CancellationToken ct = default)
@@ -579,7 +589,7 @@ public class IntakeQueueService(
             ?? throw new InvalidOperationException("Queue item was not found.");
         if (clicked.SourceType != IntakeSourceType.Photo)
             throw new InvalidOperationException("Only item photos can be rescanned for multiple items.");
-        if (clicked.Status is IntakeQueueStatus.Accepted or IntakeQueueStatus.Rejected)
+        if (clicked.Status is IntakeQueueStatus.Accepted or IntakeQueueStatus.Rejected or IntakeQueueStatus.Undone)
             throw new InvalidOperationException("Completed queue items cannot be rescanned.");
         if (clicked.Status == IntakeQueueStatus.Processing)
             throw new InvalidOperationException("Wait for processing to finish before rescanning this image.");
@@ -615,6 +625,268 @@ public class IntakeQueueService(
     }
 
     /// <summary>
+    /// Creates a new intake capture from a completed historical capture's untouched original.
+    /// The historical group remains unchanged. Photos preserve multi-item detection, receipts
+    /// are extracted again, and barcode scans repeat their lookup.
+    /// </summary>
+    public async Task<IntakeQueueItem> RerunHistoryCaptureAsync(
+        int captureGroupId, IntakeOptions options, bool aiEnabled, CancellationToken ct = default)
+    {
+        using var conn = await db.OpenAsync(ct);
+        var rows = await conn.QueryAsync<QueueRow>(QueueSelect + " " + """
+            WHERE COALESCE(q.CaptureGroupId, q.Id) = @captureGroupId ORDER BY q.Id;
+            """, new { captureGroupId });
+        var group = rows.Select(Map).ToList();
+        if (group.Count == 0) throw new InvalidOperationException("Historical capture was not found.");
+        if (group.Any(item => item.Status is not (IntakeQueueStatus.Accepted
+                or IntakeQueueStatus.Rejected or IntakeQueueStatus.Undone)))
+            throw new InvalidOperationException(
+                "Finish reviewing the remaining results before rerunning the original capture.");
+        var historical = group.FirstOrDefault(item => item.Id == captureGroupId) ?? group[0];
+        if (historical.SourceType == IntakeSourceType.Manual)
+            throw new InvalidOperationException("Manual drafts do not have automatic processing to rerun.");
+        if (historical.SourceType is IntakeSourceType.Photo or IntakeSourceType.Receipt && !aiEnabled)
+            throw new InvalidOperationException("Configure an AI vision model before rerunning this image.");
+
+        var imageId = group.Select(item => item.OriginalImageId).FirstOrDefault(id => id is not null)
+                      ?? historical.ImageId;
+        if (historical.SourceType is IntakeSourceType.Photo or IntakeSourceType.Receipt
+            && (imageId is null || await images.GetAsync(imageId.Value, ct) is null))
+            throw new InvalidOperationException("The untouched original image is no longer available.");
+
+        var rerun = new IntakeQueueItem
+        {
+            SessionId = await GetOrCreateActiveSessionIdAsync(ct),
+            SourceType = historical.SourceType,
+            SourceTypeOverride = historical.SourceTypeOverride,
+            SourceCode = historical.SourceCode,
+            OriginalImageId = imageId,
+            ImageId = imageId,
+            IsMultiPhoto = historical.SourceType == IntakeSourceType.Photo
+                           && (historical.IsMultiPhoto || group.Count > 1),
+            Status = IntakeQueueStatus.Pending,
+            Draft = new Item
+            {
+                Name = string.Empty,
+                Code = historical.SourceType == IntakeSourceType.Barcode ? historical.SourceCode : null,
+                ItemKindId = 7,
+                ImageId = historical.SourceType == IntakeSourceType.Photo ? imageId : null
+            },
+            CreatedAt = DateTimeOffset.UtcNow
+        };
+        rerun.Id = await InsertAsync(rerun, ct);
+        await EnsurePhotoCaptureGroupAsync(rerun, ct);
+        signal.Pulse();
+
+        if (!await ProcessAsync(rerun.Id, options, aiEnabled, ct))
+            throw new InvalidOperationException("The rerun could not be claimed for processing.");
+        return await GetAsync(rerun.Id, ct)
+            ?? throw new InvalidOperationException("The rerun queue item could not be reloaded.");
+    }
+
+    public async Task<IntakeUndoPreview> GetUndoPreviewAsync(
+        int id, CancellationToken ct = default)
+    {
+        var queued = await GetAsync(id, ct)
+            ?? throw new InvalidOperationException("Historical queue item was not found.");
+        if (queued.Status != IntakeQueueStatus.Accepted)
+            return new IntakeUndoPreview(id, false, ["Only an accepted result can be undone."]);
+
+        if (queued.SourceType == IntakeSourceType.Receipt)
+        {
+            using var conn = await db.OpenAsync(ct);
+            var purchases = (await conn.QueryAsync<ItemPurchase>("""
+                SELECT Id, QueueItemId, ReceiptLineIndex, ItemId, ImageId, Merchant, PurchasedOn,
+                       Description, Quantity, UnitPrice, Currency, LineTotal, Confidence, CreatedAt
+                FROM ItemPurchases WHERE QueueItemId = @id ORDER BY ReceiptLineIndex;
+                """, new { id })).ToList();
+            if (purchases.Count == 0)
+                return new IntakeUndoPreview(id, false, ["This receipt no longer has applied purchase links."]);
+            var createdIds = CreatedReceiptItemIds(queued, purchases);
+            var effects = new List<string>
+            {
+                $"Remove {purchases.Count} purchase {(purchases.Count == 1 ? "link" : "links")} from {purchases.Select(x => x.ItemId).Distinct().Count()} inventory {(purchases.Select(x => x.ItemId).Distinct().Count() == 1 ? "item" : "items")}.",
+                "Detach the receipt image where no other purchase link still uses it."
+            };
+            if (createdIds.Count > 0)
+                effects.Add($"Mark {createdIds.Count} {(createdIds.Count == 1 ? "item" : "items")} created from this receipt as not in stock.");
+            return new IntakeUndoPreview(id, true, effects);
+        }
+
+        if (queued.AppliedItemId is not { } itemId)
+            return new IntakeUndoPreview(id, false, ["The applied inventory item is no longer recorded."]);
+        var item = await inventory.GetAsync(itemId, ct);
+        if (item is null)
+            return new IntakeUndoPreview(id, false, ["The applied inventory item no longer exists."]);
+
+        var action = AppliedAction(queued);
+        var quantity = queued.AppliedQuantity ?? queued.IncrementBy;
+        return action switch
+        {
+            IntakeAction.IncrementExisting when quantity > 0 && item.Quantity >= quantity =>
+                new IntakeUndoPreview(id, true,
+                    [$"Reduce {item.Name} by {quantity:0.##}, from {item.Quantity:0.##} to {item.Quantity - quantity:0.##} {item.Unit ?? "each"}."]),
+            IntakeAction.IncrementExisting =>
+                new IntakeUndoPreview(id, false,
+                    [$"{item.Name} no longer has enough quantity to safely reverse this increment."]),
+            IntakeAction.CreateNew or IntakeAction.CreateStockLot =>
+                new IntakeUndoPreview(id, true,
+                    [$"Mark {item.Name} as not in stock. Its catalogue record and history will be retained."]),
+            IntakeAction.AttachImage when (queued.AppliedImageId ?? queued.ImageId) is not null =>
+                new IntakeUndoPreview(id, true, [$"Detach the imported photo from {item.Name}."]),
+            _ => new IntakeUndoPreview(id, false, ["This historical action cannot be safely undone."])
+        };
+    }
+
+    public async Task UndoAcceptedAsync(int id, CancellationToken ct = default)
+    {
+        var preview = await GetUndoPreviewAsync(id, ct);
+        if (!preview.CanUndo) throw new InvalidOperationException(string.Join(" ", preview.Effects));
+        var queued = await GetAsync(id, ct)
+            ?? throw new InvalidOperationException("Historical queue item was not found.");
+
+        using var conn = await db.OpenAsync(ct);
+        using var tx = conn.BeginTransaction();
+        var claimed = await conn.ExecuteAsync("""
+            UPDATE IntakeQueueItems SET Status = @processing
+            WHERE Id = @id AND Status = @accepted;
+            """, new
+        {
+            id,
+            processing = (int)IntakeQueueStatus.Processing,
+            accepted = (int)IntakeQueueStatus.Accepted
+        }, tx);
+        if (claimed != 1) throw new InvalidOperationException("This history entry is no longer available to undo.");
+
+        if (queued.SourceType == IntakeSourceType.Receipt)
+        {
+            var purchases = (await conn.QueryAsync<ItemPurchase>("""
+                SELECT Id, QueueItemId, ReceiptLineIndex, ItemId, ImageId, Merchant, PurchasedOn,
+                       Description, Quantity, UnitPrice, Currency, LineTotal, Confidence, CreatedAt
+                FROM ItemPurchases WHERE QueueItemId = @id;
+                """, new { id }, tx)).ToList();
+            var createdIds = CreatedReceiptItemIds(queued, purchases);
+            await conn.ExecuteAsync("DELETE FROM ItemPurchases WHERE QueueItemId = @id;", new { id }, tx);
+            foreach (var purchase in purchases)
+            {
+                await conn.ExecuteAsync("""
+                    DELETE FROM ItemImages
+                    WHERE ItemId = @itemId AND ImageId = @imageId AND Role = @receiptRole
+                      AND NOT EXISTS (
+                          SELECT 1 FROM ItemPurchases
+                          WHERE ItemId = @itemId AND ImageId = @imageId);
+                    """, new
+                {
+                    itemId = purchase.ItemId,
+                    imageId = purchase.ImageId,
+                    receiptRole = (int)ItemImageRole.Receipt
+                }, tx);
+            }
+            if (createdIds.Count > 0)
+                await conn.ExecuteAsync("""
+                    UPDATE Items SET IsInStock = 0, UpdatedAt = @now WHERE Id IN @createdIds;
+                    """, new { createdIds, now = DateTimeOffset.UtcNow.ToString("O") }, tx);
+        }
+        else
+        {
+            var itemId = queued.AppliedItemId!.Value;
+            var action = AppliedAction(queued);
+            switch (action)
+            {
+                case IntakeAction.IncrementExisting:
+                {
+                    var quantity = queued.AppliedQuantity ?? queued.IncrementBy;
+                    var changed = await conn.ExecuteAsync("""
+                        UPDATE Items SET Quantity = Quantity - @quantity, UpdatedAt = @now
+                        WHERE Id = @itemId AND Quantity >= @quantity;
+                        """, new { itemId, quantity, now = DateTimeOffset.UtcNow.ToString("O") }, tx);
+                    if (changed != 1)
+                        throw new InvalidOperationException("The item quantity changed and can no longer be safely undone.");
+                    break;
+                }
+                case IntakeAction.CreateNew:
+                case IntakeAction.CreateStockLot:
+                    await conn.ExecuteAsync("""
+                        UPDATE Items SET IsInStock = 0, UpdatedAt = @now WHERE Id = @itemId;
+                        """, new { itemId, now = DateTimeOffset.UtcNow.ToString("O") }, tx);
+                    break;
+                case IntakeAction.AttachImage:
+                {
+                    var imageId = queued.AppliedImageId ?? queued.ImageId
+                        ?? throw new InvalidOperationException("The applied image is no longer recorded.");
+                    var wasPrimary = await conn.ExecuteScalarAsync<int>("""
+                        SELECT COUNT(*) FROM ItemImages
+                        WHERE ItemId = @itemId AND ImageId = @imageId AND IsPrimary = 1;
+                        """, new { itemId, imageId }, tx) > 0;
+                    await conn.ExecuteAsync(
+                        "DELETE FROM ItemImages WHERE ItemId = @itemId AND ImageId = @imageId;",
+                        new { itemId, imageId }, tx);
+                    if (wasPrimary)
+                    {
+                        var replacement = await conn.QuerySingleOrDefaultAsync<int?>("""
+                            SELECT ImageId FROM ItemImages WHERE ItemId = @itemId AND Role <> @receiptRole
+                            ORDER BY SortOrder, CreatedAt LIMIT 1;
+                            """, new { itemId, receiptRole = (int)ItemImageRole.Receipt }, tx);
+                        if (replacement is { } replacementId)
+                            await conn.ExecuteAsync("""
+                                UPDATE ItemImages SET IsPrimary = 1
+                                WHERE ItemId = @itemId AND ImageId = @replacementId;
+                                """, new { itemId, replacementId }, tx);
+                        await conn.ExecuteAsync("""
+                            UPDATE Items SET ImageId = @replacement, UpdatedAt = @now WHERE Id = @itemId;
+                            """, new
+                        {
+                            itemId,
+                            replacement,
+                            now = DateTimeOffset.UtcNow.ToString("O")
+                        }, tx);
+                    }
+                    break;
+                }
+                default:
+                    throw new InvalidOperationException("This historical action cannot be safely undone.");
+            }
+        }
+
+        var now = DateTimeOffset.UtcNow.ToString("O");
+        await conn.ExecuteAsync("""
+            UPDATE IntakeQueueItems
+            SET Status = @undone, UndoneAt = @now, ReviewedAt = @now
+            WHERE Id = @id AND Status = @processing;
+            """, new
+        {
+            id,
+            processing = (int)IntakeQueueStatus.Processing,
+            undone = (int)IntakeQueueStatus.Undone,
+            now
+        }, tx);
+        tx.Commit();
+    }
+
+    private static IntakeAction AppliedAction(IntakeQueueItem queued)
+    {
+        if (queued.AppliedAction is { } recorded) return recorded;
+        if (queued.ProposalAction == IntakeAction.AttachImage) return IntakeAction.AttachImage;
+        if (queued.MatchedItemId is null && queued.MatchedQueueItemId is null) return IntakeAction.CreateNew;
+        if (queued.AppliedItemId != queued.MatchedItemId && queued.MatchedItemId is not null)
+            return IntakeAction.CreateStockLot;
+        return IntakeAction.IncrementExisting;
+    }
+
+    private static HashSet<int> CreatedReceiptItemIds(
+        IntakeQueueItem queued, IReadOnlyCollection<ItemPurchase> purchases)
+    {
+        if (queued.Receipt is null) return [];
+        var createdLines = queued.Receipt.Lines
+            .Where(line => line.CreateNewItem)
+            .Select(line => line.LineIndex)
+            .ToHashSet();
+        return purchases.Where(purchase => createdLines.Contains(purchase.ReceiptLineIndex))
+            .Select(purchase => purchase.ItemId)
+            .ToHashSet();
+    }
+
+    /// <summary>
     /// Explicitly reclassifies an image and resets its generated data for a clean retry.
     /// The override is durable so AI cannot immediately undo the correction.
     /// </summary>
@@ -627,7 +899,7 @@ public class IntakeQueueService(
             ?? throw new InvalidOperationException("Queue item was not found.");
         if (queued.ImageId is null)
             throw new InvalidOperationException("This queue item has no image to reclassify.");
-        if (queued.Status is IntakeQueueStatus.Accepted or IntakeQueueStatus.Rejected)
+        if (queued.Status is IntakeQueueStatus.Accepted or IntakeQueueStatus.Rejected or IntakeQueueStatus.Undone)
             throw new InvalidOperationException("Completed queue items cannot be reclassified.");
         if (queued.Status == IntakeQueueStatus.Processing)
             throw new InvalidOperationException("Wait for processing to finish before reclassifying this image.");
@@ -663,13 +935,14 @@ public class IntakeQueueService(
     {
         using var conn = await db.OpenAsync(ct);
         await conn.ExecuteAsync(
-            "UPDATE IntakeQueueItems SET DraftJson = @json WHERE Id = @id AND Status NOT IN (@accepted, @rejected)",
+            "UPDATE IntakeQueueItems SET DraftJson = @json WHERE Id = @id AND Status NOT IN (@accepted, @rejected, @undone)",
             new
             {
                 id,
                 json = JsonSerializer.Serialize(draft, Json),
                 accepted = (int)IntakeQueueStatus.Accepted,
-                rejected = (int)IntakeQueueStatus.Rejected
+                rejected = (int)IntakeQueueStatus.Rejected,
+                undone = (int)IntakeQueueStatus.Undone
             });
     }
 
@@ -725,6 +998,8 @@ public class IntakeQueueService(
             throw new InvalidOperationException("This receipt was already accepted.");
         if (queued.Status == IntakeQueueStatus.Rejected)
             throw new InvalidOperationException("This receipt was rejected.");
+        if (queued.Status == IntakeQueueStatus.Undone)
+            throw new InvalidOperationException("This receipt was already undone.");
         if (queued.Status != IntakeQueueStatus.ReadyForReview)
             throw new InvalidOperationException("Process this receipt before accepting it.");
         var imageId = queued.ImageId
@@ -880,12 +1155,13 @@ public class IntakeQueueService(
         var changed = await conn.ExecuteAsync("""
             UPDATE IntakeQueueItems
             SET Status = @accepted, ReceiptJson = @receiptJson, ReviewedAt = @now
-            WHERE Id = @id AND Status NOT IN (@accepted, @rejected);
+            WHERE Id = @id AND Status NOT IN (@accepted, @rejected, @undone);
             """, new
         {
             id,
             accepted = (int)IntakeQueueStatus.Accepted,
             rejected = (int)IntakeQueueStatus.Rejected,
+            undone = (int)IntakeQueueStatus.Undone,
             receiptJson = JsonSerializer.Serialize(receipt, Json),
             now
         }, tx);
@@ -928,6 +1204,8 @@ public class IntakeQueueService(
             throw new InvalidOperationException("This queue item was already accepted.");
         if (queued.Status == IntakeQueueStatus.Rejected)
             throw new InvalidOperationException("This queue item was rejected.");
+        if (queued.Status == IntakeQueueStatus.Undone)
+            throw new InvalidOperationException("This queue item was already undone.");
 
         IntakeApplied applied;
         var incrementTargetId = matchedItemId;
@@ -1000,7 +1278,9 @@ public class IntakeQueueService(
         using var conn = await db.OpenAsync(ct);
         await conn.ExecuteAsync("""
             UPDATE IntakeQueueItems
-            SET Status = @accepted, DraftJson = @draft, AppliedItemId = @itemId, ReviewedAt = @now
+            SET Status = @accepted, DraftJson = @draft, AppliedItemId = @itemId,
+                AppliedAction = @appliedAction, AppliedQuantity = @appliedQuantity,
+                AppliedImageId = @appliedImageId, ReviewedAt = @now
             WHERE Id = @id;
             """, new
         {
@@ -1008,6 +1288,9 @@ public class IntakeQueueService(
             accepted = (int)IntakeQueueStatus.Accepted,
             draft = JsonSerializer.Serialize(draft, Json),
             itemId = applied.ItemId,
+            appliedAction = (int)applied.Action,
+            appliedQuantity = applied.By,
+            appliedImageId = applied.Action == IntakeAction.AttachImage ? queued.ImageId : null,
             now = DateTimeOffset.UtcNow.ToString("O")
         });
         return applied;
@@ -1018,12 +1301,13 @@ public class IntakeQueueService(
         using var conn = await db.OpenAsync(ct);
         await conn.ExecuteAsync("""
             UPDATE IntakeQueueItems SET Status = @rejected, ReviewedAt = @now
-            WHERE Id = @id AND Status NOT IN (@accepted, @rejected);
+            WHERE Id = @id AND Status NOT IN (@accepted, @rejected, @undone);
             """, new
         {
             id,
             rejected = (int)IntakeQueueStatus.Rejected,
             accepted = (int)IntakeQueueStatus.Accepted,
+            undone = (int)IntakeQueueStatus.Undone,
             now = DateTimeOffset.UtcNow.ToString("O")
         });
     }
@@ -1643,11 +1927,15 @@ public class IntakeQueueService(
         SuggestedImageRole = row.SuggestedImageRole is { } role ? (ItemImageRole)role : null,
         IncrementBy = row.IncrementBy,
         AppliedItemId = row.AppliedItemId,
+        AppliedAction = row.AppliedAction is { } appliedAction ? (IntakeAction)appliedAction : null,
+        AppliedQuantity = row.AppliedQuantity,
+        AppliedImageId = row.AppliedImageId,
         Error = row.Error,
         CreatedAt = DateTimeOffset.Parse(row.CreatedAt),
         ProcessingStartedAt = ParseDate(row.ProcessingStartedAt),
         ProcessedAt = ParseDate(row.ProcessedAt),
-        ReviewedAt = ParseDate(row.ReviewedAt)
+        ReviewedAt = ParseDate(row.ReviewedAt),
+        UndoneAt = ParseDate(row.UndoneAt)
     };
 
     private static IntakeSession Map(SessionRow row) =>
@@ -1663,8 +1951,9 @@ public class IntakeQueueService(
                q.DraftJson, q.ReceiptJson, q.ProposalAction, q.MatchedItemId, q.MatchedItemName,
                q.MatchedQueueItemId, q.CaptureRelationship, q.RelationshipConfidence,
                q.RelationshipReason, q.SuggestedImageRole,
-               q.IncrementBy, q.AppliedItemId, q.Error, q.CreatedAt,
-               q.ProcessingStartedAt, q.ProcessedAt, q.ReviewedAt
+               q.IncrementBy, q.AppliedItemId, q.AppliedAction, q.AppliedQuantity,
+               q.AppliedImageId, q.Error, q.CreatedAt,
+               q.ProcessingStartedAt, q.ProcessedAt, q.ReviewedAt, q.UndoneAt
         FROM IntakeQueueItems q
         """;
 
@@ -1695,11 +1984,15 @@ public class IntakeQueueService(
         public int? SuggestedImageRole { get; set; }
         public decimal IncrementBy { get; set; }
         public int? AppliedItemId { get; set; }
+        public int? AppliedAction { get; set; }
+        public decimal? AppliedQuantity { get; set; }
+        public int? AppliedImageId { get; set; }
         public string? Error { get; set; }
         public string CreatedAt { get; set; } = string.Empty;
         public string? ProcessingStartedAt { get; set; }
         public string? ProcessedAt { get; set; }
         public string? ReviewedAt { get; set; }
+        public string? UndoneAt { get; set; }
     }
 
     private sealed class SessionRow

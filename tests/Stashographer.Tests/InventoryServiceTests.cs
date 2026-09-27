@@ -224,7 +224,7 @@ public class InventoryServiceTests
     }
 
     [Fact]
-    public async Task Delete_removes_item()
+    public async Task Delete_marks_item_out_of_stock_and_default_search_hides_it()
     {
         await using var db = await TestDb.CreateAsync();
         var svc = new InventoryService(db.Factory);
@@ -232,6 +232,10 @@ public class InventoryServiceTests
 
         await svc.DeleteAsync(item.Id);
 
-        Assert.Null(await svc.GetAsync(item.Id));
+        var retained = await svc.GetAsync(item.Id);
+        Assert.NotNull(retained);
+        Assert.False(retained!.IsInStock);
+        Assert.Empty(await svc.QueryAsync(new ItemQuery()));
+        Assert.Single(await svc.QueryAsync(new ItemQuery(IncludeOutOfStock: true)));
     }
 }

@@ -17,10 +17,12 @@ public static class AutomationApiEndpoints
             int? itemKindId,
             int? locationId,
             int? containerId,
+            bool? includeOutOfStock,
             int? limit,
             AutomationOperations operations,
             CancellationToken ct) => operations.SearchInventoryAsync(
-                search, itemKindId, locationId, containerId, limit ?? 100, ct));
+                search, itemKindId, locationId, containerId,
+                includeOutOfStock ?? false, limit ?? 100, ct));
         api.MapGet("/inventory/{id:int}", (int id, AutomationOperations operations, CancellationToken ct) =>
             ExecuteAsync(() => operations.GetItemAsync(id, ct)));
         api.MapGet("/item-kinds", (AutomationOperations operations, CancellationToken ct) =>

@@ -92,7 +92,7 @@ public class ContainerService(IDbConnectionFactory db)
         var items = await conn.QueryAsync<Item>("""
             SELECT i.Id, i.Name, i.Quantity, i.Unit, i.ItemKindId, i.ImageId, i.ThumbnailUrl,
                    EXISTS (SELECT 1 FROM Checkouts co WHERE co.ItemId = i.Id AND co.ReturnedAt IS NULL) AS IsCheckedOut
-            FROM Items i WHERE i.ContainerId = @id ORDER BY i.Name COLLATE NOCASE
+            FROM Items i WHERE i.ContainerId = @id AND i.IsInStock = 1 ORDER BY i.Name COLLATE NOCASE
             """, new { id = container.Id });
         container.Items = items.ToList();
         return container;
@@ -113,11 +113,11 @@ public class ContainerService(IDbConnectionFactory db)
         using var conn = await db.OpenAsync(ct);
         var loose = (await conn.QueryAsync<(int LocationId, int Count)>("""
             SELECT LocationId, COUNT(*) AS Count FROM Items
-            WHERE LocationId IS NOT NULL AND ContainerId IS NULL GROUP BY LocationId
+            WHERE IsInStock = 1 AND LocationId IS NOT NULL AND ContainerId IS NULL GROUP BY LocationId
             """)).ToDictionary(r => r.LocationId, r => r.Count);
         var inContainers = (await conn.QueryAsync<(int ContainerId, int Count)>("""
             SELECT ContainerId, COUNT(*) AS Count FROM Items
-            WHERE ContainerId IS NOT NULL GROUP BY ContainerId
+            WHERE IsInStock = 1 AND ContainerId IS NOT NULL GROUP BY ContainerId
             """)).ToDictionary(r => r.ContainerId, r => r.Count);
         return new PlaceCounts(loose, inContainers);
     }

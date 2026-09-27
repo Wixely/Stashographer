@@ -163,7 +163,7 @@ else
                                 <MudSelectItem T="ModifyAction?" Value="ModifyAction.Decrement">Decrement / use</MudSelectItem>
                                 <MudSelectItem T="ModifyAction?" Value="ModifyAction.Move">Move</MudSelectItem>
                                 <MudSelectItem T="ModifyAction?" Value="ModifyAction.AttachImage">Attach this photo</MudSelectItem>
-                                <MudSelectItem T="ModifyAction?" Value="ModifyAction.Delete">Delete item record</MudSelectItem>
+                                <MudSelectItem T="ModifyAction?" Value="ModifyAction.Delete">Mark not in stock</MudSelectItem>
                             </MudSelect>
 
                             @if (_action == ModifyAction.Decrement)
@@ -202,9 +202,9 @@ else
                             }
                             else if (_action == ModifyAction.Delete)
                             {
-                                <MudAlert Severity="Severity.Error" Class="mt-2">
-                                    Permanently deletes “@matched.Name” and its current quantity of
-                                    @matched.Quantity.ToString("0.##"). This is different from decrementing to zero.
+                                <MudAlert Severity="Severity.Warning" Class="mt-2">
+                                    Marks “@matched.Name” as not in stock while retaining its details,
+                                    images, and history. It will be hidden from inventory searches by default.
                                 </MudAlert>
                             }
 
@@ -364,9 +364,9 @@ else
         if (action == ModifyAction.Delete)
         {
             var confirmed = await Dialogs.ShowMessageBoxAsync(
-                "Delete item record",
-                $"Permanently delete “{item.Name}” ({item.Quantity:0.##} {item.Unit ?? "each"}) from {PlacementLabel(item)}?",
-                yesText: "Delete record", cancelText: "Cancel");
+                "Mark item as not in stock",
+                $"Mark “{item.Name}” ({item.Quantity:0.##} {item.Unit ?? "each"}) as not in stock? Its record and history will be retained.",
+                yesText: "Mark not in stock", cancelText: "Cancel");
             if (confirmed != true) return;
         }
 
@@ -485,7 +485,7 @@ else
         ModifyAction.Move when applied.CreatedItemId is not null =>
             $"Split and moved part of {applied.ItemName} to its new place.",
         ModifyAction.Move => $"Moved {applied.ItemName}.",
-        ModifyAction.Delete => $"Deleted {applied.ItemName}.",
+        ModifyAction.Delete => $"Marked {applied.ItemName} as not in stock.",
         ModifyAction.AttachImage => $"Attached the reminder photo to {applied.ItemName}.",
         _ => "Modification applied."
     };

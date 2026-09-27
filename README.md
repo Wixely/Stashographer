@@ -68,7 +68,7 @@ All screenshots use the repository's wholly synthetic Development sample data.
   box, room, or shelf, then decide what to change later from the separate Modify queue. The
   vision agent suggests existing inventory matches but cannot choose or apply an action. Review
   can decrement with reversible use history, move a whole or partial quantity, attach the photo,
-  permanently delete a record after a second confirmation, or dismiss the reminder unchanged.
+  mark a record as not in stock after confirmation, or dismiss the reminder unchanged.
   Multi-object captures receive focused copies while retaining the untouched original, and an
   optional working room/container plus earlier session matches improve candidate selection.
 - **Batch photo selection** — in queue mode, the Scan page accepts multiple images from one
@@ -126,8 +126,9 @@ All screenshots use the repository's wholly synthetic Development sample data.
 - **AI enrichment (optional)** — identify an item from a photo when a barcode won't do, and
   "season" any item with extra detail, via any **OpenAI-protocol** endpoint.
 - **Agent API & MCP (optional)** — deployment-gated, administrator-activated automation can
-  search inventory, inspect places, consumption history and queue context, and propose or refine
-  item drafts through
+  search active or retained inventory; inspect places, consumption and capture history; manage
+  working-place context; retry or rerun AI processing; inspect temporary processing diagnostics;
+  and propose or refine item drafts through
   `/api/v1` or stateless Streamable HTTP MCP. Human item-by-item acceptance remains mandatory
   for automation drafts.
 - **Light / dark themes**, mobile-friendly (MudBlazor).
@@ -230,8 +231,12 @@ scanning a different code, or a short inactivity timeout releases the capture fo
 
 Open **Queues → Intake** to verify one item at a time, edit its fields and placement, choose
 between creating a new item or incrementing a match, then Accept or Reject it. Raw pending
-items can also be completed manually. **New session** resets context for the next inventory
-run without discarding unfinished work.
+items can also be completed manually. **Queues → History** retains accepted, rejected, and
+undone results, alongside any siblings still awaiting review. **Rerun original** sends the untouched original capture back through processing
+as a new capture group, including multi-item photos and purchase evidence. Completed accepted
+results also offer **Undo changes**, with a confirmation summary before quantities, created stock,
+image attachments, or receipt links are reversed. **New session** resets context for the next
+inventory run without discarding unfinished work.
 
 Capture receipts, invoices, and completed-order screenshots with the normal photo controls;
 the vision agent routes confidently recognized purchase evidence automatically. Use
@@ -259,8 +264,8 @@ photo is retained and each detected object gets a separate focused Modify queue 
 Open **Queues → Modify** later on a larger screen. Confirm the exact existing stock entry, choose
 the action and review its before/after effect. AI identification is only a suggestion: it cannot
 create an item, select an action, or change inventory. Decrements use the reversible Use History;
-moving less than the full quantity creates a linked stock entry in the new place; delete remains a
-separate destructive action with a second confirmation. Failed identification can be retried or
+moving less than the full quantity creates a linked stock entry in the new place; removal marks the
+record as not in stock while retaining its details and history. Failed identification can be retried or
 bypassed with inventory search, and every reminder can be dismissed without changing anything.
 
 The left navigation shows separate theme-aware counts: green for Intake and blue for Modify. The
@@ -321,7 +326,7 @@ that food is safe.
 
 The **Use History** page unifies those meal events with manual “used one” actions from Inventory
 and Food Expiry. It defaults to active events, can include undone history, filters by source, date,
-item, or text, and restores only the exact source lots. Deleted lots leave their audit snapshot
+item, or text, and restores only the exact source lots. Inactive lots leave their audit snapshot
 intact but deliberately disable automatic restoration. The same history is read-only through API
 and MCP automation.
 
