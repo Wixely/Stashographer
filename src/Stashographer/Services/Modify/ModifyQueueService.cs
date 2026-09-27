@@ -107,6 +107,28 @@ public sealed class ModifyQueueService(
         return Map(row);
     }
 
+    public async Task<ModifyWorkingPlace?> GetCurrentWorkingPlaceAsync(CancellationToken ct = default)
+    {
+        var id = await GetOrCreateActiveSessionIdAsync(ct);
+        using var conn = await db.OpenAsync(ct);
+        var row = await conn.QuerySingleOrDefaultAsync<WorkingPlaceSummaryRow>("""
+            SELECT COALESCE(s.WorkingLocationId, c.LocationId) AS LocationId,
+                   COALESCE(l.Name, cl.Name) AS LocationName,
+                   s.WorkingContainerId AS ContainerId,
+                   c.Name AS ContainerName
+            FROM ModifySessions s
+            LEFT JOIN Locations l ON l.Id = s.WorkingLocationId
+            LEFT JOIN Containers c ON c.Id = s.WorkingContainerId
+            LEFT JOIN Locations cl ON cl.Id = c.LocationId
+            WHERE s.Id = @id
+              AND (s.WorkingLocationId IS NOT NULL OR s.WorkingContainerId IS NOT NULL);
+            """, new { id });
+        return row is null
+            ? null
+            : new ModifyWorkingPlace(
+                row.LocationId, row.LocationName, row.ContainerId, row.ContainerName);
+    }
+
     public async Task<ModifySession> StartNewSessionAsync(
         int? workingLocationId = null, int? workingContainerId = null,
         CancellationToken ct = default)
@@ -181,13 +203,14 @@ public sealed class ModifyQueueService(
             var claimed = await conn.ExecuteAsync("""
                 UPDATE ModifyQueueItems
                 SET Status = @processing, ProcessingStartedAt = @now, Error = NULL
-                WHERE Id = @id AND Status IN (@pending, @failed);
+                WHERE Id = @id AND Status IN (@pending, @failed, @ready);
                 """, new
             {
                 id,
                 processing = (int)ModifyQueueStatus.Processing,
                 pending = (int)ModifyQueueStatus.Pending,
                 failed = (int)ModifyQueueStatus.Failed,
+                ready = (int)ModifyQueueStatus.ReadyForReview,
                 now = DateTimeOffset.UtcNow.ToString("O")
             });
             if (claimed == 0) return false;
@@ -464,8 +487,8 @@ public sealed class ModifyQueueService(
                     session.WorkingContainerId is { } containerId
                         ? candidate.ContainerId == containerId
                         : session.WorkingLocationId is { } locationId
-                          && candidate.LocationId == locationId
-                          && candidate.ContainerId is null)
+                          && (candidate.LocationId == locationId
+                              || candidate.Container?.LocationId == locationId))
                 .ToList();
             string? reason = null;
             if (placeCandidates.Count == 1 && matched?.Id != placeCandidates[0].Id)
@@ -473,7 +496,7 @@ public sealed class ModifyQueueService(
                 matched = placeCandidates[0];
                 reason = session.WorkingContainerId is not null
                     ? "Prioritized because it is currently in the working container."
-                    : "Prioritized because it is currently loose in the working location.";
+                    : "Prioritized because it is currently in the working location.";
             }
             mapped.Add(new ResultRow(
                 result.ImageId,
@@ -568,9 +591,26 @@ public sealed class ModifyQueueService(
         })).ToList();
         var parts = new List<string>();
         if (session.WorkingContainerId is { } containerId)
-            parts.Add($"This modify session is working from container id {containerId}.");
+        {
+            var place = await conn.QuerySingleOrDefaultAsync<WorkingPlaceRow>("""
+                SELECT c.Name AS ContainerName, l.Name AS LocationName
+                FROM Containers c
+                JOIN Locations l ON l.Id = c.LocationId
+                WHERE c.Id = @containerId;
+                """, new { containerId });
+            parts.Add(place is null
+                ? $"This modify session is working from container id {containerId}."
+                : $"This modify session is working in container '{place.ContainerName}' "
+                  + $"in location '{place.LocationName}'.");
+        }
         else if (session.WorkingLocationId is { } locationId)
-            parts.Add($"This modify session is working from location id {locationId}.");
+        {
+            var locationName = await conn.QuerySingleOrDefaultAsync<string?>(
+                "SELECT Name FROM Locations WHERE Id = @locationId;", new { locationId });
+            parts.Add(locationName is null
+                ? $"This modify session is working from location id {locationId}, with no specific container."
+                : $"This modify session is working in location '{locationName}', with no specific container.");
+        }
         if (recent.Count > 0)
             parts.Add("Earlier confirmed modify items, newest first: " + string.Join(", ", recent));
         return parts.Count == 0 ? null : string.Join(" ", parts);
@@ -836,5 +876,19 @@ public sealed class ModifyQueueService(
         public string? EndedAt { get; set; }
         public int? WorkingLocationId { get; set; }
         public int? WorkingContainerId { get; set; }
+    }
+
+    private sealed class WorkingPlaceRow
+    {
+        public string ContainerName { get; set; } = string.Empty;
+        public string LocationName { get; set; } = string.Empty;
+    }
+
+    private sealed class WorkingPlaceSummaryRow
+    {
+        public int LocationId { get; set; }
+        public string LocationName { get; set; } = string.Empty;
+        public int? ContainerId { get; set; }
+        public string? ContainerName { get; set; }
     }
 }

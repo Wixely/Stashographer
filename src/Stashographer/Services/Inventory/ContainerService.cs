@@ -35,6 +35,7 @@ public class ContainerService(IDbConnectionFactory db)
 
     public async Task<Location> SaveLocationAsync(Location location, CancellationToken ct = default)
     {
+        location.Name = NormalizePlaceName(location.Name, "room");
         using var conn = await db.OpenAsync(ct);
         if (location.Id == 0)
         {
@@ -53,6 +54,7 @@ public class ContainerService(IDbConnectionFactory db)
 
     public async Task<Container> SaveContainerAsync(Container container, CancellationToken ct = default)
     {
+        container.Name = NormalizePlaceName(container.Name, "container");
         if (string.IsNullOrWhiteSpace(container.QrSlug))
             container.QrSlug = GenerateSlug();
 
@@ -122,6 +124,19 @@ public class ContainerService(IDbConnectionFactory db)
 
     /// <summary>Short, URL-safe, collision-resistant slug for a container QR.</summary>
     public static string GenerateSlug() => Guid.NewGuid().ToString("N")[..10];
+
+    /// <summary>
+    /// Place names are human-facing text, not identifiers: preserve word boundaries and
+    /// punctuation while trimming and collapsing accidental runs of whitespace.
+    /// </summary>
+    internal static string NormalizePlaceName(string? name, string subject)
+    {
+        var normalized = string.Join(' ', (name ?? string.Empty)
+            .Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
+        if (normalized.Length == 0)
+            throw new InvalidOperationException($"Enter a name for the {subject}.");
+        return normalized;
+    }
 
     /// <summary>Returns a PNG QR code encoding the given payload (typically the container URL).</summary>
     public static byte[] GenerateQrPng(string payload, int pixelsPerModule = 20)

@@ -404,16 +404,19 @@ public class OpenAiEnrichmentService(
     private async Task<string?> CompleteJsonAsync(bool useVision, List<ChatMessage> messages, CancellationToken ct)
     {
         var client = useVision ? clients.GetVisionClient() : clients.GetChatClient();
-        if (client is null) return null; // not configured (or disabled mid-flight)
+        if (client is null)
+            throw new InvalidOperationException("AI is not configured or was disabled before the request started.");
         try
         {
             var response = await client.GetResponseAsync(messages, JsonOptions, ct);
-            return ExtractJson(response.Text);
+            return ExtractJson(response.Text)
+                   ?? throw new InvalidOperationException(
+                       "The AI model returned a response that Stashographer could not read.");
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             logger.LogWarning(ex, "AI call failed");
-            return null;
+            throw new InvalidOperationException($"AI request failed: {ex.Message}", ex);
         }
     }
 

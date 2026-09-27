@@ -80,7 +80,7 @@
     <div class="d-flex gap-2 align-end mb-3">
         <MudTextField T="string" @bind-Value="_newTagName" Label="New tag"
                       Variant="Variant.Outlined" Margin="Margin.Dense" MaxLength="50"
-                      Class="flex-grow-1" />
+                      Immediate="true" Class="flex-grow-1" />
         <MudButton Color="Color.Primary" Variant="Variant.Filled" StartIcon="@Icons.Material.Filled.Add"
                    Disabled="@string.IsNullOrWhiteSpace(_newTagName)" OnClick="AddTagAsync">
             Add tag
@@ -105,7 +105,8 @@
             <RowTemplate>
                 <MudTd DataLabel="Name">
                     <MudTextField T="string" Value="@context.Name" ValueChanged="@(value => context.Name = value)"
-                                  Variant="Variant.Outlined" Margin="Margin.Dense" MaxLength="50" />
+                                  Variant="Variant.Outlined" Margin="Margin.Dense" MaxLength="50"
+                                  Immediate="true" />
                 </MudTd>
                 <MudTd DataLabel="Items">@context.ItemCount</MudTd>
                 <MudTd>

@@ -91,7 +91,12 @@ else
                         <MudButton FullWidth="true" Class="mt-2" Variant="Variant.Outlined"
                                    StartIcon="@Icons.Material.Filled.AutoAwesome" Color="Color.Info"
                                    Disabled="@(_working || !Ai.IsEnabled)" OnClick="ProcessCurrentAsync">
-                            @(queued.Status == ModifyQueueStatus.Failed ? "Retry identification" : "Identify now")
+                            @(queued.Status switch
+                            {
+                                ModifyQueueStatus.Failed => "Retry identification",
+                                ModifyQueueStatus.ReadyForReview => "Identify again",
+                                _ => "Identify now"
+                            })
                         </MudButton>
                         @if (!Ai.IsEnabled)
                         {
@@ -344,8 +349,8 @@ else
         _working = true;
         try
         {
-            if (current.Status == ModifyQueueStatus.Failed) await ModifyQueue.RetryAsync(current.Id);
-            await ModifyQueue.ProcessAsync(current.Id, _options, Ai.IsEnabled);
+            if (!await ModifyQueue.ProcessAsync(current.Id, _options, Ai.IsEnabled))
+                Snackbar.Add("This reminder changed before it could be identified. Refresh and try again.", Severity.Warning);
             await LoadAsync(true);
             await OnChanged.InvokeAsync();
         }

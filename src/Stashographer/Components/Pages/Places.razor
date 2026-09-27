@@ -3,6 +3,7 @@
 @page "/places/{LocationId:int}/c/{ContainerId:int}"
 @inject ContainerService Containers
 @inject InventoryService Inventory
+@inject ModifyQueueService ModifyQueue
 @inject NavigationManager Nav
 @inject IDialogService Dialogs
 @inject ISnackbar Snackbar
@@ -85,8 +86,27 @@
             </div>
 
             <div class="d-flex align-center gap-2">
+                <MudButton Href="scan?resume=true" Variant="Variant.Outlined" Color="Color.Primary"
+                           Size="Size.Small" StartIcon="@Icons.Material.Filled.AddCircle"
+                           title="Open Scan &amp; add at the last-used photo or barcode section">
+                    Add items
+                </MudButton>
+                @if (HasWorkingPlace)
+                {
+                    <MudButton Variant="Variant.Text" Color="Color.Info" Size="Size.Small"
+                               StartIcon="@Icons.Material.Filled.Clear"
+                               OnClick="ClearWorkingPlaceAsync">
+                        @ClearWorkingPlaceLabel
+                    </MudButton>
+                }
                 @if (_container is not null)
                 {
+                    <MudButton Variant="@(IsCurrentWorkingPlace ? Variant.Filled : Variant.Outlined)"
+                               Color="Color.Info" Size="Size.Small"
+                               StartIcon="@(IsCurrentWorkingPlace ? Icons.Material.Filled.Check : Icons.Material.Filled.CenterFocusStrong)"
+                               OnClick="SetWorkingPlaceAsync">
+                        @(IsCurrentWorkingPlace ? "Working here" : "Work here")
+                    </MudButton>
                     <img src="@ContainerService.GenerateQrDataUri(Nav.ToAbsoluteUri($"c/{_container.QrSlug}").ToString(), 4)"
                          width="64" height="64" alt="QR" title="Printed label opens this container" />
                     <MudIconButton Icon="@Icons.Material.Filled.Edit" Size="Size.Small"
@@ -94,6 +114,12 @@
                 }
                 else if (_room is not null)
                 {
+                    <MudButton Variant="@(IsCurrentWorkingPlace ? Variant.Filled : Variant.Outlined)"
+                               Color="Color.Info" Size="Size.Small"
+                               StartIcon="@(IsCurrentWorkingPlace ? Icons.Material.Filled.Check : Icons.Material.Filled.CenterFocusStrong)"
+                               OnClick="SetWorkingPlaceAsync">
+                        @(IsCurrentWorkingPlace ? "Working here" : "Work here")
+                    </MudButton>
                     <MudButton Variant="Variant.Outlined" Size="Size.Small" StartIcon="@Icons.Material.Filled.Add"
                                OnClick="@(() => EditContainer(null))">Container</MudButton>
                     <MudIconButton Icon="@Icons.Material.Filled.Edit" Size="Size.Small"
@@ -250,6 +276,7 @@
     private PlaceCounts _counts = new(new Dictionary<int, int>(), new Dictionary<int, int>());
     private Location? _room;
     private Container? _container;
+    private ModifySession? _modifySession;
     private List<Item> _items = new();
     private bool _loading = true;
 
@@ -278,6 +305,7 @@
     private async Task LoadAsync()
     {
         _locations = await Containers.GetLocationsAsync();
+        _modifySession = await ModifyQueue.GetCurrentSessionAsync();
         _counts = await Containers.GetPlaceCountsAsync();
         _room = LocationId is { } loc ? _locations.FirstOrDefault(l => l.Id == loc) : null;
         _container = _room is not null && ContainerId is { } c
@@ -289,6 +317,41 @@
             : _room is not null
                 ? await Inventory.QueryAsync(new ItemQuery(LocationId: _room.Id, LooseOnly: true))
                 : new List<Item>();
+    }
+
+    private bool IsCurrentWorkingPlace => _container is not null
+        ? _modifySession?.WorkingContainerId == _container.Id
+        : _room is not null
+          && _modifySession?.WorkingLocationId == _room.Id
+          && _modifySession.WorkingContainerId is null;
+
+    private bool HasWorkingPlace => _modifySession is
+        { WorkingLocationId: not null } or { WorkingContainerId: not null };
+
+    private string ClearWorkingPlaceLabel => _modifySession?.WorkingContainerId is not null
+        ? "Clear working container"
+        : "Clear working location";
+
+    private async Task SetWorkingPlaceAsync()
+    {
+        if (_room is null) return;
+        await ModifyQueue.SetWorkingPlaceAsync(
+            _container is null ? _room.Id : null,
+            _container?.Id);
+        _modifySession = await ModifyQueue.GetCurrentSessionAsync();
+        Snackbar.Add(_container is null
+            ? $"Working location set to {_room.Name}; no specific container is selected."
+            : $"Working container set to {_container.Name} in {_room.Name}.", Severity.Success);
+    }
+
+    private async Task ClearWorkingPlaceAsync()
+    {
+        var clearedContainer = _modifySession?.WorkingContainerId is not null;
+        await ModifyQueue.SetWorkingPlaceAsync(null, null);
+        _modifySession = await ModifyQueue.GetCurrentSessionAsync();
+        Snackbar.Add(clearedContainer
+            ? "Working container cleared."
+            : "Working location cleared.", Severity.Success);
     }
 
     // --- Selection --------------------------------------------------------------

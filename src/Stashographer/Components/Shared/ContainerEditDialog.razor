@@ -7,7 +7,8 @@
                          Width="200px" Height="180px" UploadKey="@($"container:{_container.Id}")" />
         </div>
         <MudTextField @bind-Value="_container.Name" Label="Name" Variant="Variant.Outlined"
-                      Required="true" Class="mb-3" />
+                      Required="true" Immediate="true" HelperText="Spaces are allowed."
+                      Class="mb-3" />
         <MudSelect @bind-Value="_container.ContainerType" Label="Type" Variant="Variant.Outlined">
             @foreach (var t in Enum.GetValues<ContainerType>())
             {

@@ -40,9 +40,40 @@ public class ContainerServiceTests
 
         var loaded = await containers.GetContainerBySlugAsync(container.QrSlug);
         Assert.NotNull(loaded);
-        Assert.Equal("Garage", loaded!.Location?.Name);
+        Assert.Equal("Xmas box", loaded!.Name);
+        Assert.Equal("Garage", loaded.Location?.Name);
         Assert.Single(loaded.Items);
         Assert.Equal("Fairy lights", loaded.Items[0].Name);
+    }
+
+    [Fact]
+    public async Task Room_and_container_names_preserve_words_and_normalize_extra_whitespace()
+    {
+        await using var db = await TestDb.CreateAsync();
+        var containers = new ContainerService(db.Factory);
+
+        var room = await containers.SaveLocationAsync(new Location { Name = "  Utility   room  " });
+        var container = await containers.SaveContainerAsync(new Container
+        {
+            Name = "  Under   stairs box  ",
+            LocationId = room.Id
+        });
+
+        var savedRoom = (await containers.GetLocationsAsync()).Single(location => location.Id == room.Id);
+        Assert.Equal("Utility room", savedRoom.Name);
+        Assert.Equal("Under stairs box", savedRoom.Containers.Single(x => x.Id == container.Id).Name);
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("   ")]
+    public void Place_names_require_at_least_one_non_whitespace_character(string? name)
+    {
+        var error = Assert.Throws<InvalidOperationException>(
+            () => ContainerService.NormalizePlaceName(name, "container"));
+
+        Assert.Equal("Enter a name for the container.", error.Message);
     }
 
     [Fact]

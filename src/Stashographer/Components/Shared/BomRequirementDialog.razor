@@ -2,7 +2,7 @@
     <DialogContent>
         <MudTextField @bind-Value="_requirement.Name" Label="Requirement"
                       Placeholder="Milk, RAM sticks…" Variant="Variant.Outlined"
-                      Required="true" Class="mb-3" />
+                      Required="true" Immediate="true" Class="mb-3" />
         <MudGrid Spacing="2" Class="mb-2">
             <MudItem xs="6">
                 <MudNumericField T="decimal" @bind-Value="_requirement.Quantity"

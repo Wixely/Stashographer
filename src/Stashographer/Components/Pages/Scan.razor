@@ -45,17 +45,19 @@
 
 <MudGrid>
     <MudItem xs="12" md="6">
-        <ScanControl OnCode="OnCode"
-                     OnLiveCode="OnLiveCode"
-                     OnLiveQuantityChanged="OnLiveQuantityChanged"
-                     OnLiveStopped="FinalizeLiveCaptureAsync"
-                     QueueBarcodePhotos="_intakeOptions.QueueEnabled"
-                     ContinueLiveScanning="@(_intakeOptions.QueueEnabled && _intakeOptions.ContinueLiveScanning)"
-                     PromptForConsecutiveQuantity="@(_intakeOptions.QueueEnabled && _intakeOptions.PromptForConsecutiveBarcodeQuantity)"
-                     CooldownMilliseconds="_intakeOptions.LiveScanCooldownMilliseconds"
-                     OnBarcodeQueued="OnBarcodeQueued" />
+        <div id="scan-barcodes" style="scroll-margin-top: 1rem">
+            <ScanControl OnCode="OnCode"
+                         OnLiveCode="OnLiveCode"
+                         OnLiveQuantityChanged="OnLiveQuantityChanged"
+                         OnLiveStopped="FinalizeLiveCaptureAsync"
+                         QueueBarcodePhotos="_intakeOptions.QueueEnabled"
+                         ContinueLiveScanning="@(_intakeOptions.QueueEnabled && _intakeOptions.ContinueLiveScanning)"
+                         PromptForConsecutiveQuantity="@(_intakeOptions.QueueEnabled && _intakeOptions.PromptForConsecutiveBarcodeQuantity)"
+                         CooldownMilliseconds="_intakeOptions.LiveScanCooldownMilliseconds"
+                         OnBarcodeQueued="OnBarcodeQueued" />
+        </div>
 
-        <MudPaper Class="pa-4 mt-3" Outlined="true">
+        <MudPaper id="scan-photos" Class="pa-4 mt-3" Outlined="true" Style="scroll-margin-top: 1rem">
             <div class="d-flex justify-space-between align-center mb-2">
                 <div class="d-flex align-center gap-2">
                     <MudIcon Icon="@Icons.Material.Filled.AddPhotoAlternate" Color="Color.Primary" />
@@ -284,6 +286,9 @@
 </MudGrid>
 
 @code {
+    [SupplyParameterFromQuery(Name = "resume")]
+    public bool ResumeLastScanType { get; set; }
+
     private LookupResult? _result;
     private bool _busy;
     private string _busyText = "Working…";
@@ -311,12 +316,15 @@
         if (!firstRender) return;
         await JS.InvokeVoidAsync("stashClipboardImages.enable", "scan-photo-clipboard");
         _clipboardInteropEnabled = true;
+        if (ResumeLastScanType)
+            await JS.InvokeVoidAsync("stashScanPreference.scrollToLast");
     }
 
     // --- Barcode / ISBN lookup path ------------------------------------------------
 
     private async Task OnCode(string code)
     {
+        await RememberScanTypeAsync("barcodes");
         await FinalizeLiveCaptureAsync();
         ClearIntake();
         if (_intakeOptions.QueueEnabled)
@@ -337,6 +345,7 @@
 
     private async Task OnLiveCode(string code)
     {
+        await RememberScanTypeAsync("barcodes");
         if (!_intakeOptions.QueueEnabled)
         {
             await OnCode(code);
@@ -390,6 +399,7 @@
 
     private async Task OnBarcodeQueued(string _)
     {
+        await RememberScanTypeAsync("barcodes");
         await RefreshQueueCountAsync();
     }
 
@@ -435,22 +445,29 @@
 
     // --- Photo intake path -----------------------------------------------------------
 
-    private Task OnPhotoUploadStarted(string _)
+    private async Task OnPhotoUploadStarted(string _)
     {
+        await RememberScanTypeAsync("photos");
         ClearIntake();
         _result = null;
         _busy = true;
         _busyText = _intakeOptions.QueueEnabled ? "Saving to queue…" : "Uploading photo…";
-        return Task.CompletedTask;
     }
 
-    private Task OnReceiptUploadStarted(string _)
+    private async Task OnReceiptUploadStarted(string _)
     {
+        await RememberScanTypeAsync("photos");
         ClearIntake();
         _result = null;
         _busy = true;
         _busyText = "Saving purchase evidence…";
-        return Task.CompletedTask;
+    }
+
+    private async Task RememberScanTypeAsync(string scanType)
+    {
+        try { await JS.InvokeVoidAsync("stashScanPreference.mark", scanType); }
+        catch (JSDisconnectedException) { }
+        catch (InvalidOperationException) { /* Interactive rendering has not started yet. */ }
     }
 
     private async Task OnReceiptPhotoUploaded(BrowserUploadResult upload)

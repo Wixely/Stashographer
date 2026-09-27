@@ -7,7 +7,8 @@
                          Width="200px" Height="180px" UploadKey="@($"location:{_location.Id}")" />
         </div>
         <MudTextField @bind-Value="_location.Name" Label="Name" Variant="Variant.Outlined"
-                      Required="true" Class="mb-3" />
+                      Required="true" Immediate="true" HelperText="Spaces are allowed."
+                      Class="mb-3" />
         <MudTextField @bind-Value="_location.Description" Label="Description" Variant="Variant.Outlined" Lines="2" />
     </DialogContent>
     <DialogActions>

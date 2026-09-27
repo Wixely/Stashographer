@@ -3,6 +3,31 @@
 // provides it (Chrome/Edge/Android). On browsers without it (notably iOS Safari) scanning
 // degrades gracefully and the UI falls back to manual entry.
 
+// Remembers which Scan & add capture section the user last used. Places can then return to
+// that section without making a server-side preference out of a browser-local UI detail.
+window.stashScanPreference = (() => {
+    const storageKey = 'stashographer.lastScanType';
+    const validTypes = new Set(['barcodes', 'photos']);
+
+    function mark(type) {
+        if (!validTypes.has(type)) return;
+        try { localStorage.setItem(storageKey, type); } catch { /* Storage may be disabled. */ }
+    }
+
+    function scrollToLast() {
+        let type = 'barcodes';
+        try {
+            const saved = localStorage.getItem(storageKey);
+            if (validTypes.has(saved)) type = saved;
+        } catch { /* Use the barcode section when storage is unavailable. */ }
+
+        const section = document.getElementById(`scan-${type}`);
+        if (section) requestAnimationFrame(() => section.scrollIntoView({ block: 'start' }));
+    }
+
+    return { mark, scrollToLast };
+})();
+
 // Clipboard image intake for the Scan page. Only image/file clipboard entries are handled;
 // ordinary pasted text (including barcodes) continues to the focused control unchanged.
 window.stashClipboardImages = (() => {

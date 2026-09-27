@@ -35,7 +35,7 @@
             <MudGrid Spacing="2">
                 <MudItem xs="12" sm="8">
                     <MudTextField @bind-Value="_draft.Name" Label="Name" Variant="Variant.Outlined"
-                                  Required="true" />
+                                  Required="true" Immediate="true" />
                 </MudItem>
                 <MudItem xs="12" sm="4">
                     <MudSelect T="BomKind" @bind-Value="_draft.Kind" Label="Type"
@@ -82,7 +82,7 @@
                     <MudGrid Spacing="2">
                         <MudItem xs="12" sm="6">
                             <MudTextField @bind-Value="requirement.Name" Label="Ingredient or part"
-                                          Variant="Variant.Outlined" Required="true" />
+                                          Variant="Variant.Outlined" Required="true" Immediate="true" />
                         </MudItem>
                         <MudItem xs="6" sm="3">
                             <MudNumericField T="decimal" @bind-Value="requirement.Quantity"

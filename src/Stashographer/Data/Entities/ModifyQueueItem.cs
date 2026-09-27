@@ -51,6 +51,12 @@ public sealed record ModifySession(
     int? WorkingLocationId,
     int? WorkingContainerId);
 
+public sealed record ModifyWorkingPlace(
+    int LocationId,
+    string LocationName,
+    int? ContainerId,
+    string? ContainerName);
+
 public sealed record ModifyQueueCounts(
     int Waiting,
     int Processing,

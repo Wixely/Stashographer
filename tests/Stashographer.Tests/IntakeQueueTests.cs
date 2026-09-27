@@ -15,6 +15,26 @@ namespace Stashographer.Tests;
 public class IntakeQueueTests
 {
     [Fact]
+    public async Task Ready_photo_can_be_reprocessed_after_model_becomes_available()
+    {
+        await using var harness = await Harness.CreateAsync();
+        await using var photo = await PhotoAsync();
+        var queued = await harness.Queue.EnqueuePhotoAsync(photo, "image/png", "waiting.png", false);
+
+        await harness.Queue.ProcessAsync(queued.Id, new IntakeOptions(), aiEnabled: true);
+        var blank = (await harness.Queue.GetAsync(queued.Id))!;
+        Assert.Equal(IntakeQueueStatus.ReadyForReview, blank.Status);
+        Assert.Equal(string.Empty, blank.Draft.Name);
+
+        harness.Ai.Identification = new VisionIdentification { Name = "Recovered item", Kind = "Other" };
+        Assert.True(await harness.Queue.ProcessAsync(queued.Id, new IntakeOptions(), aiEnabled: true));
+
+        var recovered = (await harness.Queue.GetAsync(queued.Id))!;
+        Assert.Equal(IntakeQueueStatus.ReadyForReview, recovered.Status);
+        Assert.Equal("Recovered item", recovered.Draft.Name);
+    }
+
+    [Fact]
     public async Task Automation_draft_waits_in_queue_for_human_acceptance()
     {
         await using var harness = await Harness.CreateAsync();

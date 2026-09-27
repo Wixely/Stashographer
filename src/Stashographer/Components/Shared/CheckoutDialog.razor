@@ -4,7 +4,7 @@
     <DialogContent>
         <MudText Typo="Typo.body2" Class="mb-3">Check out <b>@ItemName</b></MudText>
         <MudTextField @bind-Value="_by" Label="Checked out by" Variant="Variant.Outlined"
-                      Margin="Margin.Dense" Required="true" Class="mb-2" />
+                      Margin="Margin.Dense" Required="true" Immediate="true" Class="mb-2" />
         <MudTextField @bind-Value="_where" Label="Whereabouts note" Variant="Variant.Outlined"
                       Margin="Margin.Dense" Placeholder="e.g. lent to Sam, taken to the caravan" Class="mb-2" />
         <MudDatePicker @bind-Date="_due" Label="Due back (optional)" Variant="Variant.Outlined" Margin="Margin.Dense" />

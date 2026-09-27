@@ -331,7 +331,7 @@ public class IntakeQueueService(
             var changed = await conn.ExecuteAsync("""
                 UPDATE IntakeQueueItems
                 SET Status = @processing, ProcessingStartedAt = @now, Error = NULL
-                WHERE Id = @id AND Status IN (@pending, @failed)
+                WHERE Id = @id AND Status IN (@pending, @failed, @ready)
                   AND (LiveCaptureHoldUntil IS NULL OR LiveCaptureHoldUntil <= @now);
                 """, new
             {
@@ -339,6 +339,7 @@ public class IntakeQueueService(
                 processing = (int)IntakeQueueStatus.Processing,
                 pending = (int)IntakeQueueStatus.Pending,
                 failed = (int)IntakeQueueStatus.Failed,
+                ready = (int)IntakeQueueStatus.ReadyForReview,
                 now = DateTimeOffset.UtcNow.ToString("O")
             });
             if (changed == 0) return false;

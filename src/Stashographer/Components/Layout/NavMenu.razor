@@ -20,14 +20,37 @@
               aria-label="@($"{_modifyQueueCount} items in modify queue")">@_modifyQueueCount</span>
     </MudNavLink>
     <MudNavLink Href="places" Match="NavLinkMatch.Prefix" Icon="@Icons.Material.Filled.Room">Places</MudNavLink>
+    @if (_workingPlace is not null)
+    {
+        <MudNavLink Href="@WorkingPlaceHref"
+                    Icon="@Icons.Material.Filled.CenterFocusStrong"
+                    Class="ml-4 text-caption"
+                    title="@WorkingPlaceTitle">
+            @WorkingPlaceLabel
+        </MudNavLink>
+    }
     <MudNavLink Href="checkouts" Icon="@Icons.Material.Filled.AssignmentReturn">Checkouts</MudNavLink>
     <MudNavLink Href="settings" Icon="@Icons.Material.Filled.Settings">Settings</MudNavLink>
+    <MudNavLink Href="diagnostics" Icon="@Icons.Material.Filled.Troubleshoot">Temporary logs</MudNavLink>
 </MudNavMenu>
 
 @code {
     private readonly CancellationTokenSource _dispose = new();
     private int _intakeQueueCount;
     private int _modifyQueueCount;
+    private ModifyWorkingPlace? _workingPlace;
+
+    private string WorkingPlaceHref => _workingPlace?.ContainerId is { } containerId
+        ? $"places/{_workingPlace.LocationId}/c/{containerId}"
+        : $"places/{_workingPlace?.LocationId}";
+
+    private string WorkingPlaceLabel => _workingPlace?.ContainerName is { } containerName
+        ? $"Working: {containerName}"
+        : $"Working: {_workingPlace?.LocationName}";
+
+    private string WorkingPlaceTitle => _workingPlace?.ContainerName is { } containerName
+        ? $"Current working container: {containerName} in {_workingPlace.LocationName}"
+        : $"Current working location: {_workingPlace?.LocationName}";
 
     protected override async Task OnInitializedAsync()
     {
@@ -39,6 +62,7 @@
     {
         var counts = await IntakeQueue.GetCountsAsync(_dispose.Token);
         var modify = await ModifyQueue.GetCountsAsync(_dispose.Token);
+        _workingPlace = await ModifyQueue.GetCurrentWorkingPlaceAsync(_dispose.Token);
         _intakeQueueCount = counts.Waiting + counts.Processing + counts.Ready + counts.Failed;
         _modifyQueueCount = modify.Open;
     }

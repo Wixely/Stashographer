@@ -10,6 +10,7 @@ using Stashographer.Data.Migrations;
 using Stashographer.Services.Automation;
 using Stashographer.Services.Ai;
 using Stashographer.Services.Config;
+using Stashographer.Services.Diagnostics;
 using Stashographer.Services.Images;
 using Stashographer.Services.Inventory;
 using Stashographer.Services.Intake;
@@ -20,6 +21,12 @@ using System.Text.Json.Serialization;
 using System.Threading.RateLimiting;
 
 var builder = WebApplication.CreateBuilder(args);
+
+// A bounded, memory-only diagnostic window lets administrators inspect recent queue/AI
+// failures without persisting potentially sensitive operational details to the database.
+var temporaryLogs = new TemporaryLogStore(TimeProvider.System, TimeSpan.FromHours(1), 250);
+builder.Logging.AddProvider(temporaryLogs);
+builder.Services.AddSingleton(temporaryLogs);
 
 // --- Razor / Blazor + MudBlazor -----------------------------------------------
 builder.Services.AddRazorComponents()

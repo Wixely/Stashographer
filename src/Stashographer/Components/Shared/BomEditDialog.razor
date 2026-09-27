@@ -1,7 +1,7 @@
 <MudDialog>
     <DialogContent>
         <MudTextField @bind-Value="_definition.Name" Label="Name" Variant="Variant.Outlined"
-                      Required="true" Class="mb-3" />
+                      Required="true" Immediate="true" Class="mb-3" />
         <MudSelect T="BomKind" @bind-Value="_definition.Kind" Label="Type"
                    Variant="Variant.Outlined" Class="mb-3">
             <MudSelectItem Value="BomKind.Recipe">Recipe</MudSelectItem>

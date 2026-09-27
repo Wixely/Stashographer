@@ -1,0 +1,87 @@
+@page "/diagnostics"
+@attribute [Authorize]
+@inject TemporaryLogStore Logs
+
+<PageTitle>Temporary logs · Stashographer</PageTitle>
+
+<div class="d-flex justify-space-between align-center flex-wrap gap-2 mb-4">
+    <div>
+        <MudText Typo="Typo.h4">Temporary logs</MudText>
+        <MudText Typo="Typo.body2" Class="mud-text-secondary">
+            Recent Stashographer application events, held only in memory for one hour (up to 250 entries).
+            They disappear when the app restarts.
+        </MudText>
+    </div>
+    <div class="d-flex gap-2">
+        <MudButton Variant="Variant.Outlined" StartIcon="@Icons.Material.Filled.Refresh" OnClick="Reload">
+            Refresh
+        </MudButton>
+        <MudButton Variant="Variant.Text" Color="Color.Warning" StartIcon="@Icons.Material.Filled.DeleteSweep"
+                   Disabled="@(_entries.Count == 0)" OnClick="Clear">
+            Clear
+        </MudButton>
+    </div>
+</div>
+
+<MudAlert Severity="Severity.Info" Class="mb-4">
+    Retry the affected queue item, then refresh this page. Warning and error entries include exception details.
+</MudAlert>
+
+@if (_entries.Count == 0)
+{
+    <MudAlert Severity="Severity.Success">No recent application log entries.</MudAlert>
+}
+else
+{
+    <MudTable Items="_entries" T="TemporaryLogEntry" Dense="true" Hover="true" Breakpoint="Breakpoint.Sm">
+        <HeaderContent>
+            <MudTh>Time</MudTh>
+            <MudTh>Level</MudTh>
+            <MudTh>Source</MudTh>
+            <MudTh>Message</MudTh>
+        </HeaderContent>
+        <RowTemplate>
+            <MudTd DataLabel="Time">@context.Timestamp.ToLocalTime().ToString("g")</MudTd>
+            <MudTd DataLabel="Level">
+                <MudChip T="string" Size="Size.Small" Color="@LevelColor(context.Level)">@context.Level</MudChip>
+            </MudTd>
+            <MudTd DataLabel="Source">@ShortCategory(context.Category)</MudTd>
+            <MudTd DataLabel="Message">
+                <MudText Typo="Typo.body2">@context.Message</MudText>
+                @if (!string.IsNullOrWhiteSpace(context.Exception))
+                {
+                    <details class="mt-1">
+                        <summary>Exception details</summary>
+                        <pre style="white-space:pre-wrap;overflow-wrap:anywhere">@context.Exception</pre>
+                    </details>
+                }
+            </MudTd>
+        </RowTemplate>
+    </MudTable>
+}
+
+@code {
+    private IReadOnlyList<TemporaryLogEntry> _entries = [];
+
+    protected override void OnInitialized() => Reload();
+
+    private void Reload() => _entries = Logs.GetEntries();
+
+    private void Clear()
+    {
+        Logs.Clear();
+        Reload();
+    }
+
+    private static string ShortCategory(string category) =>
+        category.StartsWith("Stashographer.", StringComparison.Ordinal)
+            ? category["Stashographer.".Length..]
+            : category;
+
+    private static Color LevelColor(LogLevel level) => level switch
+    {
+        LogLevel.Critical or LogLevel.Error => Color.Error,
+        LogLevel.Warning => Color.Warning,
+        _ => Color.Info
+    };
+}

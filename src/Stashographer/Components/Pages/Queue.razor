@@ -36,6 +36,9 @@
                    StartIcon="@Icons.Material.Filled.Add">Keep adding</MudButton>
         <MudButton Variant="Variant.Outlined" StartIcon="@Icons.Material.Filled.Refresh"
                    OnClick="@(() => LoadAsync(true))">Refresh</MudButton>
+        <MudButton Href="diagnostics" Variant="Variant.Text" StartIcon="@Icons.Material.Filled.Troubleshoot">
+            Temporary logs
+        </MudButton>
         <MudButton Variant="Variant.Text" StartIcon="@Icons.Material.Filled.Flag"
                    OnClick="StartNewSessionAsync">New session</MudButton>
     </div>
@@ -132,7 +135,12 @@ else
                                        Disabled="@(_working || (queued.SourceType is IntakeSourceType.Photo or IntakeSourceType.Receipt
                                                                 && !Ai.IsEnabled))"
                                        OnClick="ProcessCurrentAsync">
-                                @(_working ? "Processing…" : queued.Status == IntakeQueueStatus.Failed ? "Retry processing" : "Process now")
+                                @(_working ? "Processing…" : queued.Status switch
+                                {
+                                    IntakeQueueStatus.Failed => "Retry processing",
+                                    IntakeQueueStatus.ReadyForReview => "Process again",
+                                    _ => "Process now"
+                                })
                             </MudButton>
                         }
                         @if (queued.SourceType is IntakeSourceType.Photo or IntakeSourceType.Receipt && !Ai.IsEnabled)
@@ -213,7 +221,7 @@ else
                         }
 
                         <MudTextField @bind-Value="queued.Draft.Name" Label="Name" Variant="Variant.Outlined"
-                                      Required="true" Class="mb-2" />
+                                      Required="true" Immediate="true" Class="mb-2" />
                         <MudGrid>
                             <MudItem xs="12" sm="6">
                                 <MudSelect @bind-Value="queued.Draft.ItemKindId" Label="Kind" Variant="Variant.Outlined">
@@ -463,10 +471,10 @@ else
         _working = true;
         try
         {
-            if (current.Status == IntakeQueueStatus.Failed) await IntakeQueue.RetryAsync(current.Id);
             if (current.LiveCaptureHoldUntil is not null)
                 await IntakeQueue.FinalizeLiveBarcodeAsync(current.Id);
-            await IntakeQueue.ProcessAsync(current.Id, _options, Ai.IsEnabled);
+            if (!await IntakeQueue.ProcessAsync(current.Id, _options, Ai.IsEnabled))
+                Snackbar.Add("This queue item changed before it could be processed. Refresh and try again.", Severity.Warning);
             await LoadAsync(true);
         }
         finally { _working = false; }

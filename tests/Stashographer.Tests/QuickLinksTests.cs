@@ -75,6 +75,21 @@ public class QuickLinksTests
     }
 
     [Fact]
+    public async Task Multi_word_label_roundtrips_with_spaces()
+    {
+        await using var db = await TestDb.CreateAsync();
+        var svc = new QuickLinksService(db.Factory);
+
+        var created = await svc.SaveAsync(new QuickLink
+        {
+            Label = "Workshop tools",
+            Target = QuickLinkTarget.Inventory
+        });
+
+        Assert.Equal("Workshop tools", (await svc.GetAsync(created.Id))!.Label);
+    }
+
+    [Fact]
     public async Task Save_delete_and_reorder_roundtrip()
     {
         await using var db = await TestDb.CreateAsync();

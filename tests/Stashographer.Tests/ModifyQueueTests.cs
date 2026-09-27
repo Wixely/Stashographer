@@ -16,6 +16,21 @@ namespace Stashographer.Tests;
 public sealed class ModifyQueueTests
 {
     [Fact]
+    public async Task Ready_reminder_can_be_identified_again()
+    {
+        await using var harness = await Harness.CreateAsync();
+        var ready = await harness.EnqueueReadyAsync("First identification");
+
+        harness.Ai.Identification = new VisionIdentification { Name = "Second identification" };
+        Assert.True(await harness.Queue.ProcessAsync(
+            ready.Id, new ModifyOptions(), aiEnabled: true));
+
+        var reprocessed = (await harness.Queue.GetAsync(ready.Id))!;
+        Assert.Equal(ModifyQueueStatus.ReadyForReview, reprocessed.Status);
+        Assert.Equal("Second identification", reprocessed.Identification?.Name);
+    }
+
+    [Fact]
     public async Task Photo_is_durable_and_ai_match_waits_for_an_explicit_action()
     {
         await using var harness = await Harness.CreateAsync();
@@ -86,7 +101,60 @@ public sealed class ModifyQueueTests
         Assert.Equal(expected.Id, ready.MatchedItemId);
         Assert.Equal(MatchConfidence.Medium, ready.MatchConfidence);
         Assert.Contains("working container", ready.MatchReason);
+        Assert.Contains("container 'Second box' in location 'Test room'", harness.Ai.LastIntakeContext);
         Assert.Equal(2, (await harness.Inventory.GetAsync(expected.Id))!.Quantity);
+    }
+
+    [Fact]
+    public async Task Working_location_includes_items_inside_its_containers_and_has_named_ai_context()
+    {
+        await using var harness = await Harness.CreateAsync();
+        await harness.Inventory.SaveAsync(new Item
+        {
+            Name = "Storage labels", ItemKindId = 7, Quantity = 1, LocationId = 1
+        });
+        var expected = await harness.Inventory.SaveAsync(new Item
+        {
+            Name = "Storage labels", ItemKindId = 7, Quantity = 2,
+            ContainerId = harness.ContainerOne
+        });
+        await harness.Queue.SetWorkingPlaceAsync(harness.LocationId, null);
+        harness.Ai.Identification = new VisionIdentification { Name = "Storage labels" };
+        await using var photo = await PhotoAsync(52);
+
+        var queued = await harness.Queue.EnqueuePhotoAsync(photo, "image/png", "labels.png", false);
+        await harness.Queue.ProcessAsync(queued.Id, new ModifyOptions(), aiEnabled: true);
+        var ready = (await harness.Queue.GetAsync(queued.Id))!;
+
+        Assert.Equal(expected.Id, ready.MatchedItemId);
+        Assert.Contains("working location", ready.MatchReason);
+        Assert.Contains("location 'Test room', with no specific container", harness.Ai.LastIntakeContext);
+    }
+
+    [Fact]
+    public async Task Selecting_a_working_location_clears_the_specific_container()
+    {
+        await using var harness = await Harness.CreateAsync();
+        await harness.Queue.SetWorkingPlaceAsync(null, harness.ContainerOne);
+
+        var container = await harness.Queue.GetCurrentWorkingPlaceAsync();
+        Assert.NotNull(container);
+        Assert.Equal("First box", container.ContainerName);
+        Assert.Equal("Test room", container.LocationName);
+
+        await harness.Queue.SetWorkingPlaceAsync(harness.LocationId, null);
+
+        var session = await harness.Queue.GetCurrentSessionAsync();
+        Assert.Equal(harness.LocationId, session.WorkingLocationId);
+        Assert.Null(session.WorkingContainerId);
+        var location = await harness.Queue.GetCurrentWorkingPlaceAsync();
+        Assert.NotNull(location);
+        Assert.Equal("Test room", location.LocationName);
+        Assert.Null(location.ContainerId);
+
+        await harness.Queue.SetWorkingPlaceAsync(null, null);
+
+        Assert.Null(await harness.Queue.GetCurrentWorkingPlaceAsync());
     }
 
     [Fact]
@@ -256,6 +324,7 @@ public sealed class ModifyQueueTests
         public required ModifyQueueService Queue { get; init; }
         public required int ContainerOne { get; init; }
         public required int ContainerTwo { get; init; }
+        public required int LocationId { get; init; }
 
         public static async Task<Harness> CreateAsync()
         {
@@ -290,7 +359,8 @@ public sealed class ModifyQueueTests
                 Consumption = consumption,
                 Queue = queue,
                 ContainerOne = containerOne.Id,
-                ContainerTwo = containerTwo.Id
+                ContainerTwo = containerTwo.Id,
+                LocationId = location.Id
             };
         }
 
@@ -315,11 +385,16 @@ public sealed class ModifyQueueTests
         public bool IsEnabled => true;
         public VisionIdentification? Identification { get; set; }
         public List<DetectedBox> Boxes { get; set; } = [];
+        public string? LastIntakeContext { get; private set; }
 
         public Task<VisionIdentification?> IdentifyItemAsync(
             byte[] image, string mediaType, IReadOnlyList<string> knownKinds,
             CancellationToken ct = default, string? intakeContext = null,
-            AiRegionalContext? regionalContext = null) => Task.FromResult(Identification);
+            AiRegionalContext? regionalContext = null)
+        {
+            LastIntakeContext = intakeContext;
+            return Task.FromResult(Identification);
+        }
 
         public Task<CaptureAnalysis> AnalyzeCaptureAsync(
             byte[] image, string mediaType, CancellationToken ct = default) =>

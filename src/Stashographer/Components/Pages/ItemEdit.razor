@@ -87,7 +87,8 @@ else
     <MudGrid>
         <MudItem xs="12" md="7">
             <MudPaper Class="pa-4" Outlined="true">
-                <MudTextField @bind-Value="_item.Name" Label="Name" Variant="Variant.Outlined" Required="true" Class="mb-3" />
+                <MudTextField @bind-Value="_item.Name" Label="Name" Variant="Variant.Outlined"
+                              Required="true" Immediate="true" Class="mb-3" />
                 <MudGrid>
                     <MudItem xs="6">
                         <MudSelect @bind-Value="_item.ItemKindId" Label="Kind" Variant="Variant.Outlined">
@@ -246,7 +247,7 @@ else
                 <div class="d-flex gap-2 align-end">
                     <MudTextField T="string" @bind-Value="_newTagName" Label="New tag"
                                   Variant="Variant.Outlined" Margin="Margin.Dense" MaxLength="50"
-                                  Class="flex-grow-1" />
+                                  Immediate="true" Class="flex-grow-1" />
                     <MudButton Variant="Variant.Outlined" StartIcon="@Icons.Material.Filled.Add"
                                Disabled="@string.IsNullOrWhiteSpace(_newTagName)" OnClick="AddTagAsync">
                         Add

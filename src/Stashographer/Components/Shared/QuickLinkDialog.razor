@@ -2,7 +2,8 @@
 
 <MudDialog>
     <DialogContent>
-        <MudTextField @bind-Value="_link.Label" Label="Label" Variant="Variant.Outlined" Required="true" Class="mb-3" />
+        <MudTextField @bind-Value="_link.Label" Label="Label" Variant="Variant.Outlined"
+                      Required="true" Immediate="true" Class="mb-3" />
 
         <MudSelect T="string" @bind-Value="_link.Icon" Label="Icon" Variant="Variant.Outlined" Class="mb-3">
             @foreach (var o in IconCatalog.Options)
