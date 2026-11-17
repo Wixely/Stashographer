@@ -16,7 +16,7 @@ RUN dotnet publish src/Stashographer/Stashographer.csproj -c Release -o /app --n
 RUN test -f /app/wwwroot/_framework/blazor.web.js
 
 # --- Runtime -------------------------------------------------------------------
-FROM mcr.microsoft.com/dotnet/aspnet:10.0 AS runtime
+FROM mcr.microsoft.com/dotnet/aspnet:11.0 AS runtime
 WORKDIR /app
 COPY --from=build /app ./
 
